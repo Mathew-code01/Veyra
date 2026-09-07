@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "outDir": "dist-server",
+    "rootDir": ".",
+    "sourceMap": true,
+    "declaration": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "server/src/**/*.ts",
+    "shared/**/*.ts",
+    "core/**/*.ts",
+    "database/**/*.ts"
+  ]
+}

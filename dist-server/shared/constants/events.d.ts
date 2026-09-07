@@ -1,0 +1,24 @@
+export declare const IPC_CHANNELS: {
+    readonly APP_GET_VERSION: "app:get-version";
+    readonly APP_GET_PLATFORM: "app:get-platform";
+    readonly WINDOW_MINIMIZE: "window:minimize";
+    readonly WINDOW_MAXIMIZE: "window:maximize";
+    readonly WINDOW_CLOSE: "window:close";
+    readonly AUDIO_LIST_DEVICES: "audio:list-devices";
+    readonly AUDIO_GET_PERMISSION: "audio:get-permission";
+    readonly AUDIO_START: "audio:start";
+    readonly AUDIO_STOP: "audio:stop";
+    readonly CAPTURE_LIST_SOURCES: "capture:list-sources";
+    readonly CAPTURE_GET_PERMISSION: "capture:get-permission";
+    readonly CAPTURE_START: "capture:start";
+    readonly CAPTURE_STOP: "capture:stop";
+    readonly SESSION_CREATE: "session:create";
+    readonly SESSION_START: "session:start";
+    readonly SESSION_PAUSE: "session:pause";
+    readonly SESSION_RESUME: "session:resume";
+    readonly SESSION_STOP: "session:stop";
+    readonly AI_GENERATE: "ai:generate";
+    readonly AI_STREAM: "ai:stream";
+    readonly AI_HEALTH: "ai:health";
+};
+export type IPCChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
