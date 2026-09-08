@@ -1,9 +1,6 @@
 // Relative path: core/models/ModelCompatibility.ts
 
-import type {
-  HardwareProfile,
-  HardwareTier,
-} from "../hardware/HardwareProfile";
+import type { HardwareProfile } from "../hardware/HardwareProfile";
 import type { ModelDefinition } from "./ModelRegistry";
 
 export type CompatibilityLevel =
@@ -30,13 +27,16 @@ function getBestGpuVramBytes(profile: HardwareProfile): number {
 }
 
 function getBestGpu(profile: HardwareProfile) {
-  return profile.gpus.reduce((best, gpu) => {
-    if (!best) {
-      return gpu;
-    }
+  return profile.gpus.reduce<(typeof profile.gpus)[number] | undefined>(
+    (best, gpu) => {
+      if (!best) {
+        return gpu;
+      }
 
-    return (gpu.vramBytes ?? 0) > (best.vramBytes ?? 0) ? gpu : best;
-  }, profile.gpus[0]);
+      return (gpu.vramBytes ?? 0) > (best.vramBytes ?? 0) ? gpu : best;
+    },
+    undefined,
+  );
 }
 
 export class ModelCompatibility {
@@ -78,12 +78,12 @@ export class ModelCompatibility {
 
     if (totalRam < model.requirements.minimumRamBytes) {
       blockingReasons.push(
-        `System RAM is below the model minimum requirement.`,
+        "System RAM is below the model minimum requirement.",
       );
 
       score -= 50;
     } else if (totalRam < model.requirements.recommendedRamBytes) {
-      warnings.push(`System RAM is below the recommended amount.`);
+      warnings.push("System RAM is below the recommended amount.");
 
       score -= 10;
     } else {
@@ -96,7 +96,9 @@ export class ModelCompatibility {
      * ------------------------------------------------------------------------
      */
 
-    if (availableRam < model.requirements.minimumRamBytes * 0.75) {
+    const minimumRuntimeAvailable = model.requirements.minimumRamBytes * 0.75;
+
+    if (availableRam < minimumRuntimeAvailable) {
       blockingReasons.push(
         "Currently available RAM is too low to safely start the model.",
       );
@@ -128,6 +130,8 @@ export class ModelCompatibility {
       warnings.push("CPU core count is below the recommended level.");
 
       score -= 5;
+    } else {
+      reasons.push("CPU core count meets the recommended requirement.");
     }
 
     /*
@@ -144,6 +148,12 @@ export class ModelCompatibility {
           );
 
           score -= 25;
+        } else {
+          warnings.push(
+            "GPU VRAM is below the preferred level for this model.",
+          );
+
+          score -= 10;
         }
       } else if (bestVram >= model.requirements.recommendedVramBytes) {
         reasons.push("GPU VRAM meets the recommended requirement.");
@@ -157,16 +167,28 @@ export class ModelCompatibility {
     /*
      * ------------------------------------------------------------------------
      * Acceleration
+     *
+     * IMPORTANT:
+     * AccelerationProfile currently defines:
+     *   cuda
+     *   vulkan
+     *   directml
+     *   metal
+     *
+     * It does NOT define "coreml".
+     *
+     * Do not reference coreml until Core ML is explicitly added to the
+     * canonical hardware contract and actually detected by the runtime.
      * ------------------------------------------------------------------------
      */
 
     if (model.performance.gpuPreferred) {
-      const accelerationAvailable =
-        profile.acceleration.cuda.available ||
-        profile.acceleration.vulkan.available ||
-        profile.acceleration.directml.available ||
-        profile.acceleration.metal.available ||
-        profile.acceleration.coreML.available;
+      const accelerationAvailable = Boolean(
+        profile.acceleration.cuda ||
+        profile.acceleration.vulkan ||
+        profile.acceleration.directml ||
+        profile.acceleration.metal,
+      );
 
       if (!accelerationAvailable) {
         warnings.push(
@@ -175,7 +197,9 @@ export class ModelCompatibility {
 
         score -= 15;
       } else {
-        reasons.push("GPU acceleration capability is available.");
+        reasons.push(
+          `GPU acceleration capability is available through ${profile.acceleration.preferredBackend}.`,
+        );
       }
     }
 
@@ -198,6 +222,8 @@ export class ModelCompatibility {
       );
 
       score -= 5;
+    } else {
+      reasons.push("Sufficient disk space is available.");
     }
 
     /*
@@ -206,33 +232,45 @@ export class ModelCompatibility {
      * ------------------------------------------------------------------------
      */
 
-    if (profile.load.cpuUsagePercent >= 90) {
+    if (profile.systemLoad.cpuUsagePercent >= 90) {
       warnings.push("Current CPU load is extremely high.");
 
       score -= 20;
-    } else if (profile.load.cpuUsagePercent >= 75) {
+    } else if (profile.systemLoad.cpuUsagePercent >= 75) {
       warnings.push("Current CPU load is high.");
 
       score -= 10;
     }
 
-    if (profile.load.memoryUsagePercent >= 90) {
+    if (profile.systemLoad.memoryUsagePercent >= 90) {
       warnings.push("Current memory usage is extremely high.");
 
       score -= 20;
-    } else if (profile.load.memoryUsagePercent >= 80) {
+    } else if (profile.systemLoad.memoryUsagePercent >= 80) {
       warnings.push("Current memory usage is high.");
 
       score -= 10;
     }
 
+    /*
+     * ------------------------------------------------------------------------
+     * GPU information
+     * ------------------------------------------------------------------------
+     */
+
     const gpu = getBestGpu(profile);
 
-    if (gpu?.isDiscrete) {
+    if (gpu && !gpu.isIntegrated) {
       reasons.push(
         `Discrete GPU detected${gpu.model ? `: ${gpu.model}` : "."}`,
       );
     }
+
+    /*
+     * ------------------------------------------------------------------------
+     * Final decision
+     * ------------------------------------------------------------------------
+     */
 
     const finalScore = clamp(score, 0, 100);
 
@@ -250,9 +288,9 @@ export class ModelCompatibility {
       modelId: model.id,
       level,
       score: finalScore,
-      reasons,
-      warnings,
-      blockingReasons,
+      reasons: Object.freeze([...reasons]),
+      warnings: Object.freeze([...warnings]),
+      blockingReasons: Object.freeze([...blockingReasons]),
     });
   }
 

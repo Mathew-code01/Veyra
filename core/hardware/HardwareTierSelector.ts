@@ -59,7 +59,6 @@ export class HardwareTierSelector {
     const availableRAMGB = profile.memory.availableGB;
 
     const logicalCores = profile.cpu.logicalCores;
-    const physicalCores = profile.cpu.physicalCores;
 
     const vramGB = getMaximumVRAMGB(profile);
 
