@@ -1,4 +1,5 @@
 // core/models/runtime/ModelRuntime.ts
+// core/models/runtime/ModelRuntime.ts
 
 import type { ModelDefinition } from "../ModelRegistry";
 
@@ -59,13 +60,65 @@ export interface ModelRuntime {
 
   supports(model: ModelDefinition): boolean;
 
-  load(model: ModelDefinition, options: ModelRuntimeLoadOptions): Promise<void>;
-
-  generate(
-    options: ModelRuntimeGenerateOptions,
-  ): Promise<ModelRuntimeGenerationResult>;
+  load(
+    model: ModelDefinition,
+    options: ModelRuntimeLoadOptions,
+  ): Promise<void>;
 
   health(): Promise<ModelRuntimeHealth>;
 
   unload(): Promise<void>;
+}
+
+export interface TextGenerationRuntime
+  extends ModelRuntime {
+  generate(
+    options: ModelRuntimeGenerateOptions,
+  ): Promise<ModelRuntimeGenerationResult>;
+}
+
+export interface SpeechRecognitionOptions {
+  readonly audioFilePath: string;
+
+  readonly language?: string;
+
+  readonly threads?: number;
+
+  readonly signal?: AbortSignal;
+}
+
+export interface SpeechRecognitionResult {
+  readonly text: string;
+
+  readonly durationMs: number;
+
+  readonly language?: string;
+}
+
+export interface SpeechRecognitionRuntime
+  extends ModelRuntime {
+  transcribe(
+    options: SpeechRecognitionOptions,
+  ): Promise<SpeechRecognitionResult>;
+}
+
+export interface OnnxRuntimeRunOptions {
+  readonly feeds: Record<string, unknown>;
+
+  readonly fetches?: readonly string[];
+
+  readonly signal?: AbortSignal;
+}
+
+export interface OnnxRuntimeRunResult {
+  readonly outputs: Record<string, unknown>;
+
+  readonly durationMs: number;
+}
+
+export interface InferenceRuntime
+  extends ModelRuntime {
+  run(
+    options: OnnxRuntimeRunOptions,
+  ): Promise<OnnxRuntimeRunResult>;
 }
