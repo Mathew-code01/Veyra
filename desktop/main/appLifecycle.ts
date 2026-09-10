@@ -2,18 +2,30 @@
 
 import { app } from "electron";
 
+import { ModelSystem } from "./ModelSystem";
+
+import { HardwareService } from "../services/ai/HardwareService";
+
+import { registerHardwareIpc } from "../ipc/hardware.ipc";
+
 let initialized = false;
+
+let modelSystem: ModelSystem | null = null;
+
+let hardwareService: HardwareService | null = null;
+
+let cleanupHardwareIpc: (() => void) | null = null;
 
 export async function initializeApplication(): Promise<void> {
   if (initialized) {
     return;
   }
 
-  initialized = true;
-
   configureApplication();
 
   await initializeApplicationServices();
+
+  initialized = true;
 }
 
 export async function shutdownApplication(): Promise<void> {
@@ -30,6 +42,22 @@ export async function shutdownApplication(): Promise<void> {
   }
 }
 
+export function getModelSystem(): ModelSystem {
+  if (!modelSystem) {
+    throw new Error("Veyra ModelSystem has not been initialized.");
+  }
+
+  return modelSystem;
+}
+
+export function getHardwareService(): HardwareService {
+  if (!hardwareService) {
+    throw new Error("Veyra HardwareService has not been initialized.");
+  }
+
+  return hardwareService;
+}
+
 function configureApplication(): void {
   app.setName("Veyra");
 
@@ -40,36 +68,73 @@ function configureApplication(): void {
 
 async function initializeApplicationServices(): Promise<void> {
   /*
-   * Future production initialization order:
-   *
-   * 1. App paths
-   * 2. Logger
-   * 3. Secure credential store
-   * 4. Database
-   * 5. Provider health monitor
-   * 6. IPC services
-   * 7. Tray
-   * 8. Global shortcuts
-   * 9. Update service
-   *
-   * Keep expensive work out of the React renderer.
+   * --------------------------------------------------------------------------
+   * 1. Create the single application ModelSystem.
+   * --------------------------------------------------------------------------
    */
+  const system = new ModelSystem({
+    applicationDataDirectory: app.getPath("userData"),
+  });
 
-  return Promise.resolve();
+  /*
+   * --------------------------------------------------------------------------
+   * 2. Initialize model infrastructure.
+   * --------------------------------------------------------------------------
+   *
+   * This does NOT download a model.
+   *
+   * It only initializes storage, queue state,
+   * recovery and already-installed verified models.
+   */
+  await system.initialize();
+
+  modelSystem = system;
+
+  /*
+   * --------------------------------------------------------------------------
+   * 3. Create HardwareService using the SAME ModelManager.
+   * --------------------------------------------------------------------------
+   */
+  const hardware = new HardwareService({
+    modelManager: system.getModelManager(),
+  });
+
+  hardwareService = hardware;
+
+  /*
+   * --------------------------------------------------------------------------
+   * 4. Register hardware IPC.
+   * --------------------------------------------------------------------------
+   */
+  cleanupHardwareIpc = registerHardwareIpc({
+    service: hardware,
+  });
 }
 
 async function shutdownApplicationServices(): Promise<void> {
   /*
-   * Future shutdown order:
-   *
-   * 1. Stop active sessions
-   * 2. Stop audio capture
-   * 3. Stop screen capture
-   * 4. Flush metrics
-   * 5. Close database
-   * 6. Clear temporary files
-   * 7. Stop background services
+   * --------------------------------------------------------------------------
+   * 1. Remove IPC handlers.
+   * --------------------------------------------------------------------------
    */
+  if (cleanupHardwareIpc) {
+    cleanupHardwareIpc();
 
-  return Promise.resolve();
+    cleanupHardwareIpc = null;
+  }
+
+  /*
+   * --------------------------------------------------------------------------
+   * 2. Dispose the model system.
+   * --------------------------------------------------------------------------
+   */
+  if (modelSystem) {
+    try {
+      await modelSystem.dispose();
+    } finally {
+      modelSystem = null;
+    }
+  }
+
+  hardwareService = null;
 }

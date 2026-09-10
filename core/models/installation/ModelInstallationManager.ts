@@ -5,9 +5,11 @@ import type { HardwareProfile } from "../../hardware/HardwareProfile";
 import type { ModelDefinition } from "../ModelRegistry";
 
 import type {
-  ModelDownloadResult,
   ModelDownloadProgress,
+  ModelDownloadResult,
 } from "../ModelDownloader";
+
+import type { ModelManifest } from "../storage/ModelManifest";
 
 import { ModelStorage, type StoredModel } from "../storage/ModelStorage";
 
@@ -20,9 +22,10 @@ import {
   type ModelInstallationPlan,
 } from "./ModelInstallationPlan";
 
-import { ModelDownloadQueue } from "./ModelDownloadQueue";
-
-import type { ModelManifest } from "../storage/ModelManifest";
+import {
+  ModelDownloadQueue,
+  type QueueItemProgressEvent,
+} from "./ModelDownloadQueue";
 
 export interface ModelInstallationManagerOptions {
   readonly queue: ModelDownloadQueue;
@@ -83,15 +86,27 @@ export class ModelInstallationManager {
 
   private readonly storage: ModelStorage;
 
+  private readonly queue: ModelDownloadQueue;
+
   public constructor(
     private readonly options: ModelInstallationManagerOptions,
   ) {
+    this.storage = options.storage;
+
+    this.queue = options.queue;
+
     this.diskSpaceGuard = options.diskSpaceGuard ?? new DiskSpaceGuard();
 
     this.memoryPressureGuard =
       options.memoryPressureGuard ?? new MemoryPressureGuard();
+  }
 
-    this.storage = options.storage;
+  public getStorage(): ModelStorage {
+    return this.storage;
+  }
+
+  public getQueue(): ModelDownloadQueue {
+    return this.queue;
   }
 
   public buildPlan(
@@ -132,9 +147,14 @@ export class ModelInstallationManager {
 
     const estimatedBytes = Math.max(
       model.artifact.sizeBytes ?? 0,
-
       model.requirements.estimatedDiskBytes,
     );
+
+    /*
+     * DiskSpaceGuard expects the directory
+     * to exist.
+     */
+    await this.storage.createModelDirectory(model);
 
     const disk = await this.diskSpaceGuard.check(
       destinationDirectory,
@@ -179,6 +199,7 @@ export class ModelInstallationManager {
     destinationDirectory: string,
     options: {
       readonly priority?: number;
+
       readonly requireMemorySafety?: boolean;
     } = {},
   ): Promise<Awaited<ReturnType<ModelDownloadQueue["enqueue"]>>> {
@@ -196,7 +217,7 @@ export class ModelInstallationManager {
       );
     }
 
-    return this.options.queue.enqueue(
+    return this.queue.enqueue(
       model.id,
       destinationDirectory,
       options.priority ?? 0,
@@ -204,23 +225,21 @@ export class ModelInstallationManager {
   }
 
   /**
-   * Complete production installation.
+   * Return a verified persistent installation
+   * without downloading anything.
    *
-   * Flow:
-   *
-   * prepare
-   *   ↓
-   * model directory
-   *   ↓
-   * queue
-   *   ↓
-   * download
-   *   ↓
-   * verify
-   *   ↓
-   * manifest
-   *   ↓
-   * persistent installed model
+   * Used during Veyra startup/recovery.
+   */
+  public async getInstalledModel(
+    model: ModelDefinition,
+  ): Promise<StoredModel | null> {
+    await this.storage.initialize();
+
+    return this.storage.getStoredModel(model);
+  }
+
+  /**
+   * Complete production installation flow.
    */
   public async installModel(
     model: ModelDefinition,
@@ -245,9 +264,9 @@ export class ModelInstallationManager {
     await this.storage.initialize();
 
     /*
-     * If the model is already installed and
-     * integrity verification passes, never
-     * download it again.
+     * First consult persistent storage.
+     *
+     * This prevents duplicate downloads.
      */
     const existing = await this.storage.getStoredModel(model);
 
@@ -255,7 +274,7 @@ export class ModelInstallationManager {
       return Object.freeze({
         model,
 
-        download: this.createDownloadResultFromStoredModel(model, existing),
+        download: this.createDownloadResultFromStoredModel(existing),
 
         manifest: existing.manifest,
 
@@ -285,89 +304,175 @@ export class ModelInstallationManager {
       );
     }
 
+    /*
+     * Queue owns the download.
+     */
     const item = await this.enqueueModel(model, modelDirectory, {
       priority: options.priority ?? 0,
 
       requireMemorySafety: options.requireMemorySafety ?? false,
     });
 
-    const progressHandler = options.onProgress;
-
     /*
-     * The queue owns the download and emits
-     * its progress through its configured
-     * callback.
-     *
-     * Installation cancellation is handled
-     * by queue cancellation/controller support.
+     * A caller can cancel the queued
+     * installation through its AbortSignal.
      */
-    void progressHandler;
+    let abortHandler: (() => void) | null = null;
 
     if (options.signal) {
-      options.signal.addEventListener(
-        "abort",
-        () => {
-          void this.options.queue.cancel(item.id).catch(() => undefined);
-        },
-        {
-          once: true,
-        },
-      );
+      abortHandler = () => {
+        void this.queue.cancel(item.id).catch(() => undefined);
+      };
+
+      options.signal.addEventListener("abort", abortHandler, {
+        once: true,
+      });
     }
 
-    const completed = await this.options.queue.waitForCompletion(item.id);
+    try {
+      const completed = await this.queue.waitForCompletion(item.id);
 
-    if (completed.state !== "completed") {
-      throw new Error(`Model "${model.id}" did not complete installation.`);
-    }
+      if (completed.state !== "completed") {
+        throw new Error(`Model "${model.id}" did not complete installation.`);
+      }
 
-    const download = this.options.queue.getResult(item.id);
+      const download = this.queue.getResult(item.id);
 
-    if (!download) {
-      throw new Error(
-        `Model "${model.id}" completed downloading, but the download result could not be recovered.`,
+      if (!download) {
+        throw new Error(
+          `Model "${model.id}" completed downloading, but the download result could not be recovered.`,
+        );
+      }
+
+      /*
+       * The downloader has already verified
+       * the checksum before atomic commit.
+       *
+       * Now persist the installation metadata.
+       */
+      const manifest = await this.storage.registerInstalledModel(
+        model,
+        download,
       );
+
+      /*
+       * Re-read through integrity verification.
+       */
+      const stored = await this.storage.getStoredModel(model);
+
+      if (!stored) {
+        throw new Error(
+          `Model "${model.id}" was downloaded but failed final storage verification.`,
+        );
+      }
+
+      return Object.freeze({
+        model,
+
+        download,
+
+        manifest,
+
+        storedModel: stored,
+
+        queuedItemId: item.id,
+
+        alreadyInstalled: false,
+      });
+    } finally {
+      if (options.signal && abortHandler) {
+        options.signal.removeEventListener("abort", abortHandler);
+      }
+    }
+  }
+
+  /**
+   * Convert a queue event to the public
+   * progress contract.
+   *
+   * This helper is available for composition
+   * code that subscribes to queue events.
+   */
+  public handleQueueProgress(
+    event: QueueItemProgressEvent,
+    targetItemId: string,
+    callback: ((progress: ModelDownloadProgress) => void) | undefined,
+  ): void {
+    if (event.item.id !== targetItemId) {
+      return;
     }
 
     /*
-     * Register the verified artifact in
-     * persistent model storage.
+     * Queue currently stores only the
+     * normalized item, so this adapter
+     * intentionally leaves exact downloader
+     * timing metrics to the queue state.
      */
-    const manifest = await this.storage.registerInstalledModel(model, download);
+    callback?.({
+      modelId: event.item.modelId,
 
-    /*
-     * Verify the complete installation
-     * one more time after writing the manifest.
-     */
-    const stored = await this.storage.getStoredModel(model);
+      filename: this.resolveFilename(event.item.modelId),
 
-    if (!stored) {
-      throw new Error(
-        `Model "${model.id}" was downloaded but failed final storage verification.`,
-      );
-    }
+      bytesDownloaded: event.item.bytesDownloaded,
 
-    return Object.freeze({
-      model,
+      totalBytes: event.item.totalBytes,
 
-      download,
+      percentage: event.item.percentage,
 
-      manifest,
+      speedBytesPerSecond: event.item.speedBytesPerSecond,
 
-      storedModel: stored,
+      resumed: event.item.resumed,
 
-      queuedItemId: item.id,
-
-      alreadyInstalled: false,
+      phase: this.mapQueueStateToProgressPhase(event.item.state),
     });
   }
 
+  private resolveFilename(modelId: string): string {
+    const artifact = this.queue.getResult(modelId)?.filename;
+
+    if (artifact) {
+      return artifact;
+    }
+
+    return modelId;
+  }
+
+  private mapQueueStateToProgressPhase(
+    state:
+      | "queued"
+      | "preparing"
+      | "downloading"
+      | "verifying"
+      | "paused"
+      | "completed"
+      | "failed"
+      | "cancelled",
+  ): ModelDownloadProgress["phase"] {
+    switch (state) {
+      case "verifying":
+        return "verifying";
+
+      case "completed":
+        return "completed";
+
+      case "preparing":
+      case "queued":
+      case "paused":
+      case "failed":
+      case "cancelled":
+        return "preparing";
+
+      case "downloading":
+      default:
+        return "downloading";
+    }
+  }
+
   private createDownloadResultFromStoredModel(
-    model: ModelDefinition,
     stored: StoredModel,
   ): ModelDownloadResult {
     return Object.freeze({
-      modelId: model.id,
+      modelId: stored.modelId,
 
       filename: stored.manifest.artifact.filename,
 

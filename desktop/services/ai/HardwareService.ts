@@ -1,4 +1,4 @@
-// Relative path: desktop/services/ai/HardwareService.ts
+// desktop/services/ai/HardwareService.ts
 
 /**
  * Veyra Hardware Service
@@ -46,9 +46,6 @@ import type {
 
 /**
  * Renderer-safe acceleration backend allow-list.
- *
- * Only these values are permitted to cross the
- * main-process → renderer boundary.
  */
 const SHARED_ACCELERATION_BACKENDS = new Set<SharedAccelerationBackend>([
   "cpu",
@@ -73,8 +70,8 @@ function isSharedModelModality(value: string): value is SharedModelModality {
 }
 
 /**
- * Converts core acceleration backend strings into
- * renderer-safe shared acceleration backends.
+ * Converts core acceleration backend strings
+ * into renderer-safe shared acceleration backends.
  */
 function toSharedAccelerationBackends(
   backends: readonly string[],
@@ -87,8 +84,8 @@ function toSharedAccelerationBackends(
 }
 
 /**
- * Converts the main-process HardwareProfile into
- * the renderer-safe shared DTO.
+ * Converts the main-process HardwareProfile
+ * into the renderer-safe shared DTO.
  */
 function toSharedHardwareProfile(
   profile: HardwareProfile,
@@ -108,22 +105,8 @@ function toSharedHardwareProfile(
 
 /**
  * Creates a renderer-safe model plan.
- *
- * IMPORTANT:
- *
- * We deliberately build mutable records first.
- *
- * The shared HardwareModelPlan is readonly, therefore
- * assigning directly to HardwareModelPlan["primary"]
- * causes TypeScript errors.
  */
 function freezePlan(plan: ModelSelectionPlan): HardwareModelPlan {
-  /**
-   * Mutable internal representation.
-   *
-   * The values are made readonly only when the final
-   * DTO is created.
-   */
   const primary: Record<SharedModelModality, string | undefined> = {
     llm: undefined,
     stt: undefined,
@@ -154,10 +137,6 @@ function freezePlan(plan: ModelSelectionPlan): HardwareModelPlan {
     );
   }
 
-  /**
-   * Convert the mutable internal records into the
-   * exact readonly shape required by the shared contract.
-   */
   const readonlyPrimary: HardwareModelPlan["primary"] = Object.freeze({
     llm: primary.llm,
     stt: primary.stt,
@@ -185,16 +164,30 @@ function freezePlan(plan: ModelSelectionPlan): HardwareModelPlan {
 
 export interface HardwareServiceOptions {
   /**
-   * Directory where local AI models are stored.
+   * Existing production ModelManager.
    *
-   * Main-process only.
+   * This is the preferred path.
    */
-  readonly modelDirectory: string;
+  readonly modelManager?: ModelManager;
 
   /**
    * Optional model-selection configuration.
+   *
+   * Used only when a ModelManager is not
+   * injected by the application composition root.
    */
   readonly modelSelection?: ModelSelectionOptions;
+
+  /**
+   * Legacy compatibility only.
+   *
+   * Model paths are now owned by ModelSystem,
+   * ModelPaths and ModelStorage.
+   *
+   * This value is intentionally not used to
+   * construct ModelManager.
+   */
+  readonly modelDirectory?: string;
 }
 
 export class HardwareService {
@@ -202,37 +195,39 @@ export class HardwareService {
 
   private readonly modelManager: ModelManager;
 
-  /**
-   * Last successfully detected hardware profile.
-   */
   private profileCache: HardwareProfile | null = null;
 
-  /**
-   * Shared in-flight hardware detection promise.
-   *
-   * Prevents concurrent hardware scans.
-   */
   private profilePromise: Promise<HardwareProfile> | null = null;
 
-  /**
-   * Last generated model-selection plan.
-   */
   private selectionPlan: ModelSelectionPlan | null = null;
 
-  public constructor(options: HardwareServiceOptions) {
+  public constructor(options: HardwareServiceOptions = {}) {
     this.profiler = new HardwareProfiler();
 
-    this.modelManager = new ModelManager({
-      modelDirectory: options.modelDirectory,
+    /*
+     * Production Electron startup injects
+     * the ModelSystem-owned ModelManager.
+     *
+     * The fallback constructor keeps this
+     * service independently usable in tests
+     * or transitional code.
+     */
+    this.modelManager =
+      options.modelManager ??
+      new ModelManager({
+        selection: options.modelSelection,
+      });
 
-      selection: options.modelSelection,
-    });
+    /*
+     * Explicitly retain the old option only
+     * for source compatibility. The model system,
+     * not HardwareService, owns filesystem layout.
+     */
+    void options.modelDirectory;
   }
 
   /**
    * Returns the current hardware profile.
-   *
-   * Concurrent callers share the same detection promise.
    */
   public async getProfile(forceRefresh = false): Promise<HardwareProfile> {
     if (!forceRefresh && this.profileCache) {
@@ -257,11 +252,10 @@ export class HardwareService {
   }
 
   /**
-   * Forces a fresh hardware detection.
+   * Forces fresh hardware detection.
    */
   public async refresh(): Promise<HardwareProfile> {
     this.profileCache = null;
-
     this.selectionPlan = null;
 
     const profile = await this.profiler.refresh();
@@ -285,9 +279,8 @@ export class HardwareService {
   }
 
   /**
-   * Generates the hardware-aware model-selection plan.
-   *
-   * This remains a main-process operation.
+   * Generates the hardware-aware
+   * model-selection plan.
    */
   public async getModelPlan(forceRefresh = false): Promise<{
     readonly profile: HardwareProfile;
@@ -330,8 +323,8 @@ export class HardwareService {
   }
 
   /**
-   * Returns ModelManager for trusted Electron
-   * main-process consumers.
+   * Returns the connected ModelManager
+   * for trusted Electron main-process code.
    *
    * NEVER expose this through preload.
    */
@@ -339,13 +332,8 @@ export class HardwareService {
     return this.modelManager;
   }
 
-  /**
-   * Clears cached hardware and
-   * model-selection state.
-   */
   public clearCache(): void {
     this.profileCache = null;
-
     this.selectionPlan = null;
   }
 }

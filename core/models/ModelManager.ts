@@ -1,4 +1,4 @@
-// Relative path: core/models/ModelManager.ts
+// core/models/ModelManager.ts
 
 import type { HardwareProfile } from "../hardware/HardwareProfile";
 
@@ -6,6 +6,7 @@ import {
   defaultModelRegistry,
   type ModelDefinition,
   type ModelModality,
+  type ModelRegistry,
 } from "./ModelRegistry";
 
 import {
@@ -20,48 +21,83 @@ import {
 } from "./ModelCompatibility";
 
 import {
-  ModelDownloader,
-  type ModelDownloadOptions,
-  type ModelDownloadProgress,
-  type ModelDownloadResult,
-} from "./ModelDownloader";
-
-import {
   ModelBenchmark,
   type ModelBenchmarkOptions,
   type ModelBenchmarkResult,
 } from "./ModelBenchmark";
 
+import type {
+  ModelDownloadProgress,
+  ModelDownloadResult,
+} from "./ModelDownloader";
+
+import {
+  ModelInstallationManager,
+  type ModelInstallationResult,
+} from "./installation/ModelInstallationManager";
+
+import { ModelRuntimeManager } from "./runtime/ModelRuntimeManager";
+
+import type {
+  ModelRuntimeGenerateOptions,
+  ModelRuntimeGenerationResult,
+  OnnxRuntimeRunOptions,
+  OnnxRuntimeRunResult,
+  SpeechRecognitionOptions,
+  SpeechRecognitionResult,
+} from "./runtime/ModelRuntime";
+
 export interface InstalledModel {
   readonly modelId: string;
+
   readonly filePath: string;
+
   readonly installedAt: number;
+
   readonly sizeBytes: number;
+
   readonly sha256: string;
 }
 
 export interface ModelManagerOptions {
-  readonly modelDirectory: string;
   readonly selection?: ModelSelectionOptions;
+
+  readonly installationManager?: ModelInstallationManager;
+
+  readonly runtimeManager?: ModelRuntimeManager;
 }
 
 export interface ModelInstallOptions {
   readonly overwrite?: boolean;
+
   readonly signal?: AbortSignal;
+
   readonly onProgress?: (progress: ModelDownloadProgress) => void;
+
   readonly benchmarkAfterInstall?: boolean;
+
   readonly benchmark?: ModelBenchmarkOptions;
+
+  readonly priority?: number;
+
+  readonly requireMemorySafety?: boolean;
 }
 
 export interface ModelInstallResult {
   readonly download: ModelDownloadResult;
+
   readonly benchmark?: ModelBenchmarkResult;
+
+  readonly installation: ModelInstallationResult;
 }
 
 export interface ActiveModelPlan {
   readonly generatedAt: number;
+
   readonly hardwareTier: HardwareProfile["tier"];
+
   readonly primary: Readonly<Partial<Record<ModelModality, string>>>;
+
   readonly fallbacks: Readonly<
     Partial<Record<ModelModality, readonly string[]>>
   >;
@@ -72,9 +108,13 @@ export class ModelManager {
 
   private readonly compatibility: ModelCompatibility;
 
-  private readonly downloader: ModelDownloader;
-
   private readonly benchmark: ModelBenchmark;
+
+  private readonly registry: ModelRegistry;
+
+  private readonly installationManager?: ModelInstallationManager;
+
+  private readonly runtimeManager?: ModelRuntimeManager;
 
   private currentPlan: ModelSelectionPlan | null = null;
 
@@ -84,19 +124,30 @@ export class ModelManager {
 
   public constructor(
     private readonly options: ModelManagerOptions,
-    registry = defaultModelRegistry,
-    downloader = new ModelDownloader(),
-    benchmark = new ModelBenchmark(),
+
+    registry: ModelRegistry = defaultModelRegistry,
+
+    benchmark: ModelBenchmark = new ModelBenchmark(),
+
+    installationManager?: ModelInstallationManager,
+
+    runtimeManager?: ModelRuntimeManager,
   ) {
+    this.registry = registry;
+
     this.selector = new ModelSelector(registry);
 
     this.compatibility = new ModelCompatibility();
 
-    this.downloader = downloader;
     this.benchmark = benchmark;
+
+    this.installationManager =
+      installationManager ?? options.installationManager;
+
+    this.runtimeManager = runtimeManager ?? options.runtimeManager;
   }
 
-  /*
+  /**
    * --------------------------------------------------------------------------
    * Hardware -> model selection
    * --------------------------------------------------------------------------
@@ -114,28 +165,28 @@ export class ModelManager {
     return this.currentPlan;
   }
 
-  /*
+  /**
    * --------------------------------------------------------------------------
    * Model lookup
    * --------------------------------------------------------------------------
    */
 
   public getModel(modelId: string): ModelDefinition {
-    return defaultModelRegistry.require(modelId);
+    return this.registry.require(modelId);
   }
 
   public evaluateModel(
     modelId: string,
     profile: HardwareProfile,
   ): ModelCompatibilityResult {
-    const model = defaultModelRegistry.require(modelId);
+    const model = this.registry.require(modelId);
 
     return this.compatibility.evaluate(model, profile);
   }
 
-  /*
+  /**
    * --------------------------------------------------------------------------
-   * Installation
+   * Production installation
    * --------------------------------------------------------------------------
    */
 
@@ -143,32 +194,21 @@ export class ModelManager {
     modelId: string,
     options: ModelInstallOptions = {},
   ): Promise<ModelInstallResult> {
-    const model = defaultModelRegistry.require(modelId);
+    const manager = this.requireInstallationManager();
 
-    if (model.availability !== "available") {
-      throw new Error(
-        `Model "${modelId}" is not currently available for installation.`,
-      );
-    }
+    const model = this.registry.require(modelId);
 
-    const downloadOptions: ModelDownloadOptions = {
-      destinationDirectory: this.options.modelDirectory,
-      overwrite: options.overwrite ?? false,
+    const installation = await manager.installModel(model, {
+      priority: options.priority ?? 0,
+
+      requireMemorySafety: options.requireMemorySafety ?? false,
+
       signal: options.signal,
+
       onProgress: options.onProgress,
-    };
-
-    const download = await this.downloader.download(model, downloadOptions);
-
-    const installed: InstalledModel = Object.freeze({
-      modelId: model.id,
-      filePath: download.filePath,
-      installedAt: Date.now(),
-      sizeBytes: download.bytesDownloaded,
-      sha256: download.sha256,
     });
 
-    this.installedModels.set(model.id, installed);
+    this.cacheInstalledModel(installation);
 
     let benchmarkResult: ModelBenchmarkResult | undefined;
 
@@ -177,19 +217,90 @@ export class ModelManager {
     }
 
     return Object.freeze({
-      download,
+      download: installation.download,
+
       benchmark: benchmarkResult,
+
+      installation,
     });
   }
 
-  public async uninstall(modelId: string): Promise<void> {
-    const installed = this.installedModels.get(modelId);
+  /**
+   * --------------------------------------------------------------------------
+   * Persistent installation state
+   * --------------------------------------------------------------------------
+   */
 
-    if (!installed) {
+  public async restoreInstalledModel(
+    modelId: string,
+  ): Promise<InstalledModel | undefined> {
+    const model = this.registry.get(modelId);
+
+    if (!model) {
+      return undefined;
+    }
+
+    const manager = this.requireInstallationManager();
+
+    /*
+     * IMPORTANT:
+     *
+     * This method never downloads.
+     *
+     * It only reconstructs state from
+     * the persistent verified model store.
+     */
+    const stored = await manager.getInstalledModel(model);
+
+    if (!stored) {
+      this.installedModels.delete(model.id);
+
+      return undefined;
+    }
+
+    const installed = this.createInstalledModel(
+      stored.modelId,
+      stored.artifactPath,
+      stored.manifest.installedAt,
+      stored.manifest.artifact.sizeBytes,
+      stored.manifest.artifact.sha256,
+    );
+
+    this.installedModels.set(model.id, installed);
+
+    return installed;
+  }
+
+  public async restoreAllInstalledModels(): Promise<readonly InstalledModel[]> {
+    const restored: InstalledModel[] = [];
+
+    const models = this.registry.listAvailable();
+
+    for (const model of models) {
+      const installed = await this.restoreInstalledModel(model.id);
+
+      if (installed) {
+        restored.push(installed);
+      }
+    }
+
+    return Object.freeze(restored);
+  }
+
+  public async uninstall(modelId: string): Promise<void> {
+    const model = this.registry.get(modelId);
+
+    if (!model) {
       return;
     }
 
-    await this.downloader.remove(installed.filePath);
+    const manager = this.requireInstallationManager();
+
+    /*
+     * Storage owns the canonical
+     * installation directory.
+     */
+    await manager.getStorage().remove(model);
 
     this.installedModels.delete(modelId);
   }
@@ -203,10 +314,10 @@ export class ModelManager {
   }
 
   public listInstalled(): readonly InstalledModel[] {
-    return [...this.installedModels.values()];
+    return Object.freeze([...this.installedModels.values()]);
   }
 
-  /*
+  /**
    * --------------------------------------------------------------------------
    * Benchmarking
    * --------------------------------------------------------------------------
@@ -216,7 +327,7 @@ export class ModelManager {
     modelId: string,
     options?: ModelBenchmarkOptions,
   ): Promise<ModelBenchmarkResult> {
-    const model = defaultModelRegistry.require(modelId);
+    const model = this.registry.require(modelId);
 
     return this.benchmark.benchmark(model, options);
   }
@@ -225,7 +336,56 @@ export class ModelManager {
     return this.benchmark.getResult(modelId);
   }
 
-  /*
+  /**
+   * --------------------------------------------------------------------------
+   * Runtime loading
+   * --------------------------------------------------------------------------
+   */
+
+  public async loadModel(
+    modelId: string,
+    options: {
+      readonly contextSize?: number;
+      readonly gpuLayers?: number;
+      readonly threads?: number;
+      readonly batchSize?: number;
+      readonly signal?: AbortSignal;
+    } = {},
+  ): Promise<void> {
+    const runtime = this.requireRuntimeManager();
+
+    const model = this.registry.require(modelId);
+
+    await runtime.load(model, options);
+  }
+
+  public async unloadModel(): Promise<void> {
+    await this.requireRuntimeManager().unload();
+  }
+
+  public getLoadedModel(): ModelDefinition | null {
+    return this.runtimeManager?.getActiveModel() ?? null;
+  }
+
+  public async generate(
+    options: ModelRuntimeGenerateOptions,
+  ): Promise<ModelRuntimeGenerationResult> {
+    return this.requireRuntimeManager().generate(options);
+  }
+
+  public async transcribe(
+    options: SpeechRecognitionOptions,
+  ): Promise<SpeechRecognitionResult> {
+    return this.requireRuntimeManager().transcribe(options);
+  }
+
+  public async runInference(
+    options: OnnxRuntimeRunOptions,
+  ): Promise<OnnxRuntimeRunResult> {
+    return this.requireRuntimeManager().run(options);
+  }
+
+  /**
    * --------------------------------------------------------------------------
    * Activation
    * --------------------------------------------------------------------------
@@ -248,8 +408,11 @@ export class ModelManager {
 
     const activePlan = Object.freeze({
       generatedAt: Date.now(),
+
       hardwareTier: plan.hardwareTier,
+
       primary: Object.freeze(primary),
+
       fallbacks: Object.freeze(fallbacks),
     });
 
@@ -269,7 +432,7 @@ export class ModelManager {
       return null;
     }
 
-    return defaultModelRegistry.get(modelId) ?? null;
+    return this.registry.get(modelId) ?? null;
   }
 
   public getFallbackModels(
@@ -278,11 +441,11 @@ export class ModelManager {
     const ids = this.activePlan?.fallbacks[modality] ?? [];
 
     return ids
-      .map((id) => defaultModelRegistry.get(id))
+      .map((id) => this.registry.get(id))
       .filter((model): model is ModelDefinition => model !== undefined);
   }
 
-  /*
+  /**
    * --------------------------------------------------------------------------
    * Recommended installation
    * --------------------------------------------------------------------------
@@ -301,10 +464,10 @@ export class ModelManager {
       }
     }
 
-    return recommended;
+    return Object.freeze(recommended);
   }
 
-  /*
+  /**
    * --------------------------------------------------------------------------
    * Reset
    * --------------------------------------------------------------------------
@@ -313,5 +476,51 @@ export class ModelManager {
   public clearPlans(): void {
     this.currentPlan = null;
     this.activePlan = null;
+  }
+
+  private cacheInstalledModel(installation: ModelInstallationResult): void {
+    const installed = this.createInstalledModel(
+      installation.model.id,
+      installation.download.filePath,
+      installation.manifest.installedAt,
+      installation.download.bytesDownloaded,
+      installation.download.sha256,
+    );
+
+    this.installedModels.set(installation.model.id, installed);
+  }
+
+  private createInstalledModel(
+    modelId: string,
+    filePath: string,
+    installedAt: number,
+    sizeBytes: number,
+    sha256: string,
+  ): InstalledModel {
+    return Object.freeze({
+      modelId,
+      filePath,
+      installedAt,
+      sizeBytes,
+      sha256,
+    });
+  }
+
+  private requireInstallationManager(): ModelInstallationManager {
+    if (!this.installationManager) {
+      throw new Error(
+        "ModelInstallationManager is not connected to ModelManager.",
+      );
+    }
+
+    return this.installationManager;
+  }
+
+  private requireRuntimeManager(): ModelRuntimeManager {
+    if (!this.runtimeManager) {
+      throw new Error("ModelRuntimeManager is not connected to ModelManager.");
+    }
+
+    return this.runtimeManager;
   }
 }

@@ -2,20 +2,17 @@
 
 import { app, BrowserWindow, ipcMain } from "electron";
 
-import { IPC_CHANNELS } from "@shared/constants/events";
+import { IPC_CHANNELS } from "../../shared/constants/events";
 
-import {
-  initializeApplication,
-  shutdownApplication,
-} from "./appLifecycle";
+import { initializeApplication, shutdownApplication } from "./appLifecycle";
+
 import {
   createMainWindow,
   getMainWindow,
   isMainWindowAvailable,
 } from "./windowManager";
 
-const isDevelopment =
-  process.env.NODE_ENV === "development" && !app.isPackaged;
+const isDevelopment = process.env.NODE_ENV === "development" && !app.isPackaged;
 
 let ipcRegistered = false;
 let shuttingDown = false;
@@ -120,9 +117,7 @@ function registerSecurityHandlers(): void {
         ];
 
         if (
-          developmentOrigins.some((origin) =>
-            navigationUrl.startsWith(origin),
-          )
+          developmentOrigins.some((origin) => navigationUrl.startsWith(origin))
         ) {
           return;
         }
@@ -132,10 +127,7 @@ function registerSecurityHandlers(): void {
     });
 
     contents.setWindowOpenHandler(({ url }) => {
-      if (
-        url.startsWith("https://") &&
-        isDevelopment
-      ) {
+      if (url.startsWith("https://") && isDevelopment) {
         return {
           action: "allow",
         };
@@ -155,14 +147,18 @@ function registerApplicationEvents(): void {
     }
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     if (shuttingDown) {
       return;
     }
 
     shuttingDown = true;
 
-    void shutdownApplication();
+    event.preventDefault();
+
+    void shutdownApplication().finally(() => {
+      app.exit(0);
+    });
   });
 
   app.on("window-all-closed", () => {

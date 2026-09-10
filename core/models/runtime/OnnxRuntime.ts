@@ -16,18 +16,18 @@ import type {
 
 type OnnxSession = ort.InferenceSession;
 
-type OnnxSessionOptions = Parameters<typeof ort.InferenceSession.create>[1];
+type OnnxFeeds = Parameters<OnnxSession["run"]>[0];
+
+type OnnxFetches = Parameters<OnnxSession["run"]>[1];
 
 export interface OnnxRuntimeOptions {
-  readonly sessionOptions?: OnnxSessionOptions;
+  readonly sessionOptions?: Parameters<typeof ort.InferenceSession.create>[1];
 }
 
 export class OnnxRuntime implements InferenceRuntime {
   public readonly name = "onnx";
 
   private readonly sessions = new Map<string, OnnxSession>();
-
-  private readonly modelPaths = new Map<string, string>();
 
   public constructor(private readonly options: OnnxRuntimeOptions = {}) {}
 
@@ -44,7 +44,7 @@ export class OnnxRuntime implements InferenceRuntime {
     }
 
     if (options.signal?.aborted) {
-      throw new DOMException("ONNX load was aborted.", "AbortError");
+      throw new DOMException("ONNX model loading was aborted.", "AbortError");
     }
 
     const modelPath = options.modelPath.trim();
@@ -55,7 +55,7 @@ export class OnnxRuntime implements InferenceRuntime {
 
     await fs.access(modelPath);
 
-    await this.unload(model);
+    await this.unload();
 
     const session = await ort.InferenceSession.create(
       modelPath,
@@ -63,17 +63,11 @@ export class OnnxRuntime implements InferenceRuntime {
     );
 
     this.sessions.set(model.id, session);
-
-    this.modelPaths.set(model.id, modelPath);
   }
 
   public async run(
     options: OnnxRuntimeRunOptions,
   ): Promise<OnnxRuntimeRunResult> {
-    if (!options || typeof options !== "object") {
-      throw new Error("ONNX inference options are required.");
-    }
-
     const modelId = this.getSingleLoadedModelId();
 
     const session = this.sessions.get(modelId);
@@ -88,18 +82,17 @@ export class OnnxRuntime implements InferenceRuntime {
 
     const startedAt = Date.now();
 
-    const feeds = options.feeds;
+    const feeds = options.feeds as OnnxFeeds;
 
-    if (!feeds || typeof feeds !== "object") {
-      throw new Error("ONNX inference requires input feeds.");
+    let result: Awaited<ReturnType<OnnxSession["run"]>>;
+
+    if (options.fetches && options.fetches.length > 0) {
+      const fetches = [...options.fetches] as OnnxFetches;
+
+      result = await session.run(feeds, fetches);
+    } else {
+      result = await session.run(feeds);
     }
-
-    const result = await session.run(
-      feeds as ort.InferenceSession["inputMetadata"] extends never
-        ? never
-        : Record<string, ort.Tensor>,
-      options.fetches ? [...options.fetches] : undefined,
-    );
 
     return Object.freeze({
       outputs: result as Record<string, unknown>,
@@ -120,33 +113,22 @@ export class OnnxRuntime implements InferenceRuntime {
     });
   }
 
-  public async unload(model?: ModelDefinition): Promise<void> {
-    if (model) {
-      const session = this.sessions.get(model.id);
-
-      if (session) {
-        await session.release();
-      }
-
-      this.sessions.delete(model.id);
-
-      this.modelPaths.delete(model.id);
-
-      return;
-    }
-
-    for (const session of this.sessions.values()) {
-      await session.release();
-    }
+  public async unload(): Promise<void> {
+    const sessions = [...this.sessions.values()];
 
     this.sessions.clear();
-    this.modelPaths.clear();
+
+    await Promise.all(sessions.map((session) => session.release()));
   }
 
   private getLoadedModelId(): string | null {
     const first = this.sessions.keys().next();
 
-    return first.done ? null : String(first.value);
+    if (first.done) {
+      return null;
+    }
+
+    return String(first.value);
   }
 
   private getSingleLoadedModelId(): string {
@@ -156,10 +138,8 @@ export class OnnxRuntime implements InferenceRuntime {
       throw new Error("No ONNX model is currently loaded.");
     }
 
-    if (this.sessions.size > 1) {
-      throw new Error(
-        "OnnxRuntime currently expects exactly one active session for inference.",
-      );
+    if (this.sessions.size !== 1) {
+      throw new Error("OnnxRuntime expects exactly one active model session.");
     }
 
     return modelId;

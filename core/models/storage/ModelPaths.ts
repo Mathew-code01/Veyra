@@ -4,6 +4,14 @@ import path from "node:path";
 
 import type { ModelModality } from "../ModelRegistry";
 
+const MANIFEST_FILENAME = "manifest.json";
+
+const PART_SUFFIX = ".part";
+
+const MANIFEST_TEMP_SUFFIX = ".tmp";
+
+const LOCK_FILENAME = ".operation.lock";
+
 export interface ModelPathsOptions {
   readonly applicationDataDirectory: string;
 }
@@ -12,15 +20,15 @@ export class ModelPaths {
   private readonly rootDirectory: string;
 
   public constructor(options: ModelPathsOptions) {
-    const applicationDataDirectory = options.applicationDataDirectory.trim();
+    const directory = options.applicationDataDirectory.trim();
 
-    if (!applicationDataDirectory) {
+    if (!directory) {
       throw new Error(
         "ModelPaths requires a valid application data directory.",
       );
     }
 
-    this.rootDirectory = path.resolve(applicationDataDirectory);
+    this.rootDirectory = path.resolve(directory);
   }
 
   public getRootDirectory(): string {
@@ -48,8 +56,12 @@ export class ModelPaths {
   public getManifestPath(modality: ModelModality, modelId: string): string {
     return path.join(
       this.getModelDirectory(modality, modelId),
-      "manifest.json",
+      MANIFEST_FILENAME,
     );
+  }
+
+  public getManifestTempPath(modality: ModelModality, modelId: string): string {
+    return `${this.getManifestPath(modality, modelId)}${MANIFEST_TEMP_SUFFIX}`;
   }
 
   public getArtifactPath(
@@ -67,7 +79,14 @@ export class ModelPaths {
     modelId: string,
     filename: string,
   ): string {
-    return `${this.getArtifactPath(modality, modelId, filename)}.part`;
+    return `${this.getArtifactPath(modality, modelId, filename)}${PART_SUFFIX}`;
+  }
+
+  public getOperationLockPath(
+    modality: ModelModality,
+    modelId: string,
+  ): string {
+    return path.join(this.getModelDirectory(modality, modelId), LOCK_FILENAME);
   }
 
   public getRuntimeDirectory(runtime: string): string {
@@ -90,6 +109,10 @@ export class ModelPaths {
 
   public getDownloadQueueStatePath(): string {
     return path.join(this.getInstallationDirectory(), "download-queue.json");
+  }
+
+  public getRecoveryDirectory(): string {
+    return path.join(this.getInstallationDirectory(), "recovery");
   }
 
   private assertSafeSegment(value: string): void {

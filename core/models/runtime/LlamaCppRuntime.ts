@@ -1,40 +1,33 @@
 // core/models/runtime/LlamaCppRuntime.ts
 
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-
 import type { Readable } from "node:stream";
 
 import type { ModelDefinition } from "../ModelRegistry";
 
 import type {
-  ModelRuntime,
-  ModelRuntimeGenerateOptions,
-  ModelRuntimeGenerationResult,
   ModelRuntimeHealth,
   ModelRuntimeLoadOptions,
+  ModelRuntimeGenerateOptions,
+  ModelRuntimeGenerationResult,
+  TextGenerationRuntime,
 } from "./ModelRuntime";
 
 export interface LlamaCppRuntimeOptions {
   readonly executablePath: string;
-
   readonly host?: string;
-
   readonly port?: number;
-
   readonly startupTimeoutMs?: number;
-
   readonly healthPollIntervalMs?: number;
 }
 
 type LlamaCppProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 const DEFAULT_HOST = "127.0.0.1";
-
 const DEFAULT_PORT = 39271;
-
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
-
 const DEFAULT_HEALTH_POLL_INTERVAL_MS = 250;
+const PROCESS_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
@@ -48,7 +41,15 @@ function sleep(milliseconds: number): Promise<void> {
   });
 }
 
-export class LlamaCppRuntime implements ModelRuntime {
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+export class LlamaCppRuntime implements TextGenerationRuntime {
   public readonly name = "llama_cpp";
 
   private process: LlamaCppProcess | null = null;
@@ -61,7 +62,6 @@ export class LlamaCppRuntime implements ModelRuntime {
 
   public constructor(private readonly options: LlamaCppRuntimeOptions) {
     const host = options.host ?? DEFAULT_HOST;
-
     const port = options.port ?? DEFAULT_PORT;
 
     this.baseUrl = `http://${host}:${port}`;
@@ -83,23 +83,22 @@ export class LlamaCppRuntime implements ModelRuntime {
 
     throwIfAborted(options.signal);
 
-    if (!options.modelPath.trim()) {
+    const modelPath = options.modelPath.trim();
+
+    if (!modelPath) {
       throw new Error(`A model path is required for "${model.id}".`);
     }
 
     await this.unload();
 
     const host = this.options.host ?? DEFAULT_HOST;
-
     const port = this.options.port ?? DEFAULT_PORT;
 
     const args: string[] = [
       "--model",
-      options.modelPath,
-
+      modelPath,
       "--host",
       host,
-
       "--port",
       String(port),
     ];
@@ -122,6 +121,8 @@ export class LlamaCppRuntime implements ModelRuntime {
 
     this.lastProcessError = null;
 
+    let startupProcessError: unknown = null;
+
     const child = spawn(this.options.executablePath, args, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -131,23 +132,27 @@ export class LlamaCppRuntime implements ModelRuntime {
 
     child.stdout.on("data", () => {
       /*
-       * stdout is deliberately consumed.
+       * Runtime output is deliberately consumed.
        *
-       * Runtime logging will eventually be
-       * routed through Veyra's central logger.
+       * Central Veyra logging can be connected
+       * here later without allowing stdout
+       * backpressure to interfere with runtime
+       * operation.
        */
     });
 
     child.stderr.on("data", () => {
       /*
-       * stderr is deliberately consumed.
+       * Runtime diagnostics are deliberately
+       * consumed here.
        *
-       * Runtime logging will eventually be
-       * routed through Veyra's central logger.
+       * Central Veyra logging can be connected
+       * here later.
        */
     });
 
     child.once("error", (error) => {
+      startupProcessError = error;
       this.lastProcessError = error;
 
       if (this.process === child) {
@@ -171,11 +176,33 @@ export class LlamaCppRuntime implements ModelRuntime {
         options.signal,
       );
     } catch (error) {
+      /*
+       * IMPORTANT:
+       * ESLint's preserve-caught-error rule requires
+       * the caught error itself to be preserved as
+       * the cause when wrapping the exception.
+       *
+       * startupProcessError is useful for diagnostics,
+       * but `error` is the exception actually thrown by
+       * the awaited startup operation.
+       */
+      const processError: unknown =
+        startupProcessError ?? this.lastProcessError;
+
       await this.unload();
 
-      if (this.lastProcessError) {
+      if (processError instanceof Error) {
+        throw new Error(`Failed to start llama.cpp: ${processError.message}`, {
+          cause: error,
+        });
+      }
+
+      if (processError !== null) {
         throw new Error(
-          `Failed to start llama.cpp: ${this.lastProcessError.message}`,
+          `Failed to start llama.cpp: ${errorMessage(processError)}`,
+          {
+            cause: error,
+          },
         );
       }
 
@@ -243,12 +270,10 @@ export class LlamaCppRuntime implements ModelRuntime {
 
     const text = this.extractResponseText(payload);
 
-    const durationMs = Date.now() - startedAt;
-
     return Object.freeze({
       text,
 
-      durationMs,
+      durationMs: Date.now() - startedAt,
 
       tokensPerSecond: undefined,
 
@@ -282,6 +307,7 @@ export class LlamaCppRuntime implements ModelRuntime {
     const child = this.process;
 
     this.process = null;
+
     this.loadedModel = null;
 
     if (!child) {
@@ -292,25 +318,45 @@ export class LlamaCppRuntime implements ModelRuntime {
       return;
     }
 
-    child.kill();
+    try {
+      child.kill();
+    } catch {
+      /*
+       * The process may have exited between
+       * the state check and kill attempt.
+       */
+    }
 
     await new Promise<void>((resolve) => {
+      let settled = false;
+
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+
+        clearTimeout(timeout);
+
+        resolve();
+      };
+
       const timeout = setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) {
           try {
             child.kill("SIGKILL");
           } catch {
-            // Process may already have exited.
+            /*
+             * Process may have already exited.
+             */
           }
         }
 
-        resolve();
-      }, 5_000);
+        finish();
+      }, PROCESS_SHUTDOWN_TIMEOUT_MS);
 
-      child.once("exit", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
+      child.once("exit", finish);
     });
   }
 
@@ -326,11 +372,15 @@ export class LlamaCppRuntime implements ModelRuntime {
     while (Date.now() - startedAt < timeoutMs) {
       throwIfAborted(signal);
 
-      if (this.lastProcessError) {
-        throw this.lastProcessError;
+      const processError = this.lastProcessError;
+
+      if (processError) {
+        throw processError;
       }
 
-      if (!this.process || this.process.exitCode !== null) {
+      const child = this.process;
+
+      if (!child || child.exitCode !== null) {
         throw new Error("llama.cpp process exited before becoming ready.");
       }
 
@@ -375,7 +425,9 @@ export class LlamaCppRuntime implements ModelRuntime {
           break;
         }
 
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value, {
+          stream: true,
+        });
 
         const events = buffer.split("\n\n");
 
@@ -415,12 +467,10 @@ export class LlamaCppRuntime implements ModelRuntime {
       reader.releaseLock();
     }
 
-    const durationMs = Date.now() - startedAt;
-
     return Object.freeze({
       text,
 
-      durationMs,
+      durationMs: Date.now() - startedAt,
 
       firstTokenMs,
 
@@ -429,9 +479,7 @@ export class LlamaCppRuntime implements ModelRuntime {
   }
 
   private extractStreamingToken(event: string): string | null {
-    const lines = event.split("\n");
-
-    for (const line of lines) {
+    for (const line of event.split("\n")) {
       if (!line.startsWith("data:")) {
         continue;
       }
@@ -474,9 +522,9 @@ export class LlamaCppRuntime implements ModelRuntime {
         }
       } catch {
         /*
-         * Ignore malformed SSE
-         * fragments rather than
-         * crashing the runtime.
+         * Ignore incomplete or malformed SSE
+         * fragments. The stream may deliver
+         * a JSON event across multiple chunks.
          */
       }
     }
@@ -489,9 +537,7 @@ export class LlamaCppRuntime implements ModelRuntime {
       throw new Error("Invalid llama.cpp response.");
     }
 
-    const record = payload as Record<string, unknown>;
-
-    const choices = record.choices;
+    const choices = (payload as Record<string, unknown>).choices;
 
     if (!Array.isArray(choices) || choices.length === 0) {
       throw new Error("llama.cpp response did not contain choices.");

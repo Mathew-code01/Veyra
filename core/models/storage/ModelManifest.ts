@@ -50,28 +50,35 @@ export interface ModelManifest {
   };
 }
 
+export interface ModelManifestArtifact {
+  readonly filename: string;
+
+  readonly filePath: string;
+
+  readonly sizeBytes: number;
+
+  readonly sha256: string;
+}
+
 export function createModelManifest(
   model: ModelDefinition,
-  artifact: {
-    readonly filename: string;
-    readonly filePath: string;
-    readonly sizeBytes: number;
-    readonly sha256: string;
-  },
+  artifact: ModelManifestArtifact,
 ): ModelManifest {
   if (!model.artifact?.url) {
     throw new Error(`Model "${model.id}" has no artifact URL.`);
   }
 
-  if (!artifact.filename.trim()) {
-    throw new Error(`Model "${model.id}" has an invalid artifact filename.`);
+  const sha256 = artifact.sha256.trim().toLowerCase();
+
+  if (!/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new Error(`Invalid SHA-256 checksum for model "${model.id}".`);
   }
 
-  if (artifact.sizeBytes < 0 || !Number.isFinite(artifact.sizeBytes)) {
-    throw new Error(`Model "${model.id}" has an invalid artifact size.`);
+  if (!Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes < 0) {
+    throw new Error(`Invalid artifact size for model "${model.id}".`);
   }
 
-  const timestamp = Date.now();
+  const now = Date.now();
 
   return Object.freeze({
     manifestVersion: MODEL_MANIFEST_VERSION,
@@ -88,11 +95,11 @@ export function createModelManifest(
 
     status: "installed",
 
-    installedAt: timestamp,
+    installedAt: now,
 
-    verifiedAt: timestamp,
+    verifiedAt: now,
 
-    updatedAt: timestamp,
+    updatedAt: now,
 
     artifact: Object.freeze({
       filename: artifact.filename,
@@ -101,7 +108,7 @@ export function createModelManifest(
 
       sizeBytes: artifact.sizeBytes,
 
-      sha256: artifact.sha256,
+      sha256,
     }),
 
     source: Object.freeze({
