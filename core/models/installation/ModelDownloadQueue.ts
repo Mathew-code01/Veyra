@@ -3,10 +3,14 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import type { ModelDefinition } from "../ModelRegistry";
+import {
+  getPrimaryModelArtifact,
+  type ModelDefinition,
+} from "../ModelRegistry";
 
 import {
   ModelDownloader,
+  type ModelDownloadOptions,
   type ModelDownloadProgress,
   type ModelDownloadResult,
 } from "../ModelDownloader";
@@ -21,16 +25,36 @@ export interface QueueItemProgressEvent {
 }
 
 export interface ModelDownloadQueueOptions {
+  /**
+   * Persistent queue-state file.
+   */
   readonly stateFilePath: string;
 
+  /**
+   * Maximum number of simultaneous downloads.
+   */
   readonly concurrency?: number;
 
+  /**
+   * Resolves the current authoritative model definition.
+   */
   readonly modelResolver: (modelId: string) => ModelDefinition | undefined;
 
+  /**
+   * Optional downloader dependency.
+   *
+   * Useful for testing and dependency injection.
+   */
   readonly downloader?: ModelDownloader;
 
+  /**
+   * Called whenever queue item progress changes.
+   */
   readonly onProgress?: (event: QueueItemProgressEvent) => void;
 
+  /**
+   * Debounce interval for persisted progress.
+   */
   readonly persistenceDebounceMs?: number;
 }
 
@@ -104,11 +128,22 @@ export class ModelDownloadQueue {
     );
   }
 
+  /**
+   * --------------------------------------------------------------------------
+   * Initialization
+   * --------------------------------------------------------------------------
+   */
+
   public async initialize(): Promise<void> {
     if (this.initialized) {
       return;
     }
 
+    /*
+     * The queue directory is created from the
+     * state-file path. A malformed/missing state
+     * file must never prevent Veyra from starting.
+     */
     await fs.mkdir(path.dirname(this.stateFilePath), {
       recursive: true,
     });
@@ -133,11 +168,12 @@ export class ModelDownloadQueue {
             const restored = item as DownloadQueueItem;
 
             /*
-             * A process cannot continue
-             * executing after Veyra exits.
+             * A process cannot continue executing
+             * after Veyra exits.
              *
-             * Therefore active states are
-             * restored as paused.
+             * Therefore active states are restored
+             * as paused so the partial artifact can
+             * be resumed safely later.
              */
             const state =
               restored.state === "downloading" ||
@@ -158,8 +194,8 @@ export class ModelDownloadQueue {
       }
     } catch {
       /*
-       * A missing or malformed queue
-       * must never prevent Veyra from
+       * Missing or malformed persisted queue state
+       * must never prevent the application from
        * starting.
        */
     }
@@ -168,6 +204,12 @@ export class ModelDownloadQueue {
 
     this.schedulePump();
   }
+
+  /**
+   * --------------------------------------------------------------------------
+   * Queue insertion
+   * --------------------------------------------------------------------------
+   */
 
   public async enqueue(
     modelId: string,
@@ -191,10 +233,31 @@ export class ModelDownloadQueue {
       return existing;
     }
 
+    /*
+     * The queue is deliberately single-artifact
+     * for backwards compatibility.
+     *
+     * Complete multi-artifact installations are
+     * handled by ModelPackageDownloader.
+     */
+    const primaryArtifact = getPrimaryModelArtifact(model);
+
+    if (!primaryArtifact) {
+      throw new Error(
+        `Model "${model.id}" does not have a primary downloadable artifact.`,
+      );
+    }
+
     const normalizedDirectory = path.resolve(destinationDirectory);
 
+    const queuedAt = Date.now();
+
+    const itemId = `${modelId}-${queuedAt}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+
     const item: DownloadQueueItem = Object.freeze({
-      id: `${modelId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      id: itemId,
 
       modelId,
 
@@ -204,9 +267,9 @@ export class ModelDownloadQueue {
 
       bytesDownloaded: 0,
 
-      totalBytes: model.artifact?.sizeBytes ?? null,
+      totalBytes: primaryArtifact.sizeBytes,
 
-      percentage: model.artifact?.sizeBytes ? 0 : null,
+      percentage: primaryArtifact.sizeBytes > 0 ? 0 : null,
 
       speedBytesPerSecond: 0,
 
@@ -214,7 +277,7 @@ export class ModelDownloadQueue {
 
       priority: Math.floor(priority),
 
-      queuedAt: Date.now(),
+      queuedAt,
 
       startedAt: null,
 
@@ -232,6 +295,12 @@ export class ModelDownloadQueue {
     return item;
   }
 
+  /**
+   * --------------------------------------------------------------------------
+   * Queries
+   * --------------------------------------------------------------------------
+   */
+
   public get(itemId: string): DownloadQueueItem | undefined {
     return this.items.get(itemId);
   }
@@ -245,6 +314,12 @@ export class ModelDownloadQueue {
       (a, b) => b.priority - a.priority || a.queuedAt - b.queuedAt,
     );
   }
+
+  /**
+   * --------------------------------------------------------------------------
+   * Waiting
+   * --------------------------------------------------------------------------
+   */
 
   public async waitForCompletion(itemId: string): Promise<DownloadQueueItem> {
     await this.ensureInitialized();
@@ -277,14 +352,23 @@ export class ModelDownloadQueue {
       this.waiters.set(itemId, existing);
 
       /*
-       * The completion event is driven
-       * by runItem(). This fallback timer
-       * protects callers if a queue item
-       * was externally mutated.
+       * The completion event is normally
+       * driven by runItem().
+       *
+       * This polling fallback protects a
+       * caller from becoming permanently
+       * blocked if persisted/external state
+       * changes independently.
        */
       void this.monitorWaiter(itemId);
     });
   }
+
+  /**
+   * --------------------------------------------------------------------------
+   * Pause / resume / cancel / retry
+   * --------------------------------------------------------------------------
+   */
 
   public async pause(itemId: string): Promise<void> {
     const item = this.getRequired(itemId);
@@ -314,7 +398,9 @@ export class ModelDownloadQueue {
 
     this.replaceItem(item, {
       state: "queued",
+
       error: null,
+
       completedAt: null,
     });
 
@@ -330,10 +416,19 @@ export class ModelDownloadQueue {
 
     const model = this.modelResolver(item.modelId);
 
-    if (model?.artifact) {
+    const primaryArtifact = model ? getPrimaryModelArtifact(model) : undefined;
+
+    /*
+     * Remove the partial primary artifact.
+     *
+     * Complete package installations do not use
+     * this queue path; ModelPackageDownloader owns
+     * multi-artifact cleanup.
+     */
+    if (primaryArtifact) {
       const partialPath = path.join(
         path.resolve(item.destinationDirectory),
-        `${model.artifact.filename}.part`,
+        `${primaryArtifact.filename}.part`,
       );
 
       await this.downloader.removePartial(partialPath);
@@ -341,7 +436,9 @@ export class ModelDownloadQueue {
 
     this.replaceItem(item, {
       state: "cancelled",
+
       completedAt: Date.now(),
+
       error: null,
     });
 
@@ -359,7 +456,9 @@ export class ModelDownloadQueue {
 
     this.replaceItem(item, {
       state: "queued",
+
       error: null,
+
       completedAt: null,
     });
 
@@ -367,6 +466,12 @@ export class ModelDownloadQueue {
 
     this.schedulePump();
   }
+
+  /**
+   * --------------------------------------------------------------------------
+   * Queue maintenance
+   * --------------------------------------------------------------------------
+   */
 
   public async clearCompleted(): Promise<void> {
     for (const item of this.items.values()) {
@@ -385,6 +490,13 @@ export class ModelDownloadQueue {
   }
 
   public async dispose(): Promise<void> {
+    /*
+     * Abort currently executing downloads first.
+     *
+     * Partial artifacts are intentionally retained
+     * by downloader policy so interrupted downloads
+     * can be resumed later.
+     */
     for (const controller of this.abortControllers.values()) {
       controller.abort();
     }
@@ -400,6 +512,12 @@ export class ModelDownloadQueue {
 
     this.waiters.clear();
   }
+
+  /**
+   * --------------------------------------------------------------------------
+   * Scheduler
+   * --------------------------------------------------------------------------
+   */
 
   private schedulePump(): void {
     if (this.pumpScheduled) {
@@ -433,13 +551,42 @@ export class ModelDownloadQueue {
     }
   }
 
+  /**
+   * --------------------------------------------------------------------------
+   * Item execution
+   * --------------------------------------------------------------------------
+   */
+
   private async runItem(originalItem: DownloadQueueItem): Promise<void> {
     const model = this.modelResolver(originalItem.modelId);
 
     if (!model) {
       this.replaceItem(originalItem, {
         state: "failed",
+
         error: `Model "${originalItem.modelId}" is no longer registered.`,
+      });
+
+      await this.persistNow();
+
+      this.resolveWaitersForCurrentState(originalItem.id);
+
+      return;
+    }
+
+    /*
+     * IMPORTANT:
+     *
+     * ModelDownloader now operates on an explicit
+     * artifact rather than a whole ModelDefinition.
+     */
+    const artifact = getPrimaryModelArtifact(model);
+
+    if (!artifact) {
+      this.replaceItem(originalItem, {
+        state: "failed",
+
+        error: `Model "${model.id}" does not have a primary downloadable artifact.`,
       });
 
       await this.persistNow();
@@ -455,26 +602,56 @@ export class ModelDownloadQueue {
 
     this.replaceItem(originalItem, {
       state: "preparing",
+
       startedAt: Date.now(),
+
       error: null,
     });
 
     await this.persistNow();
 
     try {
-      const download = await this.downloader.download(model, {
+      /*
+       * Build the downloader options separately.
+       *
+       * This is the current ModelDownloader contract.
+       */
+      const downloadOptions: ModelDownloadOptions = {
         destinationDirectory: originalItem.destinationDirectory,
 
         signal: controller.signal,
 
         keepPartialOnAbort: true,
 
-        onProgress: (progress) =>
-          this.handleProgress(originalItem.id, progress),
-      });
+        onProgress: (progress: ModelDownloadProgress) => {
+          this.handleProgress(originalItem.id, progress);
+        },
+      };
+
+      /*
+       * Explicit artifact download.
+       *
+       * DO NOT call:
+       *
+       *   this.downloader.download(model, options)
+       *
+       * because the current downloader requires:
+       *
+       *   modelId + artifact + options
+       */
+      const download = await this.downloader.downloadArtifact(
+        model.id,
+        artifact,
+        downloadOptions,
+      );
 
       const latest = this.getRequired(originalItem.id);
 
+      /*
+       * Pause and cancel may have changed
+       * the state while the network request
+       * was finishing.
+       */
       if (latest.state === "paused") {
         return;
       }
@@ -490,7 +667,7 @@ export class ModelDownloadQueue {
 
         bytesDownloaded: download.bytesDownloaded,
 
-        totalBytes: download.bytesDownloaded,
+        totalBytes: artifact.sizeBytes,
 
         percentage: 100,
 
@@ -528,20 +705,25 @@ export class ModelDownloadQueue {
       const message =
         error instanceof Error ? error.message : "Model download failed.";
 
-      const failed = this.replaceItem(latest, {
+      this.replaceItem(latest, {
         state: "failed",
+
         error: message,
       });
 
       await this.persistNow();
 
       this.rejectWaiters(originalItem.id, error);
-
-      void failed;
     } finally {
       this.abortControllers.delete(originalItem.id);
     }
   }
+
+  /**
+   * --------------------------------------------------------------------------
+   * Progress handling
+   * --------------------------------------------------------------------------
+   */
 
   private handleProgress(
     itemId: string,
@@ -561,6 +743,15 @@ export class ModelDownloadQueue {
       state = "downloading";
     } else if (progress.phase === "verifying") {
       state = "verifying";
+    } else if (progress.phase === "completed") {
+      /*
+       * Do not mark completed here permanently.
+       *
+       * runItem() performs the authoritative
+       * completed transition once the downloader
+       * returns successfully.
+       */
+      state = item.state === "cancelled" ? "cancelled" : item.state;
     }
 
     const updated = this.replaceItem(item, {
@@ -583,6 +774,12 @@ export class ModelDownloadQueue {
 
     this.schedulePersistence();
   }
+
+  /**
+   * --------------------------------------------------------------------------
+   * Item mutation
+   * --------------------------------------------------------------------------
+   */
 
   private replaceItem(
     item: DownloadQueueItem,
@@ -607,6 +804,12 @@ export class ModelDownloadQueue {
 
     return item;
   }
+
+  /**
+   * --------------------------------------------------------------------------
+   * Persistence
+   * --------------------------------------------------------------------------
+   */
 
   private schedulePersistence(): void {
     this.persistenceRequested = true;
@@ -692,6 +895,12 @@ export class ModelDownloadQueue {
       await this.initialize();
     }
   }
+
+  /**
+   * --------------------------------------------------------------------------
+   * Waiter handling
+   * --------------------------------------------------------------------------
+   */
 
   private resolveWaiters(itemId: string, item: DownloadQueueItem): void {
     const waiters = this.waiters.get(itemId);

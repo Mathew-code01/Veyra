@@ -53,19 +53,77 @@ export interface ModelLicense {
 }
 
 export interface ModelArtifact {
+  /**
+   * Stable artifact identifier inside the model package.
+   *
+   * Examples:
+   *
+   * model
+   * mmproj
+   * tokenizer
+   * voices
+   */
+  readonly id: string;
+
+  /**
+   * Download location.
+   */
   readonly url: string;
-  readonly sha256?: string;
+
+  /**
+   * Exact filename on disk.
+   */
   readonly filename: string;
-  readonly sizeBytes?: number;
+
+  /**
+   * Exact expected byte size.
+   */
+  readonly sizeBytes: number;
+
+  /**
+   * Required SHA-256.
+   */
+  readonly sha256: string;
+
+  /**
+   * Indicates the artifact containing the primary model.
+   */
+  readonly role:
+    | "model"
+    | "projector"
+    | "tokenizer"
+    | "config"
+    | "voice"
+    | "runtime"
+    | "asset";
+
+  /**
+   * Optional runtime-specific metadata.
+   */
+  readonly tags?: readonly string[];
+}
+
+export interface ModelPackage {
+  readonly artifacts: readonly ModelArtifact[];
+
+  /**
+   * Minimum number of files required before the package
+   * can be considered completely installed.
+   */
+  readonly requiredArtifactIds: readonly string[];
 }
 
 export interface ModelDefinition {
   readonly id: string;
+
   readonly displayName: string;
+
   readonly family: string;
+
   readonly version?: string;
 
   readonly modality: ModelModality;
+
   readonly runtime: ModelRuntime;
 
   readonly availability: ModelAvailability;
@@ -80,6 +138,15 @@ export interface ModelDefinition {
 
   readonly license: ModelLicense;
 
+  readonly package?: ModelPackage;
+
+  /**
+   * @deprecated
+   * Use package.artifacts and getPrimaryModelArtifact().
+   *
+   * This field exists only as a migration bridge
+   * for legacy installation/recovery components.
+   */
   readonly artifact?: ModelArtifact;
 
   readonly supportedHardwareTiers: readonly HardwareTier[];
@@ -90,6 +157,8 @@ export interface ModelDefinition {
 
   readonly enabledByDefault: boolean;
 }
+
+
 
 const GB = 1024 ** 3;
 
@@ -764,6 +833,48 @@ const MODEL_DEFINITIONS: readonly ModelDefinition[] = [
   },
 ];
 
+
+export function getModelPackage(model: ModelDefinition): ModelPackage {
+  if (!model.package) {
+    throw new Error(
+      `Model "${model.id}" does not define an installable package.`,
+    );
+  }
+
+  return model.package;
+}
+
+export function getModelArtifacts(
+  model: ModelDefinition,
+): readonly ModelArtifact[] {
+  return getModelPackage(model).artifacts;
+}
+
+// core/models/ModelRegistry.ts
+
+export function getPrimaryModelArtifact(
+  model: ModelDefinition,
+): ModelArtifact | undefined {
+  const artifacts = getModelArtifacts(model);
+
+  return artifacts.find(
+    (artifact) => artifact.role === "model",
+  );
+}
+
+export function getRequiredModelArtifacts(
+  model: ModelDefinition,
+): readonly ModelArtifact[] {
+  const modelPackage = getModelPackage(model);
+
+  const required = new Set(modelPackage.requiredArtifactIds);
+
+  return Object.freeze(
+    modelPackage.artifacts.filter((artifact) => required.has(artifact.id)),
+  );
+}
+
+
 export class ModelRegistry {
   private readonly models = new Map<string, ModelDefinition>();
 
@@ -780,7 +891,20 @@ export class ModelRegistry {
       throw new Error(`Model "${model.id}" is already registered.`);
     }
 
-    this.models.set(model.id, Object.freeze(model));
+    const primaryArtifact =
+      model.artifact ??
+      model.package?.artifacts.find((artifact) => artifact.role === "model");
+
+    const normalizedModel: ModelDefinition = {
+      ...model,
+      ...(primaryArtifact
+        ? {
+            artifact: primaryArtifact,
+          }
+        : {}),
+    };
+
+    this.models.set(model.id, Object.freeze(normalizedModel));
   }
 
   public unregister(modelId: string): boolean {

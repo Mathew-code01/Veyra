@@ -2,14 +2,24 @@
 
 import type { HardwareProfile } from "../../hardware/HardwareProfile";
 
-import type { ModelDefinition } from "../ModelRegistry";
+import type { ModelArtifact, ModelDefinition } from "../ModelRegistry";
 
 import type {
   ModelDownloadProgress,
   ModelDownloadResult,
 } from "../ModelDownloader";
 
-import type { ModelManifest } from "../storage/ModelManifest";
+import {
+  ModelPackageDownloader,
+  type ModelPackageArtifactDownload,
+  type ModelPackageDownloadProgress,
+  type ModelPackageDownloadResult,
+} from "../ModelPackageDownloader";
+
+import type {
+  ModelManifest,
+  ModelManifestArtifact,
+} from "../storage/ModelManifest";
 
 import { ModelStorage, type StoredModel } from "../storage/ModelStorage";
 
@@ -22,15 +32,14 @@ import {
   type ModelInstallationPlan,
 } from "./ModelInstallationPlan";
 
-import {
-  ModelDownloadQueue,
-  type QueueItemProgressEvent,
-} from "./ModelDownloadQueue";
+import { ModelDownloadQueue } from "./ModelDownloadQueue";
 
 export interface ModelInstallationManagerOptions {
   readonly queue: ModelDownloadQueue;
 
   readonly storage: ModelStorage;
+
+  readonly packageDownloader?: ModelPackageDownloader;
 
   readonly diskSpaceGuard?: DiskSpaceGuard;
 
@@ -58,7 +67,17 @@ export interface PrepareModelInstallResult {
 export interface ModelInstallationResult {
   readonly model: ModelDefinition;
 
+  /**
+   * Primary model artifact.
+   *
+   * Kept for compatibility with ModelManager.
+   */
   readonly download: ModelDownloadResult;
+
+  /**
+   * Complete package result.
+   */
+  readonly packageDownload: ModelPackageDownloadResult;
 
   readonly manifest: ModelManifest;
 
@@ -76,13 +95,31 @@ export interface InstallModelOptions {
 
   readonly signal?: AbortSignal;
 
+  readonly overwrite?: boolean;
+
   readonly onProgress?: (progress: ModelDownloadProgress) => void;
+
+  readonly onPackageProgress?: (progress: ModelPackageDownloadProgress) => void;
+}
+
+function assertPackage(
+  model: ModelDefinition,
+): NonNullable<ModelDefinition["package"]> {
+  if (!model.package) {
+    throw new Error(
+      `Model "${model.id}" does not have a downloadable package.`,
+    );
+  }
+
+  return model.package;
 }
 
 export class ModelInstallationManager {
   private readonly diskSpaceGuard: DiskSpaceGuard;
 
   private readonly memoryPressureGuard: MemoryPressureGuard;
+
+  private readonly packageDownloader: ModelPackageDownloader;
 
   private readonly storage: ModelStorage;
 
@@ -94,6 +131,9 @@ export class ModelInstallationManager {
     this.storage = options.storage;
 
     this.queue = options.queue;
+
+    this.packageDownloader =
+      options.packageDownloader ?? new ModelPackageDownloader();
 
     this.diskSpaceGuard = options.diskSpaceGuard ?? new DiskSpaceGuard();
 
@@ -107,6 +147,10 @@ export class ModelInstallationManager {
 
   public getQueue(): ModelDownloadQueue {
     return this.queue;
+  }
+
+  public getPackageDownloader(): ModelPackageDownloader {
+    return this.packageDownloader;
   }
 
   public buildPlan(
@@ -123,7 +167,9 @@ export class ModelInstallationManager {
   ): Promise<PrepareModelInstallResult> {
     const warnings: string[] = [];
 
-    if (!model.artifact) {
+    const modelPackage = model.package;
+
+    if (!modelPackage) {
       return Object.freeze({
         model,
 
@@ -140,20 +186,21 @@ export class ModelInstallationManager {
         canLoadNow: false,
 
         warnings: Object.freeze([
-          "No downloadable artifact is configured for this model.",
+          "No downloadable package is configured for this model.",
         ]),
       });
     }
 
+    const packageBytes = modelPackage.artifacts.reduce(
+      (total: number, artifact: ModelArtifact) => total + artifact.sizeBytes,
+      0,
+    );
+
     const estimatedBytes = Math.max(
-      model.artifact.sizeBytes ?? 0,
+      packageBytes,
       model.requirements.estimatedDiskBytes,
     );
 
-    /*
-     * DiskSpaceGuard expects the directory
-     * to exist.
-     */
     await this.storage.createModelDirectory(model);
 
     const disk = await this.diskSpaceGuard.check(
@@ -171,7 +218,7 @@ export class ModelInstallationManager {
 
     if (!memory.safe) {
       warnings.push(
-        `Current memory availability is insufficient. The model can remain downloaded, but Veyra should not load it until enough memory is available.`,
+        "Current memory availability is insufficient. The model can remain downloaded, but Veyra should not load it until enough memory is available.",
       );
     }
 
@@ -194,6 +241,12 @@ export class ModelInstallationManager {
     });
   }
 
+  /**
+   * Legacy single-item queue entry point.
+   *
+   * Complete packages are installed by
+   * ModelPackageDownloader through installModel().
+   */
   public async enqueueModel(
     model: ModelDefinition,
     destinationDirectory: string,
@@ -225,10 +278,9 @@ export class ModelInstallationManager {
   }
 
   /**
-   * Return a verified persistent installation
-   * without downloading anything.
+   * Return a verified persistent installation.
    *
-   * Used during Veyra startup/recovery.
+   * Never downloads.
    */
   public async getInstalledModel(
     model: ModelDefinition,
@@ -239,7 +291,7 @@ export class ModelInstallationManager {
   }
 
   /**
-   * Complete production installation flow.
+   * Complete production package installation.
    */
   public async installModel(
     model: ModelDefinition,
@@ -251,11 +303,14 @@ export class ModelInstallationManager {
       );
     }
 
-    if (!model.artifact) {
-      throw new Error(
-        `Model "${model.id}" does not have a downloadable artifact.`,
-      );
-    }
+    /*
+     * Validate that a package exists.
+     *
+     * The returned variable is intentionally
+     * not retained because the actual package
+     * downloader validates the package again.
+     */
+    assertPackage(model);
 
     if (options.signal?.aborted) {
       throw new DOMException("Model installation was aborted.", "AbortError");
@@ -264,9 +319,8 @@ export class ModelInstallationManager {
     await this.storage.initialize();
 
     /*
-     * First consult persistent storage.
-     *
-     * This prevents duplicate downloads.
+     * Never redownload a package that is already
+     * verified and persisted.
      */
     const existing = await this.storage.getStoredModel(model);
 
@@ -275,6 +329,9 @@ export class ModelInstallationManager {
         model,
 
         download: this.createDownloadResultFromStoredModel(existing),
+
+        packageDownload:
+          this.createPackageDownloadResultFromStoredModel(existing),
 
         manifest: existing.manifest,
 
@@ -304,183 +361,200 @@ export class ModelInstallationManager {
       );
     }
 
-    /*
-     * Queue owns the download.
-     */
-    const item = await this.enqueueModel(model, modelDirectory, {
-      priority: options.priority ?? 0,
+    if (options.overwrite) {
+      await this.storage.remove(model);
 
-      requireMemorySafety: options.requireMemorySafety ?? false,
+      await this.storage.createModelDirectory(model);
+    }
+
+    /*
+     * PackageDownloader owns the complete
+     * multi-artifact installation.
+     */
+    const packageDownload = await this.packageDownloader.download(model, {
+      destinationDirectory: modelDirectory,
+
+      overwrite: options.overwrite,
+
+      signal: options.signal,
+
+      keepPartialOnAbort: true,
+
+      onProgress: (progress: ModelPackageDownloadProgress) => {
+        /*
+         * Always expose package progress.
+         */
+        options.onPackageProgress?.(progress);
+
+        /*
+         * ModelManager still expects the
+         * legacy ModelDownloadProgress shape.
+         *
+         * Do not attempt to inspect
+         * primaryArtifactId here because
+         * ModelPackageDownloadProgress does
+         * not contain that property.
+         */
+        options.onProgress?.(
+          Object.freeze({
+            modelId: progress.modelId,
+
+            filename: progress.filename,
+
+            bytesDownloaded: progress.bytesDownloaded,
+
+            totalBytes: progress.totalBytes,
+
+            percentage: progress.percentage,
+
+            speedBytesPerSecond: progress.speedBytesPerSecond,
+
+            resumed: progress.resumed,
+
+            phase: progress.phase,
+          }),
+        );
+      },
     });
 
     /*
-     * A caller can cancel the queued
-     * installation through its AbortSignal.
+     * All package artifacts have now been
+     * downloaded and individually verified.
+     *
+     * Storage creates the persistent manifest
+     * and performs the final package-level
+     * integrity validation.
      */
-    let abortHandler: (() => void) | null = null;
+    const manifest = await this.storage.registerInstalledPackage(
+      model,
+      packageDownload,
+    );
 
-    if (options.signal) {
-      abortHandler = () => {
-        void this.queue.cancel(item.id).catch(() => undefined);
-      };
+    const stored = await this.storage.getStoredModel(model);
 
-      options.signal.addEventListener("abort", abortHandler, {
-        once: true,
-      });
-    }
+    if (!stored) {
+      await this.storage.markCorrupt(model);
 
-    try {
-      const completed = await this.queue.waitForCompletion(item.id);
-
-      if (completed.state !== "completed") {
-        throw new Error(`Model "${model.id}" did not complete installation.`);
-      }
-
-      const download = this.queue.getResult(item.id);
-
-      if (!download) {
-        throw new Error(
-          `Model "${model.id}" completed downloading, but the download result could not be recovered.`,
-        );
-      }
-
-      /*
-       * The downloader has already verified
-       * the checksum before atomic commit.
-       *
-       * Now persist the installation metadata.
-       */
-      const manifest = await this.storage.registerInstalledModel(
-        model,
-        download,
+      throw new Error(
+        `Model "${model.id}" was downloaded but failed final package integrity verification.`,
       );
-
-      /*
-       * Re-read through integrity verification.
-       */
-      const stored = await this.storage.getStoredModel(model);
-
-      if (!stored) {
-        throw new Error(
-          `Model "${model.id}" was downloaded but failed final storage verification.`,
-        );
-      }
-
-      return Object.freeze({
-        model,
-
-        download,
-
-        manifest,
-
-        storedModel: stored,
-
-        queuedItemId: item.id,
-
-        alreadyInstalled: false,
-      });
-    } finally {
-      if (options.signal && abortHandler) {
-        options.signal.removeEventListener("abort", abortHandler);
-      }
-    }
-  }
-
-  /**
-   * Convert a queue event to the public
-   * progress contract.
-   *
-   * This helper is available for composition
-   * code that subscribes to queue events.
-   */
-  public handleQueueProgress(
-    event: QueueItemProgressEvent,
-    targetItemId: string,
-    callback: ((progress: ModelDownloadProgress) => void) | undefined,
-  ): void {
-    if (event.item.id !== targetItemId) {
-      return;
     }
 
-    /*
-     * Queue currently stores only the
-     * normalized item, so this adapter
-     * intentionally leaves exact downloader
-     * timing metrics to the queue state.
-     */
-    callback?.({
-      modelId: event.item.modelId,
+    return Object.freeze({
+      model,
 
-      filename: this.resolveFilename(event.item.modelId),
+      download: packageDownload.primaryArtifact.result,
 
-      bytesDownloaded: event.item.bytesDownloaded,
+      packageDownload,
 
-      totalBytes: event.item.totalBytes,
+      manifest,
 
-      percentage: event.item.percentage,
+      storedModel: stored,
 
-      speedBytesPerSecond: event.item.speedBytesPerSecond,
+      queuedItemId: null,
 
-      resumed: event.item.resumed,
-
-      phase: this.mapQueueStateToProgressPhase(event.item.state),
+      alreadyInstalled: false,
     });
-  }
-
-  private resolveFilename(modelId: string): string {
-    const artifact = this.queue.getResult(modelId)?.filename;
-
-    if (artifact) {
-      return artifact;
-    }
-
-    return modelId;
-  }
-
-  private mapQueueStateToProgressPhase(
-    state:
-      | "queued"
-      | "preparing"
-      | "downloading"
-      | "verifying"
-      | "paused"
-      | "completed"
-      | "failed"
-      | "cancelled",
-  ): ModelDownloadProgress["phase"] {
-    switch (state) {
-      case "verifying":
-        return "verifying";
-
-      case "completed":
-        return "completed";
-
-      case "preparing":
-      case "queued":
-      case "paused":
-      case "failed":
-      case "cancelled":
-        return "preparing";
-
-      case "downloading":
-      default:
-        return "downloading";
-    }
   }
 
   private createDownloadResultFromStoredModel(
     stored: StoredModel,
   ): ModelDownloadResult {
+    const primary = stored.manifest.package.artifacts.find(
+      (artifact: ModelManifestArtifact) =>
+        artifact.id === stored.manifest.package.primaryArtifactId,
+    );
+
+    if (!primary) {
+      throw new Error(
+        `Stored model "${stored.modelId}" has no primary artifact.`,
+      );
+    }
+
     return Object.freeze({
       modelId: stored.modelId,
 
-      filename: stored.manifest.artifact.filename,
+      artifactId: primary.id,
 
-      filePath: stored.artifactPath,
+      filename: primary.filename,
 
-      bytesDownloaded: stored.manifest.artifact.sizeBytes,
+      filePath: primary.filePath,
 
-      sha256: stored.manifest.artifact.sha256,
+      bytesDownloaded: primary.sizeBytes,
+
+      sha256: primary.sha256,
+
+      resumed: false,
+
+      attempts: 0,
+    });
+  }
+
+  private createPackageDownloadResultFromStoredModel(
+    stored: StoredModel,
+  ): ModelPackageDownloadResult {
+    const artifacts: ModelPackageArtifactDownload[] =
+      stored.manifest.package.artifacts.map((artifact: ModelManifestArtifact) =>
+        Object.freeze({
+          artifact: Object.freeze({
+            id: artifact.id,
+
+            url: "",
+
+            filename: artifact.filename,
+
+            sizeBytes: artifact.sizeBytes,
+
+            sha256: artifact.sha256,
+
+            role: artifact.role,
+          }),
+
+          result: Object.freeze({
+            modelId: stored.modelId,
+
+            artifactId: artifact.id,
+
+            filename: artifact.filename,
+
+            filePath: artifact.filePath,
+
+            bytesDownloaded: artifact.sizeBytes,
+
+            sha256: artifact.sha256,
+
+            resumed: false,
+
+            attempts: 0,
+          }),
+        }),
+      );
+
+    const primaryArtifact = artifacts.find(
+      (item: ModelPackageArtifactDownload) =>
+        item.artifact.id === stored.manifest.package.primaryArtifactId,
+    );
+
+    if (!primaryArtifact) {
+      throw new Error(
+        `Stored model "${stored.modelId}" has no primary package artifact.`,
+      );
+    }
+
+    return Object.freeze({
+      modelId: stored.modelId,
+
+      artifacts: Object.freeze(artifacts),
+
+      primaryArtifact,
+
+      totalBytesDownloaded: artifacts.reduce(
+        (total: number, item: ModelPackageArtifactDownload) =>
+          total + item.result.bytesDownloaded,
+        0,
+      ),
+
+      totalBytesExpected: stored.manifest.package.totalSizeBytes,
 
       resumed: false,
 

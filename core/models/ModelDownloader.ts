@@ -1,70 +1,112 @@
 // core/models/ModelDownloader.ts
 
 import { createHash } from "node:crypto";
+
 import { createReadStream, promises as fs } from "node:fs";
+
 import { statfs } from "node:fs/promises";
+
 import path from "node:path";
 
-import type { ModelDefinition } from "./ModelRegistry";
+import type { ModelArtifact } from "./ModelRegistry";
+
 import { ModelDownloadError } from "./ModelDownloadError";
 
 export interface ModelDownloadProgress {
   readonly modelId: string;
+
   readonly filename: string;
+
   readonly bytesDownloaded: number;
+
   readonly totalBytes: number | null;
+
   readonly percentage: number | null;
+
   readonly speedBytesPerSecond: number;
+
   readonly resumed: boolean;
+
   readonly phase: "preparing" | "downloading" | "verifying" | "completed";
 }
 
 export interface ModelDownloadOptions {
   readonly destinationDirectory: string;
+
   readonly overwrite?: boolean;
+
   readonly signal?: AbortSignal;
+
   readonly keepPartialOnAbort?: boolean;
+
   readonly onProgress?: (progress: ModelDownloadProgress) => void;
+
   readonly maxRetries?: number;
+
   readonly retryBaseDelayMs?: number;
+
   readonly retryMaxDelayMs?: number;
+
   readonly requestTimeoutMs?: number;
+
   readonly diskCheckIntervalMs?: number;
+
   readonly diskSafetyBufferBytes?: number;
 }
 
 export interface ModelDownloadResult {
   readonly modelId: string;
+
+  readonly artifactId?: string;
+
   readonly filename: string;
+
   readonly filePath: string;
+
   readonly bytesDownloaded: number;
+
   readonly sha256: string;
+
   readonly resumed: boolean;
+
   readonly attempts: number;
 }
 
-type ModelDownloadAttemptResult = Omit<ModelDownloadResult, "attempts">;
-
 interface RangeInformation {
   readonly start: number;
+
   readonly end: number;
+
   readonly total: number | null;
 }
 
 interface AttemptSignal {
   readonly signal: AbortSignal;
+
   readonly didTimeout: () => boolean;
+
   readonly dispose: () => void;
 }
 
 interface DownloadAttemptContext {
+  readonly modelId: string;
+
+  readonly artifact: ModelArtifact;
+
   readonly finalPath: string;
+
   readonly partialPath: string;
+
   readonly partialBytes: number;
+
   readonly resumed: boolean;
+
   readonly expectedSha256: string;
+
   readonly requestTimeoutMs: number;
+
   readonly diskCheckIntervalMs: number;
+
   readonly diskSafetyBufferBytes: number;
 }
 
@@ -90,13 +132,13 @@ function normalizeSha256(value: string): string {
 
 function getErrorCode(error: unknown): string | undefined {
   if (error && typeof error === "object" && "code" in error) {
-    const code = (
+    const value = (
       error as {
         code?: unknown;
       }
     ).code;
 
-    return typeof code === "string" ? code : undefined;
+    return typeof value === "string" ? value : undefined;
   }
 
   return undefined;
@@ -124,15 +166,15 @@ function throwIfAborted(modelId: string, signal?: AbortSignal): void {
 
 function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new DOMException("Download was aborted.", "AbortError"));
-
-      return;
-    }
-
     let settled = false;
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
     const cleanup = (): void => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+
       signal?.removeEventListener("abort", abortHandler);
     };
 
@@ -143,14 +185,24 @@ function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
 
       settled = true;
 
-      clearTimeout(timer);
-
       cleanup();
 
-      reject(new DOMException("Download was aborted.", "AbortError"));
+      reject(new DOMException("Operation was aborted.", "AbortError"));
     };
 
-    const timer = setTimeout(() => {
+    if (signal?.aborted) {
+      abortHandler();
+
+      return;
+    }
+
+    if (signal) {
+      signal.addEventListener("abort", abortHandler, {
+        once: true,
+      });
+    }
+
+    timer = setTimeout(() => {
       if (settled) {
         return;
       }
@@ -161,12 +213,6 @@ function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
 
       resolve();
     }, milliseconds);
-
-    if (signal) {
-      signal.addEventListener("abort", abortHandler, {
-        once: true,
-      });
-    }
   });
 }
 
@@ -180,7 +226,7 @@ async function calculateFileSha256(filePath: string): Promise<string> {
       hash.update(chunk);
     });
 
-    stream.once("end", resolve);
+    stream.once("end", () => resolve());
 
     stream.once("error", reject);
   });
@@ -189,65 +235,36 @@ async function calculateFileSha256(filePath: string): Promise<string> {
 }
 
 export class ModelDownloader {
+  /**
+   * Backwards-compatible convenience API.
+   *
+   * New package-aware code should use
+   * downloadArtifact() directly.
+   */
   public async download(
-    model: ModelDefinition,
+    modelId: string,
+    artifact: ModelArtifact,
     options: ModelDownloadOptions,
   ): Promise<ModelDownloadResult> {
-    const artifact = model.artifact;
+    return this.downloadArtifact(modelId, artifact, options);
+  }
 
-    if (!artifact) {
-      throw new ModelDownloadError(
-        `Model "${model.id}" does not define a downloadable artifact.`,
-        {
-          code: "INVALID_ARTIFACT",
+  public async downloadArtifact(
+    modelId: string,
+    artifact: ModelArtifact,
+    options: ModelDownloadOptions,
+  ): Promise<ModelDownloadResult> {
+    const normalizedModelId = modelId.trim();
 
-          modelId: model.id,
-
-          retryable: false,
-        },
-      );
+    if (!normalizedModelId) {
+      throw new ModelDownloadError("A model id is required.", {
+        code: "INVALID_ARTIFACT",
+        modelId,
+        retryable: false,
+      });
     }
 
-    const modelId = model.id;
-
-    const filename = artifact.filename.trim();
-
-    const url = artifact.url.trim();
-
-    const expectedSha256 = normalizeSha256(artifact.sha256 ?? "");
-
-    if (!url) {
-      throw new ModelDownloadError(
-        `Model "${modelId}" has an empty artifact URL.`,
-        {
-          code: "INVALID_ARTIFACT",
-          modelId,
-          retryable: false,
-        },
-      );
-    }
-
-    if (!filename) {
-      throw new ModelDownloadError(
-        `Model "${modelId}" has an empty artifact filename.`,
-        {
-          code: "INVALID_ARTIFACT",
-          modelId,
-          retryable: false,
-        },
-      );
-    }
-
-    if (!/^[a-f0-9]{64}$/.test(expectedSha256)) {
-      throw new ModelDownloadError(
-        `Model "${modelId}" has an invalid SHA-256 checksum.`,
-        {
-          code: "INVALID_ARTIFACT",
-          modelId,
-          retryable: false,
-        },
-      );
-    }
+    this.validateArtifact(normalizedModelId, artifact);
 
     const destinationDirectory = path.resolve(options.destinationDirectory);
 
@@ -255,13 +272,25 @@ export class ModelDownloader {
       recursive: true,
     });
 
+    const filename = artifact.filename.trim();
+
     const finalPath = path.join(destinationDirectory, filename);
 
     const partialPath = `${finalPath}.part`;
 
-    this.assertSafeArtifactPath(destinationDirectory, finalPath, modelId);
+    this.assertSafeArtifactPath(
+      destinationDirectory,
+      finalPath,
+      normalizedModelId,
+    );
 
-    this.assertSafeArtifactPath(destinationDirectory, partialPath, modelId);
+    this.assertSafeArtifactPath(
+      destinationDirectory,
+      partialPath,
+      normalizedModelId,
+    );
+
+    const expectedSha256 = normalizeSha256(artifact.sha256);
 
     const maxRetries = Math.max(
       0,
@@ -295,19 +324,19 @@ export class ModelDownloader {
       ),
     );
 
-    throwIfAborted(modelId, options.signal);
+    throwIfAborted(normalizedModelId, options.signal);
 
     options.onProgress?.(
       Object.freeze({
-        modelId,
+        modelId: normalizedModelId,
 
         filename,
 
         bytesDownloaded: 0,
 
-        totalBytes: artifact.sizeBytes ?? null,
+        totalBytes: artifact.sizeBytes,
 
-        percentage: artifact.sizeBytes ? 0 : null,
+        percentage: 0,
 
         speedBytesPerSecond: 0,
 
@@ -326,8 +355,30 @@ export class ModelDownloader {
     ) {
       const stat = await fs.stat(finalPath);
 
+      options.onProgress?.(
+        Object.freeze({
+          modelId: normalizedModelId,
+
+          filename,
+
+          bytesDownloaded: stat.size,
+
+          totalBytes: artifact.sizeBytes,
+
+          percentage: 100,
+
+          speedBytesPerSecond: 0,
+
+          resumed: false,
+
+          phase: "completed",
+        }),
+      );
+
       return Object.freeze({
-        modelId,
+        modelId: normalizedModelId,
+
+        artifactId: artifact.id,
 
         filename,
 
@@ -344,19 +395,15 @@ export class ModelDownloader {
     }
 
     if (options.overwrite) {
-      await fs.rm(finalPath, {
-        force: true,
-      });
+      await fs.rm(finalPath, { force: true });
 
-      await fs.rm(partialPath, {
-        force: true,
-      });
+      await fs.rm(partialPath, { force: true });
     }
 
     let attempts = 0;
 
     while (true) {
-      throwIfAborted(modelId, options.signal);
+      throwIfAborted(normalizedModelId, options.signal);
 
       let partialBytes = await this.getFileSize(partialPath);
 
@@ -364,9 +411,7 @@ export class ModelDownloader {
         artifact.sizeBytes !== undefined &&
         partialBytes > artifact.sizeBytes
       ) {
-        await fs.rm(partialPath, {
-          force: true,
-        });
+        await fs.rm(partialPath, { force: true });
 
         partialBytes = 0;
       }
@@ -380,7 +425,7 @@ export class ModelDownloader {
         destinationDirectory,
         remainingBytes,
         diskSafetyBufferBytes,
-        modelId,
+        normalizedModelId,
       );
 
       const resumed = partialBytes > 0;
@@ -388,35 +433,37 @@ export class ModelDownloader {
       attempts += 1;
 
       try {
-        const result = await this.downloadAttempt(model, options, {
-          finalPath,
-
-          partialPath,
-
-          partialBytes,
-
-          resumed,
-
-          expectedSha256,
-
-          requestTimeoutMs,
-
-          diskCheckIntervalMs,
-
-          diskSafetyBufferBytes,
-        });
-
         return Object.freeze({
-          ...result,
+          ...(await this.downloadAttempt(
+            {
+              modelId: normalizedModelId,
 
+              artifact,
+
+              finalPath,
+
+              partialPath,
+
+              partialBytes,
+
+              resumed,
+
+              expectedSha256,
+
+              requestTimeoutMs,
+
+              diskCheckIntervalMs,
+
+              diskSafetyBufferBytes,
+            },
+            options,
+          )),
           attempts,
         });
       } catch (error) {
         if (error instanceof ModelDownloadError && error.code === "ABORTED") {
           if (options.keepPartialOnAbort === false) {
-            await fs.rm(partialPath, {
-              force: true,
-            });
+            await fs.rm(partialPath, { force: true });
           }
 
           throw error;
@@ -430,16 +477,13 @@ export class ModelDownloader {
           }
 
           throw new ModelDownloadError(
-            `Model "${modelId}" download failed after ${attempts} attempt${
+            `Download of "${normalizedModelId}" failed after ${attempts} attempt${
               attempts === 1 ? "" : "s"
             }.`,
             {
               code: "NETWORK",
-
-              modelId,
-
+              modelId: normalizedModelId,
               retryable: false,
-
               cause: error,
             },
           );
@@ -466,15 +510,11 @@ export class ModelDownloader {
   }
 
   public async remove(filePath: string): Promise<void> {
-    await fs.rm(filePath, {
-      force: true,
-    });
+    await fs.rm(filePath, { force: true });
   }
 
-  public async removePartial(partialFilePath: string): Promise<void> {
-    await fs.rm(partialFilePath, {
-      force: true,
-    });
+  public async removePartial(filePath: string): Promise<void> {
+    await fs.rm(filePath, { force: true });
   }
 
   public async exists(filePath: string): Promise<boolean> {
@@ -487,26 +527,86 @@ export class ModelDownloader {
     }
   }
 
-  private async downloadAttempt(
-    model: ModelDefinition,
-    options: ModelDownloadOptions,
-    context: DownloadAttemptContext,
-  ): Promise<ModelDownloadAttemptResult> {
-    const artifact = model.artifact;
-
-    if (!artifact) {
-      throw new ModelDownloadError(`Model "${model.id}" has no artifact.`, {
-        code: "INVALID_ARTIFACT",
-
-        modelId: model.id,
-
-        retryable: false,
-      });
+  private validateArtifact(modelId: string, artifact: ModelArtifact): void {
+    if (!artifact.id.trim()) {
+      throw new ModelDownloadError(
+        `Model "${modelId}" contains an artifact with an empty id.`,
+        {
+          code: "INVALID_ARTIFACT",
+          modelId,
+          retryable: false,
+        },
+      );
     }
+
+    if (!artifact.url.trim()) {
+      throw new ModelDownloadError(
+        `Artifact "${artifact.id}" for model "${modelId}" has an empty URL.`,
+        {
+          code: "INVALID_ARTIFACT",
+          modelId,
+          retryable: false,
+        },
+      );
+    }
+
+    if (!artifact.filename.trim()) {
+      throw new ModelDownloadError(
+        `Artifact "${artifact.id}" for model "${modelId}" has an empty filename.`,
+        {
+          code: "INVALID_ARTIFACT",
+          modelId,
+          retryable: false,
+        },
+      );
+    }
+
+    if (!Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes <= 0) {
+      throw new ModelDownloadError(
+        `Artifact "${artifact.id}" for model "${modelId}" must define a positive sizeBytes value.`,
+        {
+          code: "INVALID_ARTIFACT",
+          modelId,
+          retryable: false,
+        },
+      );
+    }
+
+    const sha256 = normalizeSha256(artifact.sha256);
+
+    if (!/^[a-f0-9]{64}$/.test(sha256)) {
+      throw new ModelDownloadError(
+        `Artifact "${artifact.id}" for model "${modelId}" has an invalid SHA-256 checksum.`,
+        {
+          code: "INVALID_ARTIFACT",
+          modelId,
+          retryable: false,
+        },
+      );
+    }
+  }
+
+  private async downloadAttempt(
+    context: DownloadAttemptContext,
+    options: ModelDownloadOptions,
+  ): Promise<Omit<ModelDownloadResult, "attempts">> {
+    const {
+      modelId,
+      artifact,
+      finalPath,
+      partialPath,
+      partialBytes,
+      expectedSha256,
+      requestTimeoutMs,
+      diskCheckIntervalMs,
+      diskSafetyBufferBytes,
+    } = context;
+
+    let resumed = partialBytes > 0;
 
     const attemptSignal = this.createAttemptSignal(
       options.signal,
-      context.requestTimeoutMs,
+      requestTimeoutMs,
     );
 
     let response: Response;
@@ -514,12 +614,11 @@ export class ModelDownloader {
     try {
       response = await fetch(
         artifact.url,
-        context.partialBytes > 0
+        partialBytes > 0
           ? {
               headers: {
-                Range: `bytes=${context.partialBytes}-`,
+                Range: `bytes=${partialBytes}-`,
               },
-
               signal: attemptSignal.signal,
             }
           : {
@@ -532,28 +631,22 @@ export class ModelDownloader {
       attemptSignal.dispose();
 
       if (options.signal?.aborted) {
-        throw new ModelDownloadError(`Download of "${model.id}" was aborted.`, {
+        throw new ModelDownloadError(`Download of "${modelId}" was aborted.`, {
           code: "ABORTED",
-
-          modelId: model.id,
-
+          modelId,
           retryable: false,
-
           cause: error,
         });
       }
 
       throw new ModelDownloadError(
         timedOut
-          ? `The download request for "${model.id}" timed out.`
-          : `Network error while downloading "${model.id}".`,
+          ? `The download request for "${modelId}" timed out.`
+          : `Network error while downloading "${modelId}".`,
         {
           code: timedOut ? "NETWORK_TIMEOUT" : "NETWORK",
-
-          modelId: model.id,
-
+          modelId,
           retryable: true,
-
           cause: error,
         },
       );
@@ -567,50 +660,44 @@ export class ModelDownloader {
       attemptSignal.dispose();
 
       if (
-        context.partialBytes > 0 &&
+        partialBytes > 0 &&
         serverTotal !== null &&
-        context.partialBytes === serverTotal
+        partialBytes === serverTotal
       ) {
-        return this.finalizePartialFile(model, options, context);
+        return this.finalizePartialFile(context, options);
       }
 
-      await fs.rm(context.partialPath, {
-        force: true,
-      });
+      await fs.rm(partialPath, { force: true });
 
       throw new ModelDownloadError(
-        `The server rejected the resume range for "${model.id}". The partial file has been reset safely.`,
+        `The server rejected the resume range for "${modelId}".`,
         {
           code: "RANGE_NOT_SATISFIABLE",
-
-          modelId: model.id,
-
+          modelId,
           retryable: true,
         },
       );
     }
 
     if (this.isRetryableHttpStatus(response.status)) {
-      const retryAfterMs = this.parseRetryAfterMs(
+      const retryAfter = this.parseRetryAfterMs(
         response.headers.get("retry-after"),
       );
 
       attemptSignal.dispose();
 
-      if (retryAfterMs !== null) {
+      if (retryAfter !== null) {
         await sleep(
-          Math.min(retryAfterMs, DEFAULT_RETRY_MAX_DELAY_MS),
+          Math.min(retryAfter, DEFAULT_RETRY_MAX_DELAY_MS),
           options.signal,
         );
       }
 
       throw new ModelDownloadError(
-        `Server returned retryable HTTP status ${response.status} for "${model.id}".`,
+        `Server returned retryable HTTP status ${response.status} for "${modelId}".`,
         {
           code: "NETWORK",
-
-          modelId: model.id,
-
+          modelId,
           retryable: true,
         },
       );
@@ -622,40 +709,28 @@ export class ModelDownloader {
       attemptSignal.dispose();
 
       throw new ModelDownloadError(
-        `Model download failed with HTTP ${response.status}: ${
+        `Model artifact download failed with HTTP ${response.status}: ${
           body || response.statusText
         }`,
         {
           code: "HTTP_PERMANENT_FAILURE",
-
-          modelId: model.id,
-
+          modelId,
           retryable: false,
         },
       );
     }
 
-    let actualPartialBytes = context.partialBytes;
+    let actualPartialBytes = partialBytes;
 
-    let resumed = context.resumed;
-
-    let totalBytes: number | null = artifact.sizeBytes ?? null;
+    let totalBytes: number | null = artifact.sizeBytes;
 
     const contentLength = this.parseContentLength(
       response.headers.get("content-length"),
     );
 
-    if (context.partialBytes > 0) {
+    if (partialBytes > 0) {
       if (response.status === 200) {
-        /*
-         * The server ignored Range.
-         *
-         * Never append a full response to an
-         * existing partial file.
-         */
-        await fs.rm(context.partialPath, {
-          force: true,
-        });
+        await fs.rm(partialPath, { force: true });
 
         actualPartialBytes = 0;
 
@@ -665,16 +740,14 @@ export class ModelDownloader {
           response.headers.get("content-range"),
         );
 
-        if (!range || range.start !== context.partialBytes) {
+        if (!range || range.start !== partialBytes) {
           attemptSignal.dispose();
 
           throw new ModelDownloadError(
-            `Server returned an invalid Content-Range while resuming "${model.id}".`,
+            `Server returned an invalid Content-Range for artifact "${artifact.id}" of "${modelId}".`,
             {
               code: "CONTENT_RANGE_MISMATCH",
-
-              modelId: model.id,
-
+              modelId,
               retryable: true,
             },
           );
@@ -685,9 +758,7 @@ export class ModelDownloader {
         }
 
         const expectedRemaining =
-          totalBytes !== null
-            ? Math.max(0, totalBytes - context.partialBytes)
-            : null;
+          totalBytes !== null ? Math.max(0, totalBytes - partialBytes) : null;
 
         if (
           expectedRemaining !== null &&
@@ -697,12 +768,10 @@ export class ModelDownloader {
           attemptSignal.dispose();
 
           throw new ModelDownloadError(
-            `Server Content-Length does not match the requested Range for "${model.id}".`,
+            `Server Content-Length does not match the requested range for artifact "${artifact.id}".`,
             {
               code: "CONTENT_LENGTH_MISMATCH",
-
-              modelId: model.id,
-
+              modelId,
               retryable: true,
             },
           );
@@ -710,40 +779,42 @@ export class ModelDownloader {
       }
     }
 
-    if (actualPartialBytes === 0 && response.status === 200) {
-      if (
-        artifact.sizeBytes !== undefined &&
-        contentLength !== null &&
-        contentLength !== artifact.sizeBytes
-      ) {
-        attemptSignal.dispose();
+    if (
+      actualPartialBytes === 0 &&
+      response.status === 200 &&
+      artifact.sizeBytes !== undefined &&
+      contentLength !== null &&
+      contentLength !== artifact.sizeBytes
+    ) {
+      attemptSignal.dispose();
 
-        throw new ModelDownloadError(
-          `Server Content-Length for "${model.id}" does not match the expected artifact size.`,
-          {
-            code: "CONTENT_LENGTH_MISMATCH",
+      throw new ModelDownloadError(
+        `Content-Length mismatch for artifact "${artifact.id}".`,
+        {
+          code: "CONTENT_LENGTH_MISMATCH",
+          modelId,
+          retryable: false,
+        },
+      );
+    }
 
-            modelId: model.id,
-
-            retryable: false,
-          },
-        );
-      }
-
-      if (contentLength !== null) {
-        totalBytes = contentLength;
-      }
+    if (
+      actualPartialBytes === 0 &&
+      response.status === 200 &&
+      contentLength !== null
+    ) {
+      totalBytes = contentLength;
     }
 
     await this.assertEnoughDiskSpace(
       options.destinationDirectory,
       totalBytes !== null ? Math.max(0, totalBytes - actualPartialBytes) : 0,
-      context.diskSafetyBufferBytes,
-      model.id,
+      diskSafetyBufferBytes,
+      modelId,
     );
 
     const fileHandle = await fs.open(
-      context.partialPath,
+      partialPath,
       actualPartialBytes > 0 && response.status === 206 ? "a" : "w",
     );
 
@@ -751,14 +822,15 @@ export class ModelDownloader {
       await this.writeResponse(
         response,
         fileHandle,
-        model,
+        modelId,
         artifact.filename,
         actualPartialBytes,
         totalBytes,
         resumed,
         options,
-        context.diskCheckIntervalMs,
-        context.diskSafetyBufferBytes,
+        diskCheckIntervalMs,
+        diskSafetyBufferBytes,
+        attemptSignal,
       );
 
       await fileHandle.sync();
@@ -769,40 +841,43 @@ export class ModelDownloader {
 
       if (isDiskFullError(error)) {
         throw new ModelDownloadError(
-          `The disk became full while downloading "${model.id}". The partial download has been preserved.`,
+          `The disk became full while downloading "${modelId}".`,
           {
             code: "DISK_SPACE",
-
-            modelId: model.id,
-
+            modelId,
             retryable: false,
-
             cause: error,
           },
         );
       }
 
       if (options.signal?.aborted) {
-        throw new ModelDownloadError(`Download of "${model.id}" was aborted.`, {
+        throw new ModelDownloadError(`Download of "${modelId}" was aborted.`, {
           code: "ABORTED",
-
-          modelId: model.id,
-
+          modelId,
           retryable: false,
-
           cause: error,
         });
       }
 
+      if (attemptSignal.didTimeout()) {
+        throw new ModelDownloadError(
+          `The download connection timed out for "${modelId}".`,
+          {
+            code: "NETWORK_TIMEOUT",
+            modelId,
+            retryable: true,
+            cause: error,
+          },
+        );
+      }
+
       throw new ModelDownloadError(
-        `The connection was interrupted while downloading "${model.id}". The partial download has been preserved.`,
+        `The connection was interrupted while downloading "${modelId}".`,
         {
           code: "NETWORK",
-
-          modelId: model.id,
-
+          modelId,
           retryable: true,
-
           cause: error,
         },
       );
@@ -812,52 +887,43 @@ export class ModelDownloader {
       await fileHandle.close();
     }
 
-    const stat = await fs.stat(context.partialPath);
+    const stat = await fs.stat(partialPath);
 
-    const downloadedBytes = stat.size;
-
-    if (totalBytes !== null && downloadedBytes !== totalBytes) {
+    if (totalBytes !== null && stat.size !== totalBytes) {
       throw new ModelDownloadError(
-        `Downloaded size mismatch for "${model.id}". Expected ${totalBytes} bytes but received ${downloadedBytes}.`,
+        `Downloaded size mismatch for "${modelId}". Expected ${totalBytes} bytes but received ${stat.size}.`,
         {
           code: "SIZE_MISMATCH",
-
-          modelId: model.id,
-
+          modelId,
           retryable: true,
         },
       );
     }
 
-    if (
-      artifact.sizeBytes !== undefined &&
-      downloadedBytes !== artifact.sizeBytes
-    ) {
+    if (stat.size !== artifact.sizeBytes) {
       throw new ModelDownloadError(
-        `Final artifact size mismatch for "${model.id}". Expected ${artifact.sizeBytes} bytes but received ${downloadedBytes}.`,
+        `Artifact "${artifact.id}" size mismatch. Expected ${artifact.sizeBytes} bytes but received ${stat.size}.`,
         {
           code: "SIZE_MISMATCH",
-
-          modelId: model.id,
-
+          modelId,
           retryable: true,
         },
       );
     }
 
-    throwIfAborted(model.id, options.signal);
+    throwIfAborted(modelId, options.signal);
 
     options.onProgress?.(
       Object.freeze({
-        modelId: model.id,
+        modelId,
 
         filename: artifact.filename,
 
-        bytesDownloaded: downloadedBytes,
+        bytesDownloaded: stat.size,
 
-        totalBytes,
+        totalBytes: artifact.sizeBytes,
 
-        percentage: totalBytes !== null ? 100 : null,
+        percentage: 100,
 
         speedBytesPerSecond: 0,
 
@@ -867,36 +933,32 @@ export class ModelDownloader {
       }),
     );
 
-    const actualSha256 = await calculateFileSha256(context.partialPath);
+    const actualSha256 = await calculateFileSha256(partialPath);
 
-    if (actualSha256 !== context.expectedSha256) {
-      await fs.rm(context.partialPath, {
-        force: true,
-      });
+    if (actualSha256 !== expectedSha256) {
+      await fs.rm(partialPath, { force: true });
 
       throw new ModelDownloadError(
-        `SHA-256 verification failed for "${model.id}". Expected ${context.expectedSha256} but received ${actualSha256}.`,
+        `SHA-256 verification failed for artifact "${artifact.id}" of "${modelId}".`,
         {
           code: "CHECKSUM_MISMATCH",
-
-          modelId: model.id,
-
+          modelId,
           retryable: true,
         },
       );
     }
 
-    await this.atomicCommit(context.partialPath, context.finalPath, model.id);
+    await this.atomicCommit(partialPath, finalPath, modelId);
 
     options.onProgress?.(
       Object.freeze({
-        modelId: model.id,
+        modelId,
 
         filename: artifact.filename,
 
-        bytesDownloaded: downloadedBytes,
+        bytesDownloaded: stat.size,
 
-        totalBytes,
+        totalBytes: artifact.sizeBytes,
 
         percentage: 100,
 
@@ -908,42 +970,37 @@ export class ModelDownloader {
       }),
     );
 
-    return {
-      modelId: model.id,
+    return Object.freeze({
+      modelId,
+
+      artifactId: artifact.id,
 
       filename: artifact.filename,
 
-      filePath: context.finalPath,
+      filePath: finalPath,
 
-      bytesDownloaded: downloadedBytes,
+      bytesDownloaded: stat.size,
 
       sha256: actualSha256,
 
       resumed,
-    };
+    });
   }
 
   private async finalizePartialFile(
-    model: ModelDefinition,
-    options: ModelDownloadOptions,
     context: DownloadAttemptContext,
-  ): Promise<ModelDownloadAttemptResult> {
-    const artifact = model.artifact;
-
+    options: ModelDownloadOptions,
+  ): Promise<Omit<ModelDownloadResult, "attempts">> {
     const stat = await fs.stat(context.partialPath);
 
-    if (artifact?.sizeBytes !== undefined && stat.size !== artifact.sizeBytes) {
-      await fs.rm(context.partialPath, {
-        force: true,
-      });
+    if (stat.size !== context.artifact.sizeBytes) {
+      await fs.rm(context.partialPath, { force: true });
 
       throw new ModelDownloadError(
-        `The completed partial artifact has an invalid size for "${model.id}".`,
+        `The resumed artifact "${context.artifact.id}" has an invalid size.`,
         {
           code: "SIZE_MISMATCH",
-
-          modelId: model.id,
-
+          modelId: context.modelId,
           retryable: true,
         },
       );
@@ -952,33 +1009,33 @@ export class ModelDownloader {
     const actualSha256 = await calculateFileSha256(context.partialPath);
 
     if (actualSha256 !== context.expectedSha256) {
-      await fs.rm(context.partialPath, {
-        force: true,
-      });
+      await fs.rm(context.partialPath, { force: true });
 
       throw new ModelDownloadError(
-        `SHA-256 verification failed for "${model.id}".`,
+        `SHA-256 verification failed for artifact "${context.artifact.id}".`,
         {
           code: "CHECKSUM_MISMATCH",
-
-          modelId: model.id,
-
+          modelId: context.modelId,
           retryable: true,
         },
       );
     }
 
-    await this.atomicCommit(context.partialPath, context.finalPath, model.id);
+    await this.atomicCommit(
+      context.partialPath,
+      context.finalPath,
+      context.modelId,
+    );
 
     options.onProgress?.(
       Object.freeze({
-        modelId: model.id,
+        modelId: context.modelId,
 
-        filename: artifact?.filename ?? "model",
+        filename: context.artifact.filename,
 
         bytesDownloaded: stat.size,
 
-        totalBytes: stat.size,
+        totalBytes: context.artifact.sizeBytes,
 
         percentage: 100,
 
@@ -990,10 +1047,12 @@ export class ModelDownloader {
       }),
     );
 
-    return {
-      modelId: model.id,
+    return Object.freeze({
+      modelId: context.modelId,
 
-      filename: artifact?.filename ?? "model",
+      artifactId: context.artifact.id,
+
+      filename: context.artifact.filename,
 
       filePath: context.finalPath,
 
@@ -1002,13 +1061,13 @@ export class ModelDownloader {
       sha256: actualSha256,
 
       resumed: true,
-    };
+    });
   }
 
   private async writeResponse(
     response: Response,
     fileHandle: Awaited<ReturnType<typeof fs.open>>,
-    model: ModelDefinition,
+    modelId: string,
     filename: string,
     initialBytes: number,
     totalBytes: number | null,
@@ -1016,15 +1075,14 @@ export class ModelDownloader {
     options: ModelDownloadOptions,
     diskCheckIntervalMs: number,
     diskSafetyBufferBytes: number,
+    attemptSignal: AttemptSignal,
   ): Promise<void> {
     if (!response.body) {
       throw new ModelDownloadError(
-        `Model "${model.id}" returned an empty response body.`,
+        `Artifact "${filename}" returned an empty response body.`,
         {
           code: "NETWORK",
-
-          modelId: model.id,
-
+          modelId,
           retryable: true,
         },
       );
@@ -1042,11 +1100,9 @@ export class ModelDownloader {
 
     try {
       while (true) {
-        throwIfAborted(model.id, options.signal);
+        throwIfAborted(modelId, options.signal);
 
-        const now = Date.now();
-
-        if (now - lastDiskCheckAt >= diskCheckIntervalMs) {
+        if (Date.now() - lastDiskCheckAt >= diskCheckIntervalMs) {
           const remaining =
             totalBytes !== null ? Math.max(0, totalBytes - bytesDownloaded) : 0;
 
@@ -1054,10 +1110,10 @@ export class ModelDownloader {
             options.destinationDirectory,
             remaining,
             diskSafetyBufferBytes,
-            model.id,
+            modelId,
           );
 
-          lastDiskCheckAt = now;
+          lastDiskCheckAt = Date.now();
         }
 
         const { done, value } = await reader.read();
@@ -1072,14 +1128,11 @@ export class ModelDownloader {
           } catch (error) {
             if (isDiskFullError(error)) {
               throw new ModelDownloadError(
-                `The disk became full while downloading "${model.id}". The partial download has been preserved.`,
+                `The disk became full while downloading "${modelId}".`,
                 {
                   code: "DISK_SPACE",
-
-                  modelId: model.id,
-
+                  modelId,
                   retryable: false,
-
                   cause: error,
                 },
               );
@@ -1091,13 +1144,10 @@ export class ModelDownloader {
           bytesDownloaded += value.byteLength;
         }
 
-        const currentTime = Date.now();
+        const now = Date.now();
 
-        if (currentTime - lastProgressAt >= PROGRESS_INTERVAL_MS) {
-          const elapsedSeconds = Math.max(
-            0.001,
-            (currentTime - startedAt) / 1_000,
-          );
+        if (now - lastProgressAt >= PROGRESS_INTERVAL_MS) {
+          const elapsedSeconds = Math.max(0.001, (now - startedAt) / 1_000);
 
           const speed = Math.max(
             0,
@@ -1111,7 +1161,7 @@ export class ModelDownloader {
 
           options.onProgress?.(
             Object.freeze({
-              modelId: model.id,
+              modelId,
 
               filename,
 
@@ -1129,11 +1179,22 @@ export class ModelDownloader {
             }),
           );
 
-          lastProgressAt = currentTime;
+          lastProgressAt = now;
         }
       }
     } finally {
       reader.releaseLock();
+    }
+
+    if (attemptSignal.didTimeout()) {
+      throw new ModelDownloadError(
+        `The download connection timed out for "${modelId}".`,
+        {
+          code: "NETWORK_TIMEOUT",
+          modelId,
+          retryable: true,
+        },
+      );
     }
   }
 
@@ -1143,18 +1204,7 @@ export class ModelDownloader {
     modelId: string,
   ): Promise<void> {
     try {
-      /*
-       * The partial file has already passed
-       * size and SHA-256 checks.
-       *
-       * Removing an old invalid final file
-       * first is safe because the verified
-       * .part file remains available until
-       * rename succeeds.
-       */
-      await fs.rm(finalPath, {
-        force: true,
-      });
+      await fs.rm(finalPath, { force: true });
 
       await fs.rename(partialPath, finalPath);
     } catch (error) {
@@ -1163,25 +1213,19 @@ export class ModelDownloader {
           `The filesystem temporarily blocked finalizing "${modelId}".`,
           {
             code: "FILE_SYSTEM",
-
             modelId,
-
             retryable: true,
-
             cause: error,
           },
         );
       }
 
       throw new ModelDownloadError(
-        `Veyra could not finalize the downloaded model "${modelId}".`,
+        `Veyra could not finalize the downloaded artifact for "${modelId}".`,
         {
           code: "FILE_SYSTEM",
-
           modelId,
-
           retryable: false,
-
           cause: error,
         },
       );
@@ -1191,7 +1235,7 @@ export class ModelDownloader {
   private async isExistingValidArtifact(
     filePath: string,
     expectedSha256: string,
-    expectedSizeBytes?: number,
+    expectedSizeBytes: number,
   ): Promise<boolean> {
     try {
       const stat = await fs.stat(filePath);
@@ -1200,11 +1244,11 @@ export class ModelDownloader {
         return false;
       }
 
-      if (expectedSizeBytes !== undefined && stat.size !== expectedSizeBytes) {
+      if (stat.size !== expectedSizeBytes) {
         return false;
       }
 
-      return await this.verifyChecksum(filePath, expectedSha256);
+      return this.verifyChecksum(filePath, expectedSha256);
     } catch {
       return false;
     }
@@ -1238,12 +1282,10 @@ export class ModelDownloader {
 
     if (freeBytes < requiredBytes) {
       throw new ModelDownloadError(
-        `Insufficient disk space to continue downloading "${modelId}". ${freeBytes} bytes are available and ${requiredBytes} bytes are required including safety buffer.`,
+        `Insufficient disk space to continue downloading "${modelId}".`,
         {
           code: "DISK_SPACE",
-
           modelId,
-
           retryable: false,
         },
       );
@@ -1327,9 +1369,7 @@ export class ModelDownloader {
 
     return {
       start,
-
       end,
-
       total,
     };
   }
@@ -1432,12 +1472,10 @@ export class ModelDownloader {
 
     if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) {
       throw new ModelDownloadError(
-        `Artifact path for "${modelId}" escapes the model download directory.`,
+        `Artifact path for "${modelId}" escapes the model directory.`,
         {
           code: "INVALID_ARTIFACT",
-
           modelId,
-
           retryable: false,
         },
       );
