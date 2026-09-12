@@ -1,6 +1,6 @@
 // core/ai/LocalModelProvider.ts
 
-import type { ModelDefinition, ModelModality } from "../models/ModelRegistry";
+import type { ModelDefinition } from "../models/ModelRegistry";
 
 import type { ModelManager } from "../models/ModelManager";
 
@@ -16,6 +16,12 @@ import type { AIProvider, AIProviderHealth } from "./AIProvider";
 import type { AIResponse, AIStreamChunk } from "./AIResponse";
 
 import { AIError } from "./AIError";
+
+/**
+ * ============================================================================
+ * Configuration
+ * ============================================================================
+ */
 
 /**
  * Configuration for the local Veyra model provider.
@@ -59,8 +65,11 @@ export interface LocalModelProviderOptions {
 }
 
 /**
- * Internal resolved request.
+ * ============================================================================
+ * Internal request representation
+ * ============================================================================
  */
+
 interface ResolvedLocalRequest {
   readonly model: ModelDefinition;
 
@@ -68,6 +77,12 @@ interface ResolvedLocalRequest {
 
   readonly prompt: string;
 }
+
+/**
+ * ============================================================================
+ * Helpers
+ * ============================================================================
+ */
 
 /**
  * Convert a conversation into the prompt expected by the
@@ -112,12 +127,18 @@ function messagesToPrompt(messages: readonly AIMessage[]): string {
     .join("\n\n");
 }
 
+/**
+ * Abort helper shared by all provider operations.
+ */
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException("Operation was aborted.", "AbortError");
   }
 }
 
+/**
+ * Safely convert an unknown error to a message.
+ */
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -127,11 +148,11 @@ function getErrorMessage(error: unknown): string {
 }
 
 /**
- * ========================================================================
- * Local model provider
- * ========================================================================
+ * ============================================================================
+ * Local Veyra model provider
+ * ============================================================================
  *
- * This is the bridge between:
+ * This class is the bridge between:
  *
  *   core/ai
  *       ↓
@@ -140,6 +161,8 @@ function getErrorMessage(error: unknown): string {
  *   ModelManager
  *       ↓
  *   ModelRuntimeManager
+ *       ↓
+ *   RuntimeRegistry
  *       ↓
  *   llama.cpp / whisper.cpp / ONNX / etc.
  *
@@ -182,9 +205,9 @@ export class LocalModelProvider implements AIProvider {
     this.name = options.name?.trim() || "local";
   }
 
-  // ========================================================================
+  // ==========================================================================
   // Generation
-  // ========================================================================
+  // ==========================================================================
 
   public async generate(request: AIRequest): Promise<AIResponse> {
     const startedAt = Date.now();
@@ -237,9 +260,9 @@ export class LocalModelProvider implements AIProvider {
     }
   }
 
-  // ========================================================================
+  // ==========================================================================
   // Streaming
-  // ========================================================================
+  // ==========================================================================
 
   public stream(request: AIRequest): AsyncIterable<AIStreamChunk> {
     return this.createStream(request);
@@ -325,11 +348,12 @@ export class LocalModelProvider implements AIProvider {
         push,
       );
 
-      /*
-       * Start generation without awaiting it.
+      /**
+       * Start generation without
+       * awaiting it.
        *
-       * Tokens are transferred through the
-       * internal async queue above.
+       * Tokens are transferred through
+       * the internal async queue above.
        */
       const generationPromise = request.vision
         ? this.generateVision(request, resolved, push)
@@ -369,8 +393,8 @@ export class LocalModelProvider implements AIProvider {
         throw generationError;
       }
 
-      /*
-       * Make sure the generation itself
+      /**
+       * Make sure generation itself
        * has completed successfully.
        */
       await generationPromise;
@@ -393,9 +417,9 @@ export class LocalModelProvider implements AIProvider {
     }
   }
 
-  // ========================================================================
+  // ==========================================================================
   // Health
-  // ========================================================================
+  // ==========================================================================
 
   public async healthCheck(signal?: AbortSignal): Promise<AIProviderHealth> {
     const startedAt = Date.now();
@@ -439,9 +463,9 @@ export class LocalModelProvider implements AIProvider {
     }
   }
 
-  // ========================================================================
+  // ==========================================================================
   // Request resolution
-  // ========================================================================
+  // ==========================================================================
 
   private async resolveRequest(
     request: AIRequest,
@@ -478,12 +502,14 @@ export class LocalModelProvider implements AIProvider {
 
     const model = this.modelManager.getModel(modelId);
 
-    /*
-     * The local AI provider currently handles
-     * generative text and vision models.
+    /**
+     * The local AI provider currently
+     * handles generative text and
+     * vision models.
      *
-     * STT/TTS/embedding models are consumed
-     * by their specialized subsystems.
+     * STT/TTS/embedding models are
+     * consumed by specialized
+     * subsystems.
      */
     if (model.modality !== "llm" && model.modality !== "vision") {
       throw new AIError(
@@ -497,18 +523,28 @@ export class LocalModelProvider implements AIProvider {
       );
     }
 
+    /**
+     * Runtime support is delegated to
+     * ModelManager.
+     *
+     * LocalModelProvider never talks
+     * directly to RuntimeRegistry.
+     */
     if (!this.modelManager.supportsModel(model.id)) {
       throw AIError.modelUnsupported(model.id);
     }
 
-    /*
-     * Do not silently download large models unless
-     * autoInstall has explicitly been enabled.
+    /**
+     * Do not silently download large
+     * models unless autoInstall has
+     * explicitly been enabled.
      */
     if (!this.modelManager.isInstalled(model.id)) {
       if (!this.options.autoInstall) {
         throw AIError.modelNotInstalled(model.id);
       }
+
+      throwIfAborted(request.signal);
 
       await this.modelManager.install(model.id, {
         priority: this.options.installationPriority ?? 0,
@@ -517,9 +553,11 @@ export class LocalModelProvider implements AIProvider {
       });
     }
 
-    /*
-     * Ensure the requested model is the
-     * active runtime model.
+    throwIfAborted(request.signal);
+
+    /**
+     * Ensure the requested model is
+     * the active runtime model.
      */
     const loaded = this.modelManager.getLoadedModel();
 
@@ -546,9 +584,9 @@ export class LocalModelProvider implements AIProvider {
     });
   }
 
-  // ========================================================================
+  // ==========================================================================
   // Generation options
-  // ========================================================================
+  // ==========================================================================
 
   private createGenerationOptions(
     request: AIRequest,
@@ -570,9 +608,9 @@ export class LocalModelProvider implements AIProvider {
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // Vision
-  // ========================================================================
+  // ==========================================================================
 
   private async generateVision(
     request: AIRequest,
@@ -585,14 +623,18 @@ export class LocalModelProvider implements AIProvider {
       throw new AIError("Vision request data is missing.", "INVALID_REQUEST");
     }
 
-    if (vision.imagePath && vision.imageDataUrl) {
+    const hasImagePath = Boolean(vision.imagePath?.trim());
+
+    const hasImageDataUrl = Boolean(vision.imageDataUrl?.trim());
+
+    if (hasImagePath && hasImageDataUrl) {
       throw new AIError(
         "Provide either imagePath or imageDataUrl, not both.",
         "INVALID_REQUEST",
       );
     }
 
-    if (!vision.imagePath && !vision.imageDataUrl) {
+    if (!hasImagePath && !hasImageDataUrl) {
       throw new AIError(
         "Vision requests require imagePath or imageDataUrl.",
         "INVALID_REQUEST",
@@ -613,6 +655,8 @@ export class LocalModelProvider implements AIProvider {
         },
       );
     }
+
+    throwIfAborted(request.signal);
 
     return this.modelManager.generateVision({
       prompt: resolved.prompt,
@@ -635,9 +679,9 @@ export class LocalModelProvider implements AIProvider {
     });
   }
 
-  // ========================================================================
+  // ==========================================================================
   // Usage
-  // ========================================================================
+  // ==========================================================================
 
   private createUsage(result: ModelRuntimeGenerationResult) {
     if (
@@ -665,9 +709,9 @@ export class LocalModelProvider implements AIProvider {
     });
   }
 
-  // ========================================================================
+  // ==========================================================================
   // Error mapping
-  // ========================================================================
+  // ==========================================================================
 
   private toAIError(
     error: unknown,
