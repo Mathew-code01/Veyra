@@ -1,32 +1,5 @@
 // desktop/main/ModelSystem.ts
 
-/**
- * Veyra Model System
- *
- * Electron MAIN-PROCESS composition root.
- *
- * Connects:
- *
- * ModelRegistry
- *      ↓
- * ModelPaths
- *      ↓
- * ModelStorage
- *      ↓
- * ModelDownloadQueue
- *      ↓
- * ModelInstallationManager
- *      ↓
- * RuntimeRegistry
- *      ↓
- * ModelRuntimeManager
- *      ↓
- * ModelManager
- *
- * This class must never be exposed directly
- * to the renderer.
- */
-
 import {
   ModelRegistry,
   defaultModelRegistry,
@@ -52,48 +25,65 @@ import {
   type ModelRuntimeFactory,
 } from "../../core/models/runtime/RuntimeRegistry";
 
+import { LlamaCppRuntime } from "../../core/models/runtime/LlamaCppRuntime";
+
+import { WhisperCppRuntime } from "../../core/models/runtime/WhisperCppRuntime";
+
+import { KokoroRuntime } from "../../core/models/runtime/KokoroRuntime";
+
 import type { ModelSelectionOptions } from "../../core/models/ModelSelector";
 
 export interface ModelSystemRuntimeFactoryMap {
   readonly ollama?: ModelRuntimeFactory;
+
   readonly llama_cpp?: ModelRuntimeFactory;
+
   readonly whisper_cpp?: ModelRuntimeFactory;
+
+  readonly kokoro?: ModelRuntimeFactory;
+
   readonly onnx?: ModelRuntimeFactory;
+
   readonly native?: ModelRuntimeFactory;
+
   readonly cloud?: ModelRuntimeFactory;
 }
 
-export interface ModelSystemOptions {
+export interface ModelSystemRuntimeBinaryOptions {
   /**
-   * Canonical persistent application data directory.
+   * Absolute llama-server path.
    *
-   * Electron normally provides:
+   * Example:
    *
-   *     app.getPath("userData")
+   * C:\Veyra\tools\llama\llama-server.exe
    */
+  readonly llamaCppExecutablePath?: string;
+
+  /**
+   * Absolute whisper-cli path.
+   */
+  readonly whisperCppExecutablePath?: string;
+
+  /**
+   * Optional whisper-stream path.
+   */
+  readonly whisperRealtimeExecutablePath?: string;
+}
+
+export interface ModelSystemOptions {
   readonly applicationDataDirectory: string;
 
-  /**
-   * Optional model-selection configuration.
-   */
   readonly modelSelection?: ModelSelectionOptions;
 
-  /**
-   * Optional model registry.
-   *
-   * Production code defaults to the application registry.
-   */
   readonly registry?: ModelRegistry;
 
-  /**
-   * Maximum simultaneous downloads.
-   */
   readonly downloadConcurrency?: number;
 
-  /**
-   * Optional lazy runtime factories.
-   */
   readonly runtimeFactories?: ModelSystemRuntimeFactoryMap;
+
+  readonly runtimeBinaries?: ModelSystemRuntimeBinaryOptions;
+
+  readonly kokoroDType?: "fp32" | "fp16" | "q8" | "q4" | "q4f16";
 }
 
 export interface ModelSystemStatus {
@@ -146,29 +136,14 @@ export class ModelSystem {
 
     this.registry = options.registry ?? defaultModelRegistry;
 
-    /*
-     * --------------------------------------------------------------------------
-     * Persistent model paths
-     * --------------------------------------------------------------------------
-     */
     this.paths = new ModelPaths({
       applicationDataDirectory,
     });
 
-    /*
-     * --------------------------------------------------------------------------
-     * Persistent model storage
-     * --------------------------------------------------------------------------
-     */
     this.storage = new ModelStorage({
       paths: this.paths,
     });
 
-    /*
-     * --------------------------------------------------------------------------
-     * Persistent download queue
-     * --------------------------------------------------------------------------
-     */
     this.queue = new ModelDownloadQueue({
       stateFilePath: this.paths.getDownloadQueueStatePath(),
 
@@ -177,42 +152,32 @@ export class ModelSystem {
       modelResolver: (modelId) => this.registry.get(modelId),
     });
 
-    /*
-     * --------------------------------------------------------------------------
-     * Installation manager
-     * --------------------------------------------------------------------------
-     */
     this.installationManager = new ModelInstallationManager({
       queue: this.queue,
 
       storage: this.storage,
     });
 
-    /*
-     * --------------------------------------------------------------------------
-     * Runtime registry
-     * --------------------------------------------------------------------------
-     */
     this.runtimeRegistry = new RuntimeRegistry();
 
+    /*
+     * User-provided implementations win over
+     * built-in implementations.
+     */
     this.registerRuntimeFactories(options.runtimeFactories);
 
-    /*
-     * --------------------------------------------------------------------------
-     * Runtime manager
-     * --------------------------------------------------------------------------
-     */
+    this.registerBuiltInRuntimes({
+      binaries: options.runtimeBinaries,
+
+      kokoroDType: options.kokoroDType,
+    });
+
     this.runtimeManager = new ModelRuntimeManager({
       storage: this.storage,
 
       runtimeRegistry: this.runtimeRegistry,
     });
 
-    /*
-     * --------------------------------------------------------------------------
-     * High-level model manager
-     * --------------------------------------------------------------------------
-     */
     const modelManagerOptions: ModelManagerOptions = {
       selection: options.modelSelection,
 
@@ -225,12 +190,11 @@ export class ModelSystem {
   }
 
   /**
-   * Initialize persistent model infrastructure.
-   *
-   * IMPORTANT:
-   *
-   * This does not download models.
+   * ==========================================================================
+   * Initialization
+   * ==========================================================================
    */
+
   public async initialize(): Promise<void> {
     if (this.disposed) {
       throw new Error("Cannot initialize a disposed ModelSystem.");
@@ -240,99 +204,55 @@ export class ModelSystem {
       return;
     }
 
-    /*
-     * Create the canonical model directories.
-     */
     await this.storage.initialize();
 
-    /*
-     * Restore persisted download queue state.
-     */
     await this.queue.initialize();
 
-    /*
-     * Restore only verified installed models.
-     *
-     * This never downloads anything.
-     */
     await this.modelManager.restoreAllInstalledModels();
 
     this.initialized = true;
   }
 
-  /**
-   * Whether the system is initialized.
-   */
   public isInitialized(): boolean {
     return this.initialized;
   }
 
-  /**
-   * Persistent application-data directory.
-   */
   public getApplicationDataDirectory(): string {
     return this.applicationDataDirectory;
   }
 
-  /**
-   * Canonical model-path manager.
-   */
   public getPaths(): ModelPaths {
     return this.paths;
   }
 
-  /**
-   * Canonical model storage.
-   */
   public getStorage(): ModelStorage {
     return this.storage;
   }
 
-  /**
-   * Persistent download queue.
-   */
   public getDownloadQueue(): ModelDownloadQueue {
     return this.queue;
   }
 
-  /**
-   * Installation manager.
-   */
   public getInstallationManager(): ModelInstallationManager {
     return this.installationManager;
   }
 
-  /**
-   * Runtime registry.
-   */
   public getRuntimeRegistry(): RuntimeRegistry {
     return this.runtimeRegistry;
   }
 
-  /**
-   * Runtime lifecycle manager.
-   */
   public getRuntimeManager(): ModelRuntimeManager {
     return this.runtimeManager;
   }
 
-  /**
-   * High-level model manager.
-   */
   public getModelManager(): ModelManager {
     return this.modelManager;
   }
 
-  /**
-   * Model registry.
-   */
   public getRegistry(): ModelRegistry {
     return this.registry;
   }
 
-  /**
-   * Safe diagnostic status.
-   */
   public getStatus(): ModelSystemStatus {
     return Object.freeze({
       initialized: this.initialized,
@@ -350,8 +270,11 @@ export class ModelSystem {
   }
 
   /**
-   * Gracefully dispose the model system.
+   * ==========================================================================
+   * Disposal
+   * ==========================================================================
    */
+
   public async dispose(): Promise<void> {
     if (this.disposed) {
       return;
@@ -359,20 +282,14 @@ export class ModelSystem {
 
     this.disposed = true;
 
-    let firstError: unknown = undefined;
+    let firstError: unknown | undefined;
 
-    /*
-     * Stop runtime processes/sessions first.
-     */
     try {
       await this.runtimeManager.dispose();
     } catch (error) {
       firstError = error;
     }
 
-    /*
-     * Then stop the persistent download queue.
-     */
     try {
       await this.queue.dispose();
     } catch (error) {
@@ -389,11 +306,11 @@ export class ModelSystem {
   }
 
   /**
-   * Register supplied runtime factories.
-   *
-   * Factories remain lazy until a model actually
-   * requires that runtime.
+   * ==========================================================================
+   * User supplied factories
+   * ==========================================================================
    */
+
   private registerRuntimeFactories(
     factories: ModelSystemRuntimeFactoryMap | undefined,
   ): void {
@@ -407,6 +324,8 @@ export class ModelSystem {
 
     this.registerFactory("whisper_cpp", factories.whisper_cpp);
 
+    this.registerFactory("kokoro", factories.kokoro);
+
     this.registerFactory("onnx", factories.onnx);
 
     this.registerFactory("native", factories.native);
@@ -414,8 +333,98 @@ export class ModelSystem {
     this.registerFactory("cloud", factories.cloud);
   }
 
+  /**
+   * ==========================================================================
+   * Built-in factories
+   * ==========================================================================
+   */
+
+  private registerBuiltInRuntimes(options: {
+    readonly binaries: ModelSystemRuntimeBinaryOptions | undefined;
+
+    readonly kokoroDType: "fp32" | "fp16" | "q8" | "q4" | "q4f16" | undefined;
+  }): void {
+    /*
+     * ------------------------------------------------------------------------
+     * Kokoro
+     * ------------------------------------------------------------------------
+     *
+     * Always register this built-in runtime because it does not require a
+     * separate executable.
+     */
+    if (!this.runtimeRegistry.has("kokoro")) {
+      this.runtimeRegistry.register(
+        "kokoro",
+        () =>
+          new KokoroRuntime({
+            dtype: options.kokoroDType ?? "q8",
+
+            device: "cpu",
+          }),
+      );
+    }
+
+    /*
+     * ------------------------------------------------------------------------
+     * llama.cpp
+     * ------------------------------------------------------------------------
+     */
+
+    if (!this.runtimeRegistry.has("llama_cpp")) {
+      const executablePath =
+        options.binaries?.llamaCppExecutablePath?.trim() ||
+        process.env.VEYRA_LLAMA_SERVER?.trim();
+
+      if (executablePath) {
+        this.runtimeRegistry.register(
+          "llama_cpp",
+          () =>
+            new LlamaCppRuntime({
+              executablePath,
+            }),
+        );
+      }
+    }
+
+    /*
+     * ------------------------------------------------------------------------
+     * whisper.cpp
+     * ------------------------------------------------------------------------
+     */
+
+    if (!this.runtimeRegistry.has("whisper_cpp")) {
+      const executablePath =
+        options.binaries?.whisperCppExecutablePath?.trim() ||
+        process.env.VEYRA_WHISPER_CPP?.trim();
+
+      if (executablePath) {
+        const realtimeExecutablePath =
+          options.binaries?.whisperRealtimeExecutablePath?.trim() ||
+          process.env.VEYRA_WHISPER_STREAM?.trim();
+
+        this.runtimeRegistry.register(
+          "whisper_cpp",
+          () =>
+            new WhisperCppRuntime({
+              executablePath,
+
+              realtimeExecutablePath,
+            }),
+        );
+      }
+    }
+  }
+
   private registerFactory(
-    kind: "ollama" | "llama_cpp" | "whisper_cpp" | "onnx" | "native" | "cloud",
+    kind:
+      | "ollama"
+      | "llama_cpp"
+      | "whisper_cpp"
+      | "kokoro"
+      | "onnx"
+      | "native"
+      | "cloud",
+
     factory: ModelRuntimeFactory | undefined,
   ): void {
     if (!factory) {

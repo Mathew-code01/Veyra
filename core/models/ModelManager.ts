@@ -1,5 +1,3 @@
-// core/models/ModelManager.ts
-
 import type { HardwareProfile } from "../hardware/HardwareProfile";
 
 import {
@@ -47,17 +45,40 @@ import type {
   SpeechRecognitionResult,
 } from "./runtime/ModelRuntime";
 
+/**
+ * --------------------------------------------------------------------------
+ * Installed model state
+ * --------------------------------------------------------------------------
+ */
+
 export interface InstalledModel {
   readonly modelId: string;
 
+  /**
+   * Primary installed artifact.
+   *
+   * Kept for compatibility with the runtime layer.
+   */
   readonly filePath: string;
 
   readonly installedAt: number;
 
+  /**
+   * Size of the primary model artifact.
+   */
   readonly sizeBytes: number;
 
+  /**
+   * SHA-256 of the primary model artifact.
+   */
   readonly sha256: string;
 }
+
+/**
+ * --------------------------------------------------------------------------
+ * Manager configuration
+ * --------------------------------------------------------------------------
+ */
 
 export interface ModelManagerOptions {
   readonly selection?: ModelSelectionOptions;
@@ -66,6 +87,12 @@ export interface ModelManagerOptions {
 
   readonly runtimeManager?: ModelRuntimeManager;
 }
+
+/**
+ * --------------------------------------------------------------------------
+ * Installation
+ * --------------------------------------------------------------------------
+ */
 
 export interface ModelInstallOptions {
   readonly overwrite?: boolean;
@@ -91,6 +118,12 @@ export interface ModelInstallResult {
   readonly installation: ModelInstallationResult;
 }
 
+/**
+ * --------------------------------------------------------------------------
+ * Active model plan
+ * --------------------------------------------------------------------------
+ */
+
 export interface ActiveModelPlan {
   readonly generatedAt: number;
 
@@ -102,6 +135,12 @@ export interface ActiveModelPlan {
     Partial<Record<ModelModality, readonly string[]>>
   >;
 }
+
+/**
+ * --------------------------------------------------------------------------
+ * Model manager
+ * --------------------------------------------------------------------------
+ */
 
 export class ModelManager {
   private readonly selector: ModelSelector;
@@ -148,9 +187,9 @@ export class ModelManager {
   }
 
   /**
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    * Hardware -> model selection
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    */
 
   public createSelectionPlan(profile: HardwareProfile): ModelSelectionPlan {
@@ -166,9 +205,9 @@ export class ModelManager {
   }
 
   /**
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    * Model lookup
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    */
 
   public getModel(modelId: string): ModelDefinition {
@@ -185,9 +224,9 @@ export class ModelManager {
   }
 
   /**
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    * Production installation
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    */
 
   public async install(
@@ -204,6 +243,8 @@ export class ModelManager {
       requireMemorySafety: options.requireMemorySafety ?? false,
 
       signal: options.signal,
+
+      overwrite: options.overwrite,
 
       onProgress: options.onProgress,
     });
@@ -226,9 +267,9 @@ export class ModelManager {
   }
 
   /**
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    * Persistent installation state
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    */
 
   public async restoreInstalledModel(
@@ -243,12 +284,9 @@ export class ModelManager {
     const manager = this.requireInstallationManager();
 
     /*
-     * IMPORTANT:
-     *
      * This method never downloads.
      *
-     * It only reconstructs state from
-     * the persistent verified model store.
+     * Storage integrity is authoritative.
      */
     const stored = await manager.getInstalledModel(model);
 
@@ -258,12 +296,28 @@ export class ModelManager {
       return undefined;
     }
 
+    /*
+     * The manifest is package-based in schema v2.
+     *
+     * Find the primary artifact using
+     * package.primaryArtifactId.
+     */
+    const primaryArtifact = stored.manifest.package.artifacts.find(
+      (artifact) => artifact.id === stored.manifest.package.primaryArtifactId,
+    );
+
+    if (!primaryArtifact) {
+      this.installedModels.delete(model.id);
+
+      return undefined;
+    }
+
     const installed = this.createInstalledModel(
       stored.modelId,
-      stored.artifactPath,
+      primaryArtifact.filePath,
       stored.manifest.installedAt,
-      stored.manifest.artifact.sizeBytes,
-      stored.manifest.artifact.sha256,
+      primaryArtifact.sizeBytes,
+      primaryArtifact.sha256,
     );
 
     this.installedModels.set(model.id, installed);
@@ -296,10 +350,6 @@ export class ModelManager {
 
     const manager = this.requireInstallationManager();
 
-    /*
-     * Storage owns the canonical
-     * installation directory.
-     */
     await manager.getStorage().remove(model);
 
     this.installedModels.delete(modelId);
@@ -318,9 +368,9 @@ export class ModelManager {
   }
 
   /**
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    * Benchmarking
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    */
 
   public async benchmarkModel(
@@ -337,18 +387,22 @@ export class ModelManager {
   }
 
   /**
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    * Runtime loading
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    */
 
   public async loadModel(
     modelId: string,
     options: {
       readonly contextSize?: number;
+
       readonly gpuLayers?: number;
+
       readonly threads?: number;
+
       readonly batchSize?: number;
+
       readonly signal?: AbortSignal;
     } = {},
   ): Promise<void> {
@@ -386,9 +440,9 @@ export class ModelManager {
   }
 
   /**
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    * Activation
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    */
 
   public activateSelectionPlan(plan: ModelSelectionPlan): ActiveModelPlan {
@@ -446,9 +500,9 @@ export class ModelManager {
   }
 
   /**
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    * Recommended installation
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    */
 
   public getRecommendedInstallations(
@@ -468,15 +522,22 @@ export class ModelManager {
   }
 
   /**
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    * Reset
-   * --------------------------------------------------------------------------
+   * ------------------------------------------------------------------------
    */
 
   public clearPlans(): void {
     this.currentPlan = null;
+
     this.activePlan = null;
   }
+
+  /**
+   * ------------------------------------------------------------------------
+   * Internal cache
+   * ------------------------------------------------------------------------
+   */
 
   private cacheInstalledModel(installation: ModelInstallationResult): void {
     const installed = this.createInstalledModel(
@@ -499,9 +560,13 @@ export class ModelManager {
   ): InstalledModel {
     return Object.freeze({
       modelId,
+
       filePath,
+
       installedAt,
+
       sizeBytes,
+
       sha256,
     });
   }
