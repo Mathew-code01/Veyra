@@ -7,7 +7,7 @@ export class AIStream {
 
   private closed = false;
 
-  push(chunk: AIStreamChunk): void {
+  public push(chunk: AIStreamChunk): void {
     if (this.closed) {
       return;
     }
@@ -19,24 +19,25 @@ export class AIStream {
     }
   }
 
-  getChunks(): AIStreamChunk[] {
-    return [...this.chunks];
+  public getChunks(): readonly AIStreamChunk[] {
+    return Object.freeze([...this.chunks]);
   }
 
-  getText(): string {
+  public getText(): string {
     return this.chunks.map((chunk) => chunk.text).join("");
   }
 
-  isClosed(): boolean {
+  public isClosed(): boolean {
     return this.closed;
   }
 
-  close(): void {
+  public close(): void {
     this.closed = true;
   }
 
-  reset(): void {
+  public reset(): void {
     this.chunks.length = 0;
+
     this.closed = false;
   }
 }

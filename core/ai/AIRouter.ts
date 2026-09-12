@@ -7,15 +7,38 @@ import type { AIResponse } from "./AIResponse";
 import { AIError } from "./AIError";
 
 export interface AIRoute {
-  providers: string[];
-  preferredProvider?: string;
-  requireStreaming?: boolean;
-  requireVision?: boolean;
-  requireLocal?: boolean;
+  /**
+   * Providers eligible for this request.
+   */
+  readonly providers: readonly string[];
+
+  /**
+   * Provider that should be attempted first.
+   */
+  readonly preferredProvider?: string;
+
+  /**
+   * Require streaming capability.
+   */
+  readonly requireStreaming?: boolean;
+
+  /**
+   * Require vision capability.
+   */
+  readonly requireVision?: boolean;
+
+  /**
+   * Require local execution.
+   */
+  readonly requireLocal?: boolean;
 }
 
 export class AIRouter {
-  constructor(private readonly manager: AIManager) {}
+  public constructor(private readonly manager: AIManager) {}
+
+  // ========================================================================
+  // Capability filtering
+  // ========================================================================
 
   private supports(provider: AIProvider, route: AIRoute): boolean {
     if (route.requireStreaming && !provider.capabilities.streaming) {
@@ -33,9 +56,14 @@ export class AIRouter {
     return true;
   }
 
-  select(route: AIRoute): AIProvider {
+  // ========================================================================
+  // Provider selection
+  // ========================================================================
+
+  public select(route: AIRoute): AIProvider {
     const orderedNames = [
       ...(route.preferredProvider ? [route.preferredProvider] : []),
+
       ...route.providers,
     ];
 
@@ -57,8 +85,33 @@ export class AIRouter {
     );
   }
 
-  async generate(request: AIRequest, route: AIRoute): Promise<AIResponse> {
+  // ========================================================================
+  // Generate
+  // ========================================================================
+
+  public async generate(
+    request: AIRequest,
+    route: AIRoute,
+  ): Promise<AIResponse> {
     const provider = this.select(route);
+
     return provider.generate(request);
+  }
+
+  // ========================================================================
+  // Stream
+  // ========================================================================
+
+  public stream(request: AIRequest, route: AIRoute) {
+    const provider = this.select(route);
+
+    if (!provider.capabilities.streaming) {
+      throw new AIError(
+        `Provider "${provider.name}" does not support streaming.`,
+        "UNAVAILABLE",
+      );
+    }
+
+    return provider.stream(request);
   }
 }

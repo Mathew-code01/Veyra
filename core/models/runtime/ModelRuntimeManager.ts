@@ -19,7 +19,10 @@ import type {
   ModelRuntimeLoadOptions,
   OnnxRuntimeRunOptions,
   OnnxRuntimeRunResult,
+  RealtimeSpeechRecognitionOptions,
+  RealtimeSpeechRecognitionRuntime,
   SpeechRecognitionOptions,
+  SpeechRecognitionRealtimeSession,
   SpeechRecognitionResult,
   SpeechRecognitionRuntime,
   SpeechSynthesisOptions,
@@ -32,6 +35,12 @@ import type {
 
 import { RuntimeRegistry, type ModelRuntimeFactory } from "./RuntimeRegistry";
 
+/**
+ * ============================================================================
+ * Configuration
+ * ============================================================================
+ */
+
 export interface ModelRuntimeManagerOptions {
   readonly storage: ModelStorage;
 
@@ -39,6 +48,12 @@ export interface ModelRuntimeManagerOptions {
 
   readonly memoryPressureGuard?: MemoryPressureGuard;
 }
+
+/**
+ * ============================================================================
+ * Load preparation
+ * ============================================================================
+ */
 
 export interface RuntimeLoadResult {
   readonly modelId: string;
@@ -52,6 +67,40 @@ export interface RuntimeLoadResult {
   readonly warnings: readonly string[];
 }
 
+/**
+ * ============================================================================
+ * ModelRuntimeManager
+ * ============================================================================
+ *
+ * Owns runtime lifecycle.
+ *
+ * Responsibilities:
+ *
+ *   ModelDefinition
+ *        ↓
+ *   resolve runtime
+ *        ↓
+ *   verify installation
+ *        ↓
+ *   verify runtime artifacts
+ *        ↓
+ *   memory safety
+ *        ↓
+ *   load runtime
+ *        ↓
+ *   health check
+ *        ↓
+ *   active runtime
+ *
+ * It intentionally does NOT own:
+ *
+ *   - model selection
+ *   - model downloads
+ *   - model installation manifests
+ *   - application-level AI routing
+ *
+ * ModelManager is the public facade above this class.
+ */
 export class ModelRuntimeManager {
   private readonly runtimeRegistry: RuntimeRegistry;
 
@@ -74,11 +123,9 @@ export class ModelRuntimeManager {
       options.memoryPressureGuard ?? new MemoryPressureGuard();
   }
 
-  /**
-   * ==========================================================================
-   * Registration
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Runtime registration
+  // ==========================================================================
 
   public registerRuntime(runtime: ModelRuntime): void {
     this.ensureNotDisposed();
@@ -107,6 +154,16 @@ export class ModelRuntimeManager {
   ): void {
     this.ensureNotDisposed();
 
+    /*
+     * Never silently replace the runtime currently being used.
+     */
+    if (this.activeRuntime?.name === runtimeKind) {
+      throw new Error(
+        `Cannot replace runtime "${runtimeKind}" while it is active. ` +
+          "Unload the active model first.",
+      );
+    }
+
     this.runtimeRegistry.replace(runtimeKind, factory);
   }
 
@@ -132,11 +189,9 @@ export class ModelRuntimeManager {
     );
   }
 
-  /**
-   * ==========================================================================
-   * Support / preparation
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Support / preparation
+  // ==========================================================================
 
   public supportsModel(model: ModelDefinition): boolean {
     if (this.disposed) {
@@ -201,11 +256,9 @@ export class ModelRuntimeManager {
     });
   }
 
-  /**
-   * ==========================================================================
-   * Load
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Load
+  // ==========================================================================
 
   public async load(
     model: ModelDefinition,
@@ -239,23 +292,36 @@ export class ModelRuntimeManager {
     }
 
     /*
-     * Only one heavyweight runtime is active at a time.
+     * The model path comes exclusively from trusted ModelStorage state.
+     *
+     * No caller can inject a filesystem path through this public method.
+     */
+    const loadOptions: ModelRuntimeLoadOptions = {
+      ...options,
+
+      modelPath: stored.artifactPath,
+
+      artifactPaths: stored.artifactPaths,
+    };
+
+    /*
+     * Only one heavyweight local runtime is active at a time.
      */
     await this.unload();
 
     try {
-      await runtime.load(model, {
-        ...options,
-
-        modelPath: stored.artifactPath,
-
-        artifactPaths: stored.artifactPaths,
-      });
+      await runtime.load(model, loadOptions);
 
       const health = await runtime.health();
 
       if (!health.ready) {
-        await runtime.unload();
+        try {
+          await runtime.unload();
+        } catch {
+          /*
+           * Preserve the original health failure.
+           */
+        }
 
         throw new Error(
           `Runtime "${runtime.name}" did not become healthy after loading "${model.displayName}".`,
@@ -274,11 +340,9 @@ export class ModelRuntimeManager {
     }
   }
 
-  /**
-   * ==========================================================================
-   * Unload / disposal
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Unload / disposal
+  // ==========================================================================
 
   public async unload(): Promise<void> {
     const runtime = this.activeRuntime;
@@ -299,8 +363,6 @@ export class ModelRuntimeManager {
       return;
     }
 
-    this.disposed = true;
-
     let firstError: unknown = undefined;
 
     try {
@@ -308,6 +370,12 @@ export class ModelRuntimeManager {
     } catch (error) {
       firstError = error;
     }
+
+    /*
+     * Mark disposed only after the active runtime has been given the
+     * opportunity to shut down.
+     */
+    this.disposed = true;
 
     try {
       await this.runtimeRegistry.unloadAll();
@@ -322,11 +390,9 @@ export class ModelRuntimeManager {
     }
   }
 
-  /**
-   * ==========================================================================
-   * Active state
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Active state
+  // ==========================================================================
 
   public getActiveModel(): ModelDefinition | null {
     return this.activeModel;
@@ -347,7 +413,7 @@ export class ModelRuntimeManager {
       return Object.freeze({
         ready: false,
 
-        loadedModelId: this.activeModel?.id ?? null,
+        loadedModelId: null,
 
         runtimeName: "none",
       });
@@ -356,11 +422,9 @@ export class ModelRuntimeManager {
     return runtime.health();
   }
 
-  /**
-   * ==========================================================================
-   * Text
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Text
+  // ==========================================================================
 
   public async generate(
     options: ModelRuntimeGenerateOptions,
@@ -370,11 +434,9 @@ export class ModelRuntimeManager {
     return this.requireTextRuntime().generate(options);
   }
 
-  /**
-   * ==========================================================================
-   * Vision
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Vision
+  // ==========================================================================
 
   public async generateVision(
     options: VisionGenerationOptions,
@@ -384,11 +446,9 @@ export class ModelRuntimeManager {
     return this.requireVisionRuntime().generateVision(options);
   }
 
-  /**
-   * ==========================================================================
-   * STT
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // STT
+  // ==========================================================================
 
   public async transcribe(
     options: SpeechRecognitionOptions,
@@ -399,10 +459,22 @@ export class ModelRuntimeManager {
   }
 
   /**
-   * ==========================================================================
-   * Generic ONNX
-   * ==========================================================================
+   * Start true realtime speech recognition.
+   *
+   * The selected runtime must explicitly implement
+   * RealtimeSpeechRecognitionRuntime.
    */
+  public async startRealtimeTranscription(
+    options: RealtimeSpeechRecognitionOptions,
+  ): Promise<SpeechRecognitionRealtimeSession> {
+    this.ensureNotDisposed();
+
+    return this.requireRealtimeSpeechRuntime().startRealtime(options);
+  }
+
+  // ==========================================================================
+  // Generic ONNX
+  // ==========================================================================
 
   public async run(
     options: OnnxRuntimeRunOptions,
@@ -412,11 +484,9 @@ export class ModelRuntimeManager {
     return this.requireInferenceRuntime().run(options);
   }
 
-  /**
-   * ==========================================================================
-   * TTS
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // TTS
+  // ==========================================================================
 
   public async synthesize(
     options: SpeechSynthesisOptions,
@@ -426,11 +496,9 @@ export class ModelRuntimeManager {
     return this.requireSpeechSynthesisRuntime().synthesize(options);
   }
 
-  /**
-   * ==========================================================================
-   * Runtime resolution
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Runtime resolution
+  // ==========================================================================
 
   private resolveRuntime(model: ModelDefinition): ModelRuntime {
     const runtime = this.runtimeRegistry.resolveForModel(model);
@@ -444,11 +512,9 @@ export class ModelRuntimeManager {
     return runtime;
   }
 
-  /**
-   * ==========================================================================
-   * Runtime artifact requirements
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Runtime artifact requirements
+  // ==========================================================================
 
   private requiredRuntimeArtifactsPresent(
     model: ModelDefinition,
@@ -473,11 +539,9 @@ export class ModelRuntimeManager {
     return true;
   }
 
-  /**
-   * ==========================================================================
-   * Type guards
-   * ==========================================================================
-   */
+  // ==========================================================================
+  // Runtime type guards
+  // ==========================================================================
 
   private requireTextRuntime(): TextGenerationRuntime {
     const runtime = this.activeRuntime;
@@ -521,6 +585,22 @@ export class ModelRuntimeManager {
     if (!this.isSpeechRuntime(runtime)) {
       throw new Error(
         `The active runtime "${runtime.name}" does not support speech recognition.`,
+      );
+    }
+
+    return runtime;
+  }
+
+  private requireRealtimeSpeechRuntime(): RealtimeSpeechRecognitionRuntime {
+    const runtime = this.activeRuntime;
+
+    if (!runtime) {
+      throw new Error("No speech recognition model is currently loaded.");
+    }
+
+    if (!this.isRealtimeSpeechRuntime(runtime)) {
+      throw new Error(
+        `The active runtime "${runtime.name}" does not support realtime speech recognition.`,
       );
     }
 
@@ -578,6 +658,14 @@ export class ModelRuntimeManager {
     runtime: ModelRuntime,
   ): runtime is SpeechRecognitionRuntime {
     return "transcribe" in runtime && typeof runtime.transcribe === "function";
+  }
+
+  private isRealtimeSpeechRuntime(
+    runtime: ModelRuntime,
+  ): runtime is RealtimeSpeechRecognitionRuntime {
+    return (
+      "startRealtime" in runtime && typeof runtime.startRealtime === "function"
+    );
   }
 
   private isInferenceRuntime(

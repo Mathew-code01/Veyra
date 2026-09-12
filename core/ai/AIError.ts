@@ -9,6 +9,9 @@ export type AIErrorCode =
   | "NETWORK"
   | "PROVIDER"
   | "MODEL_NOT_FOUND"
+  | "MODEL_NOT_INSTALLED"
+  | "MODEL_UNSUPPORTED"
+  | "MODEL_NOT_LOADED"
   | "CONTENT_BLOCKED"
   | "INVALID_RESPONSE"
   | "UNAVAILABLE"
@@ -16,39 +19,56 @@ export type AIErrorCode =
   | "UNKNOWN";
 
 export interface AIErrorDetails {
-  status?: number;
-  provider?: string;
-  model?: string;
-  retryAfterMs?: number;
-  cause?: unknown;
+  readonly status?: number;
+
+  readonly provider?: string;
+
+  readonly model?: string;
+
+  readonly runtime?: string;
+
+  readonly retryAfterMs?: number;
+
+  readonly cause?: unknown;
+
+  readonly details?: Readonly<Record<string, unknown>>;
 }
 
 export class AIError extends Error {
   readonly code: AIErrorCode;
+
   readonly retryable: boolean;
+
   readonly details: AIErrorDetails;
 
-  constructor(
+  public constructor(
     message: string,
     code: AIErrorCode,
     options: {
-      retryable?: boolean;
-      details?: AIErrorDetails;
-      cause?: unknown;
+      readonly retryable?: boolean;
+
+      readonly details?: AIErrorDetails;
+
+      readonly cause?: unknown;
     } = {},
   ) {
     super(message);
 
     this.name = "AIError";
+
     this.code = code;
+
     this.retryable = options.retryable ?? false;
+
     this.details = {
       ...options.details,
-      cause: options.cause,
+      cause: options.cause ?? options.details?.cause,
     };
+
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 
-  static fromUnknown(error: unknown, details?: AIErrorDetails): AIError {
+  public static fromUnknown(error: unknown, details?: AIErrorDetails): AIError {
     if (error instanceof AIError) {
       return error;
     }
@@ -74,5 +94,53 @@ export class AIError extends Error {
       details,
       cause: error,
     });
+  }
+
+  public static modelNotFound(model: string): AIError {
+    return new AIError(
+      `Local model "${model}" was not found in the Veyra model registry.`,
+      "MODEL_NOT_FOUND",
+      {
+        details: {
+          model,
+        },
+      },
+    );
+  }
+
+  public static modelNotInstalled(model: string): AIError {
+    return new AIError(
+      `Local model "${model}" is not installed.`,
+      "MODEL_NOT_INSTALLED",
+      {
+        details: {
+          model,
+        },
+      },
+    );
+  }
+
+  public static modelUnsupported(model: string): AIError {
+    return new AIError(
+      `Local model "${model}" is not supported by the available Veyra runtimes.`,
+      "MODEL_UNSUPPORTED",
+      {
+        details: {
+          model,
+        },
+      },
+    );
+  }
+
+  public static modelNotLoaded(model: string): AIError {
+    return new AIError(
+      `Local model "${model}" is not currently loaded.`,
+      "MODEL_NOT_LOADED",
+      {
+        details: {
+          model,
+        },
+      },
+    );
   }
 }

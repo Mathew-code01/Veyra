@@ -168,51 +168,37 @@ function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const cleanup = (): void => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-
-      signal?.removeEventListener("abort", abortHandler);
-    };
-
     const abortHandler = (): void => {
       if (settled) {
         return;
       }
 
       settled = true;
-
-      cleanup();
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abortHandler);
 
       reject(new DOMException("Operation was aborted.", "AbortError"));
     };
 
-    if (signal?.aborted) {
-      abortHandler();
-
-      return;
-    }
-
-    if (signal) {
-      signal.addEventListener("abort", abortHandler, {
-        once: true,
-      });
-    }
-
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (settled) {
         return;
       }
 
       settled = true;
-
-      cleanup();
+      signal?.removeEventListener("abort", abortHandler);
 
       resolve();
     }, milliseconds);
+
+    if (signal?.aborted) {
+      abortHandler();
+      return;
+    }
+
+    signal?.addEventListener("abort", abortHandler, {
+      once: true,
+    });
   });
 }
 
