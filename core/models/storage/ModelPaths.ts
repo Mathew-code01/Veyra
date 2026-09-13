@@ -95,6 +95,33 @@ export class ModelPaths {
     return path.join(this.rootDirectory, "runtimes", runtime);
   }
 
+  public getRuntimeVersionDirectory(runtime: string, version: string): string {
+    this.assertSafeSegment(runtime);
+    this.assertSafeSegment(version);
+
+    return path.join(this.getRuntimeDirectory(runtime), version);
+  }
+
+  public getRuntimeManifestPath(runtime: string, version: string): string {
+    return path.join(
+      this.getRuntimeVersionDirectory(runtime, version),
+      "runtime-manifest.json",
+    );
+  }
+
+  public getRuntimeExecutablePath(
+    runtime: string,
+    version: string,
+    executableFilename: string,
+  ): string {
+    this.assertSafeFilename(executableFilename);
+
+    return path.join(
+      this.getRuntimeVersionDirectory(runtime, version),
+      executableFilename,
+    );
+  }
+
   public getCacheDirectory(): string {
     return path.join(this.rootDirectory, "cache");
   }

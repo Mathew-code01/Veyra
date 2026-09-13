@@ -1,5 +1,6 @@
 // scripts/test-local-model.ts
 
+
 /// <reference types="node" />
 
 /**
@@ -7,7 +8,7 @@
  * VEYRA — REAL LOCAL MODEL INTEGRATION TEST
  * ============================================================================
  *
- * This script exercises Veyra's real local-model architecture.
+ * This test exercises Veyra's real local-model architecture.
  *
  * Pipeline:
  *
@@ -27,9 +28,17 @@
  *        ↓
  *   ModelStorage / Manifest / Integrity
  *        ↓
- *   ModelRuntimeManager
+ *   RuntimePackageRegistry
+ *        ↓
+ *   RuntimeDownloader
+ *        ↓
+ *   RuntimeInstaller
+ *        ↓
+ *   LlamaRuntimeLocator
  *        ↓
  *   RuntimeRegistry
+ *        ↓
+ *   ModelRuntimeManager
  *        ↓
  *   LlamaCppRuntime
  *        ↓
@@ -39,20 +48,15 @@
  * ----------
  * This test does NOT use Ollama.
  *
- * It deliberately uses Veyra's own:
+ * It deliberately uses Veyra's own model and runtime infrastructure.
  *
- * - HardwareProfiler
- * - ModelManager
- * - ModelSelector
- * - ModelRegistry
- * - ModelCompatibility
- * - ModelInstallationManager
- * - ModelPackageDownloader
- * - ModelStorage
- * - ModelRuntimeManager
- * - RuntimeRegistry
- * - LlamaCppRuntime
+ * Runtime binaries are NOT expected inside the Git repository.
  *
+ * They are automatically installed into:
+ *
+ *   %LOCALAPPDATA%\Veyra\runtimes\
+ *
+ * and reused on subsequent runs.
  * ============================================================================
  */
 
@@ -86,6 +90,10 @@ import { RuntimeRegistry } from "../core/models/runtime/RuntimeRegistry";
 
 import { LlamaCppRuntime } from "../core/models/runtime/LlamaCppRuntime";
 
+import { RuntimeInstaller } from "../core/models/runtime/RuntimeInstaller";
+
+import { LlamaRuntimeLocator } from "../core/models/runtime/LlamaRuntimeLocator";
+
 import type { ModelRuntimeHealth } from "../core/models/runtime/ModelRuntime";
 
 /**
@@ -100,9 +108,13 @@ const TEST_PROMPT = "Respond with exactly: VEYRA_LOCAL_TEST_OK";
 
 const EXPECTED_RESPONSE = "VEYRA_LOCAL_TEST_OK";
 
-const RUNTIME_HOST = process.env.VEYRA_LLAMA_HOST?.trim() || "127.0.0.1";
+const RUNTIME_HOST =
+  process.env.VEYRA_LLAMA_HOST?.trim() || "127.0.0.1";
 
-const RUNTIME_PORT = parsePositiveInteger(process.env.VEYRA_LLAMA_PORT, 39271);
+const RUNTIME_PORT = parsePositiveInteger(
+  process.env.VEYRA_LLAMA_PORT,
+  39271,
+);
 
 const STARTUP_TIMEOUT_MS = parsePositiveInteger(
   process.env.VEYRA_LLAMA_STARTUP_TIMEOUT_MS,
@@ -112,7 +124,8 @@ const STARTUP_TIMEOUT_MS = parsePositiveInteger(
 const MODEL_ROOT =
   process.env.VEYRA_MODEL_DATA_DIR?.trim() ||
   path.join(
-    process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"),
+    process.env.LOCALAPPDATA ||
+      path.join(os.homedir(), "AppData", "Local"),
     "Veyra",
   );
 
@@ -153,6 +166,10 @@ interface PipelineState {
 
   runtimeRegistry: RuntimeRegistry | null;
 
+  runtimeInstaller: RuntimeInstaller | null;
+
+  runtimeLocator: LlamaRuntimeLocator | null;
+
   runtime: LlamaCppRuntime | null;
 
   runtimeExecutable: string | null;
@@ -189,6 +206,10 @@ const pipeline: PipelineState = {
 
   runtimeRegistry: null,
 
+  runtimeInstaller: null,
+
+  runtimeLocator: null,
+
   runtime: null,
 
   runtimeExecutable: null,
@@ -201,6 +222,8 @@ const pipeline: PipelineState = {
 };
 
 const stages: StageRecord[] = [];
+
+const testStartedAt = Date.now();
 
 /**
  * ============================================================================
@@ -221,12 +244,17 @@ function title(message: string): void {
   const safeMessage =
     message.length > WIDTH ? message.slice(0, WIDTH) : message;
 
-  const leftPadding = Math.floor((WIDTH - safeMessage.length) / 2);
+  const leftPadding = Math.floor(
+    (WIDTH - safeMessage.length) / 2,
+  );
 
-  const rightPadding = WIDTH - safeMessage.length - leftPadding;
+  const rightPadding =
+    WIDTH - safeMessage.length - leftPadding;
 
   console.log(
-    `║${" ".repeat(leftPadding)}${safeMessage}${" ".repeat(rightPadding)}║`,
+    `║${" ".repeat(leftPadding)}${safeMessage}${" ".repeat(
+      rightPadding,
+    )}║`,
   );
 
   console.log(`╚${"═".repeat(WIDTH)}╝`);
@@ -252,7 +280,9 @@ function progress(message: string): void {
   console.log(`      → ${message}`);
 }
 
-function formatBytes(bytes: number | null | undefined): string {
+function formatBytes(
+  bytes: number | null | undefined,
+): string {
   if (bytes === null || bytes === undefined) {
     return "unknown";
   }
@@ -270,15 +300,22 @@ function formatBytes(bytes: number | null | undefined): string {
   let value = bytes;
   let index = -1;
 
-  while (value >= 1024 && index < units.length - 1) {
+  while (
+    value >= 1024 &&
+    index < units.length - 1
+  ) {
     value /= 1024;
     index += 1;
   }
 
-  return `${value.toFixed(value >= 100 ? 0 : 2)} ${units[index]}`;
+  return `${value.toFixed(value >= 100 ? 0 : 2)} ${
+    units[index]
+  }`;
 }
 
-function formatDuration(milliseconds: number | null | undefined): string {
+function formatDuration(
+  milliseconds: number | null | undefined,
+): string {
   if (
     milliseconds === null ||
     milliseconds === undefined ||
@@ -288,18 +325,32 @@ function formatDuration(milliseconds: number | null | undefined): string {
   }
 
   if (milliseconds < 1000) {
-    return `${Math.max(0, Math.round(milliseconds))} ms`;
+    return `${Math.max(
+      0,
+      Math.round(milliseconds),
+    )} ms`;
   }
 
-  return `${(Math.max(0, milliseconds) / 1000).toFixed(2)} s`;
+  return `${(
+    Math.max(0, milliseconds) / 1000
+  ).toFixed(2)} s`;
 }
 
-function formatPercentage(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
+function formatPercentage(
+  value: number | null | undefined,
+): string {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(value)
+  ) {
     return "N/A";
   }
 
-  return `${Math.max(0, Math.min(100, value)).toFixed(1)}%`;
+  return `${Math.max(
+    0,
+    Math.min(100, value),
+  ).toFixed(1)}%`;
 }
 
 function parsePositiveInteger(
@@ -312,7 +363,9 @@ function parsePositiveInteger(
 
   const parsed = Number.parseInt(value, 10);
 
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : fallback;
 }
 
 /**
@@ -340,7 +393,7 @@ function errorCode(error: unknown): string {
     message.includes("econnreset") ||
     message.includes("enotfound")
   ) {
-    return "MODEL_DOWNLOAD_FAILED";
+    return "RUNTIME_OR_MODEL_DOWNLOAD_FAILED";
   }
 
   if (
@@ -349,11 +402,11 @@ function errorCode(error: unknown): string {
     message.includes("integrity") ||
     message.includes("corrupt")
   ) {
-    return "MODEL_INTEGRITY_FAILED";
+    return "INTEGRITY_VERIFICATION_FAILED";
   }
 
   if (message.includes("manifest")) {
-    return "MODEL_MANIFEST_FAILED";
+    return "MANIFEST_VERIFICATION_FAILED";
   }
 
   if (
@@ -373,7 +426,10 @@ function errorCode(error: unknown): string {
     return "INSUFFICIENT_RESOURCES";
   }
 
-  if (message.includes("compatible") || message.includes("compatibility")) {
+  if (
+    message.includes("compatible") ||
+    message.includes("compatibility")
+  ) {
     return "MODEL_INCOMPATIBLE";
   }
 
@@ -435,63 +491,6 @@ async function runStage<T>(
 
 /**
  * ============================================================================
- * Runtime executable discovery
- * ============================================================================
- */
-
-async function isExecutableFile(filePath: string): Promise<boolean> {
-  try {
-    const stat = await fs.stat(filePath);
-
-    return stat.isFile();
-  } catch {
-    return false;
-  }
-}
-
-async function resolveLlamaServerExecutable(): Promise<string> {
-  const candidates: string[] = [];
-
-  const explicit = process.env.VEYRA_LLAMA_SERVER_PATH?.trim();
-
-  if (explicit) {
-    candidates.push(path.resolve(explicit));
-  }
-
-  candidates.push(path.resolve(process.cwd(), "llama-server.exe"));
-
-  candidates.push(path.resolve(process.cwd(), "llama-server"));
-
-  candidates.push(path.resolve(process.cwd(), "bin", "llama-server.exe"));
-
-  candidates.push(path.resolve(process.cwd(), "bin", "llama-server"));
-
-  const uniqueCandidates = [...new Set(candidates)];
-
-  for (const candidate of uniqueCandidates) {
-    if (await isExecutableFile(candidate)) {
-      return candidate;
-    }
-  }
-
-  throw new Error(
-    [
-      "llama-server executable was not found.",
-      "",
-      "Checked:",
-      ...uniqueCandidates.map((candidate) => `  - ${candidate}`),
-      "",
-      "Veyra currently requires the llama.cpp",
-      "server executable to already exist.",
-      "",
-      "Set VEYRA_LLAMA_SERVER_PATH to the",
-      "full path of llama-server.exe.",
-    ].join("\n"),
-  );
-}
-
-/**
- * ============================================================================
  * Model helpers
  * ============================================================================
  */
@@ -500,14 +499,19 @@ function getModelArtifacts(model: ModelDefinition) {
   return model.package?.artifacts ?? [];
 }
 
-function getModelPackageSize(model: ModelDefinition): number {
+function getModelPackageSize(
+  model: ModelDefinition,
+): number {
   return getModelArtifacts(model).reduce(
-    (total, artifact) => total + artifact.sizeBytes,
+    (total, artifact) =>
+      total + artifact.sizeBytes,
     0,
   );
 }
 
-function describeModel(model: ModelDefinition): void {
+function describeModel(
+  model: ModelDefinition,
+): void {
   const artifacts = getModelArtifacts(model);
 
   success(`Model: ${model.displayName}`);
@@ -522,7 +526,11 @@ function describeModel(model: ModelDefinition): void {
 
   success(`Artifacts: ${artifacts.length}`);
 
-  success(`Package size: ${formatBytes(getModelPackageSize(model))}`);
+  success(
+    `Package size: ${formatBytes(
+      getModelPackageSize(model),
+    )}`,
+  );
 }
 
 /**
@@ -532,45 +540,75 @@ function describeModel(model: ModelDefinition): void {
  */
 
 async function detectHardware(): Promise<HardwareProfile> {
-  return runStage(1, "Hardware detection", async () => {
-    progress("Creating Veyra HardwareProfiler...");
+  return runStage(
+    1,
+    "Hardware detection",
+    async () => {
+      progress(
+        "Creating Veyra HardwareProfiler...",
+      );
 
-    const profiler = new HardwareProfiler();
+      const profiler = new HardwareProfiler();
 
-    progress("Running Veyra hardware detection...");
+      progress(
+        "Running Veyra hardware detection...",
+      );
 
-    const profile = await profiler.profile();
+      const profile = await profiler.profile();
 
-    pipeline.hardwareProfile = profile;
+      pipeline.hardwareProfile = profile;
 
-    success(`Operating system: ${profile.operatingSystem}`);
+      success(
+        `Operating system: ${profile.operatingSystem}`,
+      );
 
-    success(`Architecture: ${profile.architecture}`);
+      success(
+        `Architecture: ${profile.architecture}`,
+      );
 
-    success(`CPU: ${profile.cpu.brand}`);
+      success(`CPU: ${profile.cpu.brand}`);
 
-    success(`Physical cores: ${profile.cpu.physicalCores}`);
+      success(
+        `Physical cores: ${profile.cpu.physicalCores}`,
+      );
 
-    success(`Logical cores: ${profile.cpu.logicalCores}`);
+      success(
+        `Logical cores: ${profile.cpu.logicalCores}`,
+      );
 
-    success(`RAM: ${profile.memory.totalGB.toFixed(2)} GB total`);
+      success(
+        `RAM: ${profile.memory.totalGB.toFixed(
+          2,
+        )} GB total`,
+      );
 
-    success(`Available RAM: ${profile.memory.availableGB.toFixed(2)} GB`);
+      success(
+        `Available RAM: ${profile.memory.availableGB.toFixed(
+          2,
+        )} GB`,
+      );
 
-    success(`Hardware tier: ${profile.tier}`);
+      success(`Hardware tier: ${profile.tier}`);
 
-    success(
-      `Local AI recommended: ${profile.localAIRecommended ? "yes" : "no"}`,
-    );
+      success(
+        `Local AI recommended: ${
+          profile.localAIRecommended
+            ? "yes"
+            : "no"
+        }`,
+      );
 
-    success(
-      `llama.cpp detected by profiler: ${
-        profile.runtime.llamaCpp ? "yes" : "no"
-      }`,
-    );
+      success(
+        `llama.cpp detected by profiler: ${
+          profile.runtime.llamaCpp
+            ? "yes"
+            : "no"
+        }`,
+      );
 
-    return profile;
-  });
+      return profile;
+    },
+  );
 }
 
 /**
@@ -579,275 +617,376 @@ async function detectHardware(): Promise<HardwareProfile> {
  * ============================================================================
  */
 
-async function createModelPipeline(profile: HardwareProfile): Promise<{
+async function createModelPipeline(
+  profile: HardwareProfile,
+): Promise<{
   readonly modelManager: ModelManager;
   readonly selectedModel: ModelDefinition;
 }> {
-  return runStage(2, "Hardware/model selection", async () => {
-    progress("Creating ModelPaths...");
+  return runStage(
+    2,
+    "Hardware/model selection",
+    async () => {
+      progress("Creating ModelPaths...");
 
-    const paths = new ModelPaths({
-      applicationDataDirectory: MODEL_ROOT,
-    });
+      const paths = new ModelPaths({
+        applicationDataDirectory:
+          MODEL_ROOT,
+      });
 
-    pipeline.paths = paths;
+      pipeline.paths = paths;
 
-    success(`Model root: ${paths.getRootDirectory()}`);
-
-    progress("Creating ModelStorage...");
-
-    const storage = new ModelStorage({
-      paths,
-    });
-
-    await storage.initialize();
-
-    success("ModelStorage initialized.");
-
-    progress("Creating ModelDownloadQueue...");
-
-    const queue = new ModelDownloadQueue({
-      stateFilePath: paths.getDownloadQueueStatePath(),
-
-      concurrency: 1,
-
-      modelResolver: (modelId) => defaultModelRegistry.get(modelId),
-    });
-
-    await queue.initialize();
-
-    success("ModelDownloadQueue initialized.");
-
-    progress("Creating ModelInstallationManager...");
-
-    const installationManager = new ModelInstallationManager({
-      queue,
-      storage,
-    });
-
-    success("ModelInstallationManager connected to ModelStorage and queue.");
-
-    progress("Creating RuntimeRegistry...");
-
-    const runtimeRegistry = new RuntimeRegistry();
-
-    progress("Creating ModelRuntimeManager...");
-
-    const runtimeManager = new ModelRuntimeManager({
-      storage,
-      runtimeRegistry,
-    });
-
-    success(
-      "ModelRuntimeManager connected to ModelStorage and RuntimeRegistry.",
-    );
-
-    progress("Creating ModelManager...");
-
-   const manager = new ModelManager(
-     {
-       selection: {
-         fallbackCount: 3,
-
-         /*
-          * This integration test intentionally permits warning-compatible
-          * models.
-          *
-          * A warning means the model is still considered runnable, but the
-          * hardware is below one or more recommended (not minimum) targets.
-          *
-          * Example on the current test machine:
-          * - Qwen3 0.6B minimum CPU cores: 2
-          * - Current physical CPU cores: 2
-          * - Recommended CPU cores: 4
-          *
-          * Therefore the model is:
-          *   compatible_with_warning
-          *
-          * It is NOT:
-          *   incompatible
-          *
-          * The test must allow this so we can validate the complete real
-          * installation -> runtime -> inference pipeline.
-          */
-         allowWarnings: true,
-       },
-
-       installationManager,
-       runtimeManager,
-     },
-     defaultModelRegistry,
-     undefined,
-     installationManager,
-     runtimeManager,
-   );
-
-    success("ModelManager connected to installation and runtime managers.");
-
-    pipeline.modelManager = manager;
-
-    pipeline.storage = storage;
-
-    pipeline.queue = queue;
-
-    pipeline.installationManager = installationManager;
-
-    pipeline.runtimeManager = runtimeManager;
-
-    pipeline.runtimeRegistry = runtimeRegistry;
-
-    progress("Running ModelManager.createSelectionPlan()...");
-
-    const plan = manager.createSelectionPlan(profile);
-
-    success(`Hardware tier selected: ${plan.hardwareTier}`);
-
-    success(`Compatible models evaluated: ${plan.allCompatibleModels.length}`);
-
-    /**
-     * Diagnostic compatibility report
-     * ---------------------------------
-     * This intentionally evaluates every available LLM through
-     * ModelManager so we can see exactly why each model is
-     * compatible, warning-compatible, or incompatible.
-     *
-     * This does NOT bypass ModelSelector.
-     * It is diagnostic output only.
-     */
-    section("LLM compatibility diagnostics");
-
-    const llmGroup = plan.groups.find((group) => group.modality === "llm");
-
-    if (!llmGroup) {
-      throw new Error("Veyra did not produce an LLM selection group.");
-    }
-
-    const llmCandidates = defaultModelRegistry
-      .listByModality("llm")
-      .filter((model) => model.availability === "available");
-
-    for (const model of llmCandidates) {
-      const compatibility = manager.evaluateModel(model.id, profile);
-
-      info(
-        `${model.displayName}: ${compatibility.level} ` +
-          `(score ${compatibility.score}/100)`,
-      );
-
-      for (const reason of compatibility.reasons) {
-        info(`  reason: ${reason}`);
-      }
-
-      for (const warning of compatibility.warnings) {
-        info(`  warning: ${warning}`);
-      }
-
-      for (const reason of compatibility.blockingReasons) {
-        info(`  blocked: ${reason}`);
-      }
-    }
-
-    if (llmGroup.primary) {
       success(
-        `Selected LLM: ${llmGroup.primary.model.displayName} ` +
-          `(${llmGroup.primary.compatibility.level})`,
+        `Model root: ${paths.getRootDirectory()}`,
       );
-    } else {
-      info("No LLM primary was selected.");
-    }
-    
-    if (!llmGroup?.primary) {
-      const availableModels = defaultModelRegistry
-        .listByModality("llm")
-        .filter((model) => model.availability === "available")
-        .map((model) => model.id);
 
-      throw new Error(
-        [
-          "Veyra ModelSelector did not produce",
-          "a compatible LLM model.",
-          "",
-          `Hardware tier: ${profile.tier}`,
-          `Available LLM models: ${availableModels.join(", ") || "none"}`,
-        ].join("\n"),
+      progress("Creating ModelStorage...");
+
+      const storage = new ModelStorage({
+        paths,
+      });
+
+      await storage.initialize();
+
+      success("ModelStorage initialized.");
+
+      progress(
+        "Creating ModelDownloadQueue...",
       );
-    }
 
-    manager.activateSelectionPlan(plan);
+      const queue = new ModelDownloadQueue({
+        stateFilePath:
+          paths.getDownloadQueueStatePath(),
 
-    let selectedModel = llmGroup.primary.model;
+        concurrency: 1,
 
-    if (TEST_MODEL_ID) {
-      progress(`Validating requested model override "${TEST_MODEL_ID}"...`);
+        modelResolver: (modelId) =>
+          defaultModelRegistry.get(modelId),
+      });
 
-      const override = defaultModelRegistry.get(TEST_MODEL_ID);
+      await queue.initialize();
 
-      if (!override) {
+      success(
+        "ModelDownloadQueue initialized.",
+      );
+
+      progress(
+        "Creating ModelInstallationManager...",
+      );
+
+      const installationManager =
+        new ModelInstallationManager({
+          queue,
+          storage,
+        });
+
+      success(
+        "ModelInstallationManager connected to ModelStorage and queue.",
+      );
+
+      /*
+       * Runtime infrastructure
+       * -----------------------
+       *
+       * This is the important connection that was missing
+       * from the previous test.
+       */
+
+      progress(
+        "Creating RuntimeInstaller...",
+      );
+
+      const runtimeInstaller =
+        new RuntimeInstaller({
+          paths,
+        });
+
+      pipeline.runtimeInstaller =
+        runtimeInstaller;
+
+      success(
+        "RuntimeInstaller connected to ModelPaths.",
+      );
+
+      progress(
+        "Creating LlamaRuntimeLocator...",
+      );
+
+      const runtimeLocator =
+        new LlamaRuntimeLocator({
+          paths,
+
+          allowLegacyPaths: true,
+        });
+
+      pipeline.runtimeLocator =
+        runtimeLocator;
+
+      success(
+        "LlamaRuntimeLocator connected to ModelPaths.",
+      );
+
+      progress("Creating RuntimeRegistry...");
+
+      const runtimeRegistry =
+        new RuntimeRegistry();
+
+      progress(
+        "Creating ModelRuntimeManager...",
+      );
+
+      const runtimeManager =
+        new ModelRuntimeManager({
+          storage,
+          runtimeRegistry,
+        });
+
+      success(
+        "ModelRuntimeManager connected to ModelStorage and RuntimeRegistry.",
+      );
+
+      progress("Creating ModelManager...");
+
+      const manager = new ModelManager(
+        {
+          selection: {
+            fallbackCount: 3,
+
+            allowWarnings: true,
+          },
+
+          installationManager,
+
+          runtimeManager,
+        },
+        defaultModelRegistry,
+        undefined,
+        installationManager,
+        runtimeManager,
+      );
+
+      success(
+        "ModelManager connected to installation and runtime managers.",
+      );
+
+      pipeline.modelManager = manager;
+
+      pipeline.storage = storage;
+
+      pipeline.queue = queue;
+
+      pipeline.installationManager =
+        installationManager;
+
+      pipeline.runtimeManager =
+        runtimeManager;
+
+      pipeline.runtimeRegistry =
+        runtimeRegistry;
+
+      progress(
+        "Running ModelManager.createSelectionPlan()...",
+      );
+
+      const plan =
+        manager.createSelectionPlan(
+          profile,
+        );
+
+      success(
+        `Hardware tier selected: ${plan.hardwareTier}`,
+      );
+
+      success(
+        `Compatible models evaluated: ${plan.allCompatibleModels.length}`,
+      );
+
+      section(
+        "LLM compatibility diagnostics",
+      );
+
+      const llmGroup =
+        plan.groups.find(
+          (group) =>
+            group.modality === "llm",
+        );
+
+      if (!llmGroup) {
         throw new Error(
-          `VEYRA_TEST_MODEL_ID "${TEST_MODEL_ID}" is not registered.`,
+          "Veyra did not produce an LLM selection group.",
         );
       }
 
-      if (override.availability !== "available") {
-        throw new Error(
-          `VEYRA_TEST_MODEL_ID "${TEST_MODEL_ID}" is not available for installation.`,
+      const llmCandidates =
+        defaultModelRegistry
+          .listByModality("llm")
+          .filter(
+            (model) =>
+              model.availability ===
+              "available",
+          );
+
+      for (const model of llmCandidates) {
+        const compatibility =
+          manager.evaluateModel(
+            model.id,
+            profile,
+          );
+
+        info(
+          `${model.displayName}: ${compatibility.level} ` +
+            `(score ${compatibility.score}/100)`,
+        );
+
+        for (const reason of compatibility.reasons) {
+          info(`  reason: ${reason}`);
+        }
+
+        for (const warning of compatibility.warnings) {
+          info(`  warning: ${warning}`);
+        }
+
+        for (const reason of compatibility.blockingReasons) {
+          info(`  blocked: ${reason}`);
+        }
+      }
+
+      if (llmGroup.primary) {
+        success(
+          `Selected LLM: ${llmGroup.primary.model.displayName} ` +
+            `(${llmGroup.primary.compatibility.level})`,
         );
       }
 
-      if (override.modality !== "llm") {
-        throw new Error(
-          `VEYRA_TEST_MODEL_ID "${TEST_MODEL_ID}" is not an LLM.`,
-        );
-      }
+      if (!llmGroup.primary) {
+        const availableModels =
+          defaultModelRegistry
+            .listByModality("llm")
+            .filter(
+              (model) =>
+                model.availability ===
+                "available",
+            )
+            .map(
+              (model) => model.id,
+            );
 
-      const compatibility = manager.evaluateModel(override.id, profile);
-
-      if (compatibility.level === "incompatible") {
         throw new Error(
           [
-            `Requested model "${TEST_MODEL_ID}" is incompatible.`,
+            "Veyra ModelSelector did not produce",
+            "a compatible LLM model.",
             "",
-            `Compatibility level: ${compatibility.level}`,
-            `Score: ${compatibility.score}`,
-            "",
-            "Blocking reasons:",
-            ...(compatibility.blockingReasons.length > 0
-              ? compatibility.blockingReasons.map((reason) => `  - ${reason}`)
-              : ["  - No blocking reason supplied."]),
-            "",
-            "Reasons:",
-            ...(compatibility.reasons.length > 0
-              ? compatibility.reasons.map((reason) => `  - ${reason}`)
-              : ["  - None."]),
+            `Hardware tier: ${profile.tier}`,
+            `Available LLM models: ${
+              availableModels.join(
+                ", ",
+              ) || "none"
+            }`,
           ].join("\n"),
         );
       }
 
-      selectedModel = override;
-
-      success(`Explicit model override accepted: ${selectedModel.id}`);
-    }
-
-    if (selectedModel.runtime !== "llama_cpp") {
-      throw new Error(
-        [
-          `Selected model "${selectedModel.id}" uses runtime "${selectedModel.runtime}".`,
-          "",
-          "This integration test specifically validates",
-          "the Veyra llama_cpp local LLM pipeline.",
-        ].join("\n"),
+      manager.activateSelectionPlan(
+        plan,
       );
-    }
 
-    pipeline.selectedModel = selectedModel;
+      let selectedModel =
+        llmGroup.primary.model;
 
-    describeModel(selectedModel);
+      if (TEST_MODEL_ID) {
+        progress(
+          `Validating requested model override "${TEST_MODEL_ID}"...`,
+        );
 
-    return {
-      modelManager: manager,
-      selectedModel,
-    };
-  });
+        const override =
+          defaultModelRegistry.get(
+            TEST_MODEL_ID,
+          );
+
+        if (!override) {
+          throw new Error(
+            `VEYRA_TEST_MODEL_ID "${TEST_MODEL_ID}" is not registered.`,
+          );
+        }
+
+        if (
+          override.availability !==
+          "available"
+        ) {
+          throw new Error(
+            `VEYRA_TEST_MODEL_ID "${TEST_MODEL_ID}" is not available for installation.`,
+          );
+        }
+
+        if (override.modality !== "llm") {
+          throw new Error(
+            `VEYRA_TEST_MODEL_ID "${TEST_MODEL_ID}" is not an LLM.`,
+          );
+        }
+
+        const compatibility =
+          manager.evaluateModel(
+            override.id,
+            profile,
+          );
+
+        if (
+          compatibility.level ===
+          "incompatible"
+        ) {
+          throw new Error(
+            [
+              `Requested model "${TEST_MODEL_ID}" is incompatible.`,
+              "",
+              `Compatibility level: ${compatibility.level}`,
+              `Score: ${compatibility.score}`,
+              "",
+              "Blocking reasons:",
+              ...(compatibility.blockingReasons.length >
+              0
+                ? compatibility.blockingReasons.map(
+                    (reason) =>
+                      `  - ${reason}`,
+                  )
+                : [
+                    "  - No blocking reason supplied.",
+                  ]),
+            ].join("\n"),
+          );
+        }
+
+        selectedModel = override;
+
+        success(
+          `Explicit model override accepted: ${selectedModel.id}`,
+        );
+      }
+
+      if (
+        selectedModel.runtime !==
+        "llama_cpp"
+      ) {
+        throw new Error(
+          [
+            `Selected model "${selectedModel.id}" uses runtime "${selectedModel.runtime}".`,
+            "",
+            "This integration test specifically validates",
+            "the Veyra llama_cpp local LLM pipeline.",
+          ].join("\n"),
+        );
+      }
+
+      pipeline.selectedModel =
+        selectedModel;
+
+      describeModel(selectedModel);
+
+      return {
+        modelManager: manager,
+        selectedModel,
+      };
+    },
+  );
 }
 
 /**
@@ -861,65 +1000,105 @@ async function verifyCompatibility(
   modelManager: ModelManager,
   selectedModel: ModelDefinition,
 ): Promise<void> {
-  await runStage(3, "Compatibility", async () => {
-    progress(`Evaluating "${selectedModel.id}" through ModelManager...`);
-
-    const compatibility = modelManager.evaluateModel(selectedModel.id, profile);
-
-    info(`Level: ${compatibility.level}`);
-
-    info(`Score: ${compatibility.score.toFixed(1)}/100`);
-
-    if (compatibility.reasons.length > 0) {
-      info("Reasons:");
-
-      for (const reason of compatibility.reasons) {
-        info(`  - ${reason}`);
-      }
-    }
-
-    if (compatibility.warnings.length > 0) {
-      info("Warnings:");
-
-      for (const warning of compatibility.warnings) {
-        info(`  - ${warning}`);
-      }
-    }
-
-    if (compatibility.blockingReasons.length > 0) {
-      info("Blocking reasons:");
-
-      for (const reason of compatibility.blockingReasons) {
-        info(`  - ${reason}`);
-      }
-    }
-
-    if (compatibility.level === "incompatible") {
-      throw new Error(
-        [
-          `Model "${selectedModel.id}" is incompatible with this hardware.`,
-          "",
-          ...compatibility.blockingReasons,
-        ].join("\n"),
+  await runStage(
+    3,
+    "Compatibility",
+    async () => {
+      progress(
+        `Evaluating "${selectedModel.id}" through ModelManager...`,
       );
-    }
 
-    success(`Model compatibility: ${compatibility.level}`);
+      const compatibility =
+        modelManager.evaluateModel(
+          selectedModel.id,
+          profile,
+        );
 
-    if (compatibility.level === "compatible_with_warning") {
-      success("Compatibility passed with warnings.");
-    } else {
-      success("Model is fully compatible.");
-    }
+      info(
+        `Level: ${compatibility.level}`,
+      );
 
-    const runtimeRegistry = pipeline.runtimeRegistry;
+      info(
+        `Score: ${compatibility.score.toFixed(
+          1,
+        )}/100`,
+      );
 
-    if (!runtimeRegistry) {
-      throw new Error("RuntimeRegistry was not created.");
-    }
+      if (
+        compatibility.reasons.length > 0
+      ) {
+        info("Reasons:");
 
-    success("RuntimeRegistry exists.");
-  });
+        for (const reason of compatibility.reasons) {
+          info(`  - ${reason}`);
+        }
+      }
+
+      if (
+        compatibility.warnings.length > 0
+      ) {
+        info("Warnings:");
+
+        for (const warning of compatibility.warnings) {
+          info(`  - ${warning}`);
+        }
+      }
+
+      if (
+        compatibility.blockingReasons
+          .length > 0
+      ) {
+        info("Blocking reasons:");
+
+        for (const reason of compatibility.blockingReasons) {
+          info(`  - ${reason}`);
+        }
+      }
+
+      if (
+        compatibility.level ===
+        "incompatible"
+      ) {
+        throw new Error(
+          [
+            `Model "${selectedModel.id}" is incompatible with this hardware.`,
+            "",
+            ...compatibility.blockingReasons,
+          ].join("\n"),
+        );
+      }
+
+      success(
+        `Model compatibility: ${compatibility.level}`,
+      );
+
+      if (
+        compatibility.level ===
+        "compatible_with_warning"
+      ) {
+        success(
+          "Compatibility passed with warnings.",
+        );
+      } else {
+        success(
+          "Model is fully compatible.",
+        );
+      }
+
+      const runtimeRegistry =
+        pipeline.runtimeRegistry;
+
+      if (!runtimeRegistry) {
+        throw new Error(
+          "RuntimeRegistry was not created.",
+        );
+      }
+
+      success(
+        "RuntimeRegistry exists.",
+      );
+    },
+  );
 }
 
 /**
@@ -933,39 +1112,63 @@ async function checkInstallation(
 ): Promise<boolean> {
   let alreadyInstalled = false;
 
-  await runStage(4, "Installation check", async () => {
-    const installationManager = pipeline.installationManager;
+  await runStage(
+    4,
+    "Installation check",
+    async () => {
+      const installationManager =
+        pipeline.installationManager;
 
-    if (!installationManager) {
-      throw new Error(
-        "ModelInstallationManager is not connected to ModelManager.",
+      if (!installationManager) {
+        throw new Error(
+          "ModelInstallationManager is not connected to ModelManager.",
+        );
+      }
+
+      progress(
+        "Checking ModelStorage for an existing verified installation...",
       );
-    }
 
-    progress("Checking ModelStorage for an existing verified installation...");
+      const stored =
+        await installationManager.getInstalledModel(
+          selectedModel,
+        );
 
-    const stored = await installationManager.getInstalledModel(selectedModel);
+      if (stored) {
+        alreadyInstalled = true;
 
-    if (stored) {
-      alreadyInstalled = true;
+        success(
+          "Verified installation already exists.",
+        );
 
-      success("Verified installation already exists.");
+        success(
+          `Manifest path: ${stored.manifestPath}`,
+        );
 
-      success(`Manifest path: ${stored.manifestPath}`);
+        success(
+          `Primary artifact: ${stored.artifactPath}`,
+        );
 
-      success(`Primary artifact: ${stored.artifactPath}`);
+        success(
+          `Installed artifacts: ${
+            Object.keys(
+              stored.artifactPaths,
+            ).length
+          }`,
+        );
+
+        return;
+      }
+
+      info(
+        "No verified installation exists yet.",
+      );
 
       success(
-        `Installed artifacts: ${Object.keys(stored.artifactPaths).length}`,
+        "Model installation is required.",
       );
-
-      return;
-    }
-
-    info("No verified installation exists yet.");
-
-    success("Model installation is required.");
-  });
+    },
+  );
 
   return alreadyInstalled;
 }
@@ -981,220 +1184,254 @@ async function installModel(
   selectedModel: ModelDefinition,
   alreadyInstalled: boolean,
 ): Promise<void> {
-  await runStage(5, "Model installation", async () => {
-    if (alreadyInstalled) {
-      success("Existing verified installation will be reused.");
+  await runStage(
+    5,
+    "Model installation",
+    async () => {
+      if (alreadyInstalled) {
+        success(
+          "Existing verified installation will be reused.",
+        );
 
-      /*
-       * Even when the model is already installed, check the current
-       * load-readiness separately from installation status.
-       *
-       * Installation and runtime loading are intentionally independent.
-       */
-      const installationManager = pipeline.installationManager;
+        const installationManager =
+          pipeline.installationManager;
+
+        const paths = pipeline.paths;
+
+        if (
+          installationManager &&
+          paths
+        ) {
+          const modelDirectory =
+            paths.getModelDirectory(
+              selectedModel.modality,
+              selectedModel.id,
+            );
+
+          try {
+            const prepared =
+              await installationManager.prepareModel(
+                selectedModel,
+                modelDirectory,
+              );
+
+            if (prepared.memorySafe) {
+              success(
+                "Installed model is currently memory-safe to load.",
+              );
+            } else {
+              info(
+                "Installed model is valid, but current memory pressure prevents immediate loading.",
+              );
+
+              for (const warning of prepared.warnings) {
+                info(`  ${warning}`);
+              }
+            }
+          } catch (error) {
+            info(
+              `Could not perform post-install memory diagnostics: ${errorMessage(
+                error,
+              )}`,
+            );
+          }
+        }
+
+        return;
+      }
+
+      progress(
+        `Installing "${selectedModel.displayName}" through ModelManager...`,
+      );
+
+      progress(
+        "ModelManager → ModelInstallationManager",
+      );
+
+      progress(
+        "ModelInstallationManager → ModelPackageDownloader",
+      );
+
+      progress(
+        "ModelPackageDownloader → ModelDownloader",
+      );
+
+      let lastPercentage = -1;
+
+      const installation =
+        await modelManager.install(
+          selectedModel.id,
+          {
+            priority:
+              selectedModel.priority,
+
+            onProgress:
+              (
+                downloadProgress,
+              ) => {
+                const current =
+                  downloadProgress.percentage;
+
+                const numericPercentage =
+                  typeof current ===
+                    "number" &&
+                  Number.isFinite(
+                    current,
+                  )
+                    ? current
+                    : null;
+
+                const rounded =
+                  numericPercentage ===
+                  null
+                    ? -1
+                    : Math.floor(
+                        numericPercentage,
+                      );
+
+                if (
+                  rounded ===
+                  lastPercentage
+                ) {
+                  return;
+                }
+
+                lastPercentage =
+                  rounded;
+
+                const downloaded =
+                  formatBytes(
+                    downloadProgress.bytesDownloaded,
+                  );
+
+                const total =
+                  formatBytes(
+                    downloadProgress.totalBytes,
+                  );
+
+                const phase = String(
+                  downloadProgress.phase ??
+                    "download",
+                );
+
+                process.stdout.write(
+                  `\r      ↓ ${phase.padEnd(
+                    12,
+                  )} ${formatPercentage(
+                    numericPercentage,
+                  ).padStart(
+                    7,
+                  )} ${downloaded} / ${total}   `,
+                );
+
+                if (
+                  rounded >= 100
+                ) {
+                  process.stdout.write(
+                    "\n",
+                  );
+                }
+              },
+          },
+        );
+
+      process.stdout.write("\n");
+
+      success(
+        "ModelManager installation completed.",
+      );
+
+      success(
+        `Downloaded bytes: ${formatBytes(
+          installation.download
+            .bytesDownloaded,
+        )}`,
+      );
+
+      success(
+        `SHA-256: ${installation.download.sha256}`,
+      );
+
+      success(
+        `Primary artifact: ${installation.download.filePath}`,
+      );
+
+      const installationManager =
+        pipeline.installationManager;
+
+      if (!installationManager) {
+        throw new Error(
+          "ModelInstallationManager is not available after installation.",
+        );
+      }
 
       const paths = pipeline.paths;
 
-      if (installationManager && paths) {
-        const modelDirectory = paths.getModelDirectory(
+      if (!paths) {
+        throw new Error(
+          "ModelPaths is not available after installation.",
+        );
+      }
+
+      const modelDirectory =
+        paths.getModelDirectory(
           selectedModel.modality,
           selectedModel.id,
         );
 
-        try {
-          const prepared = await installationManager.prepareModel(
-            selectedModel,
-            modelDirectory,
-          );
-
-          if (prepared.memorySafe) {
-            success("Installed model is currently memory-safe to load.");
-          } else {
-            info(
-              "Installed model is valid, but current memory pressure prevents immediate loading.",
-            );
-
-            for (const warning of prepared.warnings) {
-              info(`  ${warning}`);
-            }
-          }
-        } catch (error) {
-          info(
-            `Could not perform post-install memory diagnostics: ${errorMessage(
-              error,
-            )}`,
-          );
-        }
-      }
-
-      return;
-    }
-
-    progress(
-      `Installing "${selectedModel.displayName}" through ModelManager...`,
-    );
-
-    progress("ModelManager → ModelInstallationManager");
-
-    progress("ModelInstallationManager → ModelPackageDownloader");
-
-    progress("ModelPackageDownloader → ModelDownloader");
-
-    let lastPercentage = -1;
-
-    const installation = await modelManager.install(selectedModel.id, {
-      priority: selectedModel.priority,
-
-      /*
-       * IMPORTANT
-       * =========
-       *
-       * Do NOT require memory safety during installation.
-       *
-       * Downloading a GGUF file does not load the model into RAM.
-       *
-       * ModelRuntimeManager will perform the real memory-safety check
-       * when the model is actually loaded.
-       */
-      onProgress: (downloadProgress) => {
-        const current = downloadProgress.percentage;
-
-        const numericPercentage =
-          typeof current === "number" && Number.isFinite(current)
-            ? current
-            : null;
-
-        const rounded =
-          numericPercentage === null ? -1 : Math.floor(numericPercentage);
-
-        if (rounded === lastPercentage) {
-          return;
-        }
-
-        lastPercentage = rounded;
-
-        const downloaded = formatBytes(downloadProgress.bytesDownloaded);
-
-        const total = formatBytes(downloadProgress.totalBytes);
-
-        const phase = String(downloadProgress.phase ?? "download");
-
-        process.stdout.write(
-          `\r      ↓ ${phase.padEnd(12)} ${formatPercentage(
-            numericPercentage,
-          ).padStart(7)} ${downloaded} / ${total}   `,
+      const prepared =
+        await installationManager.prepareModel(
+          selectedModel,
+          modelDirectory,
         );
 
-        if (rounded >= 100) {
-          process.stdout.write("\n");
+      if (prepared.memorySafe) {
+        success(
+          "Model is currently memory-safe to load.",
+        );
+      } else {
+        info(
+          "Model installation completed successfully, but the model should not be loaded yet because of current memory pressure.",
+        );
+
+        for (const warning of prepared.warnings) {
+          info(`  ${warning}`);
         }
-      },
-    });
-
-    process.stdout.write("\n");
-
-    success("ModelManager installation completed.");
-
-    success(
-      `Downloaded bytes: ${formatBytes(installation.download.bytesDownloaded)}`,
-    );
-
-    success(`SHA-256: ${installation.download.sha256}`);
-
-    success(`Primary artifact: ${installation.download.filePath}`);
-
-    /*
-     * ModelManager's public installation result intentionally contains
-     * installation/package information, not the lower-level memory
-     * diagnostic fields.
-     *
-     * Ask ModelInstallationManager for the current load-readiness state.
-     */
-    const installationManager = pipeline.installationManager;
-
-    if (!installationManager) {
-      throw new Error(
-        "ModelInstallationManager is not available after installation.",
-      );
-    }
-
-    const paths = pipeline.paths;
-
-    if (!paths) {
-      throw new Error("ModelPaths is not available after installation.");
-    }
-
-    const modelDirectory = paths.getModelDirectory(
-      selectedModel.modality,
-      selectedModel.id,
-    );
-
-    const prepared = await installationManager.prepareModel(
-      selectedModel,
-      modelDirectory,
-    );
-
-    if (prepared.memorySafe) {
-      success("Model is currently memory-safe to load.");
-    } else {
-      info(
-        "Model installation completed successfully, but the model should not be loaded yet because of current memory pressure.",
-      );
-
-      for (const warning of prepared.warnings) {
-        info(`  ${warning}`);
       }
 
-      info(
-        `Available RAM: ${formatBytes(prepared.memory.availableMemoryBytes)}`,
+      const manifestPath =
+        paths.getManifestPath(
+          selectedModel.modality,
+          selectedModel.id,
+        );
+
+      success(
+        `Manifest: ${manifestPath}`,
       );
 
-      info(
-        `Safety reserve: ${formatBytes(prepared.memory.safetyReserveBytes)}`,
+      try {
+        await fs.access(manifestPath);
+
+        success(
+          "Manifest file exists on disk.",
+        );
+      } catch {
+        throw new Error(
+          [
+            "Model installation completed,",
+            "but the expected manifest file",
+            "could not be found.",
+            "",
+            `Expected manifest: ${manifestPath}`,
+          ].join("\n"),
+        );
+      }
+
+      success(
+        "Model package registered in ModelStorage.",
       );
-
-      info(
-        `Effective available RAM: ${formatBytes(
-          prepared.memory.effectiveAvailableBytes,
-        )}`,
-      );
-
-      info(`Required RAM: ${formatBytes(prepared.memory.requiredMemoryBytes)}`);
-
-      info(`Memory shortfall: ${formatBytes(prepared.memory.shortfallBytes)}`);
-    }
-
-    /*
-     * The manifest path is authoritative through ModelPaths.
-     */
-    const manifestPath = paths.getManifestPath(
-      selectedModel.modality,
-      selectedModel.id,
-    );
-
-    success(`Manifest: ${manifestPath}`);
-
-    /*
-     * Verify that the manifest actually exists on disk.
-     */
-    try {
-      await fs.access(manifestPath);
-
-      success("Manifest file exists on disk.");
-    } catch {
-      throw new Error(
-        [
-          "Model installation completed,",
-          "but the expected manifest file",
-          "could not be found.",
-          "",
-          `Expected manifest: ${manifestPath}`,
-        ].join("\n"),
-      );
-    }
-
-    success("Model package registered in ModelStorage.");
-  });
+    },
+  );
 }
 
 /**
@@ -1206,238 +1443,536 @@ async function installModel(
 async function verifyInstallation(
   selectedModel: ModelDefinition,
 ): Promise<void> {
-  await runStage(6, "Integrity verification", async () => {
-    const installationManager = pipeline.installationManager;
+  await runStage(
+    6,
+    "Integrity verification",
+    async () => {
+      const installationManager =
+        pipeline.installationManager;
 
-    if (!installationManager) {
-      throw new Error("ModelInstallationManager is not connected.");
-    }
+      if (!installationManager) {
+        throw new Error(
+          "ModelInstallationManager is not connected.",
+        );
+      }
 
-    progress("Reading the installed model through ModelStorage...");
-
-    const stored = await installationManager.getInstalledModel(selectedModel);
-
-    if (!stored) {
-      throw new Error(
-        [
-          `ModelStorage did not return a verified installation for "${selectedModel.id}".`,
-          "",
-          "The model may have downloaded but was not",
-          "successfully registered as a valid installation.",
-        ].join("\n"),
+      progress(
+        "Reading the installed model through ModelStorage...",
       );
-    }
 
-    success("Stored model found.");
+      const stored =
+        await installationManager.getInstalledModel(
+          selectedModel,
+        );
 
-    success(`Manifest path: ${stored.manifestPath}`);
+      if (!stored) {
+        throw new Error(
+          [
+            `ModelStorage did not return a verified installation for "${selectedModel.id}".`,
+            "",
+            "The model may have downloaded but was not",
+            "successfully registered as a valid installation.",
+          ].join("\n"),
+        );
+      }
 
-    success(`Primary artifact: ${stored.artifactPath}`);
+      success("Stored model found.");
 
-    success(`Manifest version: ${stored.manifest.manifestVersion}`);
-
-    success(`Artifact count: ${Object.keys(stored.artifactPaths).length}`);
-
-    success("ModelStorage accepted the installation.");
-
-    success("Manifest identity verified.");
-
-    success("Artifact paths verified.");
-
-    success("Required artifacts verified.");
-
-    success("Installation integrity verified.");
-  });
-}
-
-/**
- * ============================================================================
- * Runtime registration
- * ============================================================================
- */
-
-async function registerLlamaRuntime(): Promise<LlamaCppRuntime> {
-  const runtimeRegistry = pipeline.runtimeRegistry;
-
-  if (!runtimeRegistry) {
-    throw new Error("RuntimeRegistry is not available.");
-  }
-
-  progress("Resolving llama.cpp executable...");
-
-  const executable = await resolveLlamaServerExecutable();
-
-  pipeline.runtimeExecutable = executable;
-
-  success(`llama-server: ${executable}`);
-
-  if (runtimeRegistry.has("llama_cpp")) {
-    progress("llama_cpp is already registered.");
-
-    const existing = runtimeRegistry.get("llama_cpp");
-
-    if (!(existing instanceof LlamaCppRuntime)) {
-      throw new Error(
-        [
-          "RuntimeRegistry already contains a",
-          "llama_cpp runtime, but it is not",
-          "the expected LlamaCppRuntime instance.",
-        ].join(" "),
+      success(
+        `Manifest path: ${stored.manifestPath}`,
       );
-    }
 
-    pipeline.runtime = existing;
+      success(
+        `Primary artifact: ${stored.artifactPath}`,
+      );
 
-    return existing;
-  }
+      success(
+        `Manifest version: ${stored.manifest.manifestVersion}`,
+      );
 
-  progress("Registering llama_cpp runtime factory...");
+      success(
+        `Artifact count: ${
+          Object.keys(
+            stored.artifactPaths,
+          ).length
+        }`,
+      );
 
-  runtimeRegistry.register(
-    "llama_cpp",
-    () =>
-      new LlamaCppRuntime({
-        executablePath: executable,
+      success(
+        "ModelStorage accepted the installation.",
+      );
 
-        host: RUNTIME_HOST,
+      success(
+        "Manifest identity verified.",
+      );
 
-        port: RUNTIME_PORT,
+      success(
+        "Artifact paths verified.",
+      );
 
-        startupTimeoutMs: STARTUP_TIMEOUT_MS,
+      success(
+        "Required artifacts verified.",
+      );
 
-        healthPollIntervalMs: 250,
-
-        shutdownTimeoutMs: 5_000,
-
-        mmprojGpuOffload: true,
-      }),
+      success(
+        "Installation integrity verified.",
+      );
+    },
   );
-
-  success("llama_cpp runtime factory registered.");
-
-  const runtime = runtimeRegistry.get("llama_cpp");
-
-  if (!(runtime instanceof LlamaCppRuntime)) {
-    throw new Error("RuntimeRegistry did not return LlamaCppRuntime.");
-  }
-
-  pipeline.runtime = runtime;
-
-  success(`Runtime instance created: ${runtime.name}`);
-
-  return runtime;
 }
 
 /**
  * ============================================================================
- * Stage 7 — Runtime loading
+ * Stage 7 — Runtime installation + loading
  * ============================================================================
  */
 
-async function loadRuntime(selectedModel: ModelDefinition): Promise<void> {
-  await runStage(7, "Runtime loading", async () => {
-    const runtimeManager = pipeline.runtimeManager;
+async function loadRuntime(
+  selectedModel: ModelDefinition,
+): Promise<void> {
+  await runStage(
+    7,
+    "Runtime installation & loading",
+    async () => {
+      const runtimeManager =
+        pipeline.runtimeManager;
 
-    if (!runtimeManager) {
-      throw new Error("ModelRuntimeManager is not connected.");
-    }
+      if (!runtimeManager) {
+        throw new Error(
+          "ModelRuntimeManager is not connected.",
+        );
+      }
 
-    const runtimeRegistry = pipeline.runtimeRegistry;
+      const runtimeRegistry =
+        pipeline.runtimeRegistry;
 
-    if (!runtimeRegistry) {
-      throw new Error("RuntimeRegistry is not connected.");
-    }
+      if (!runtimeRegistry) {
+        throw new Error(
+          "RuntimeRegistry is not connected.",
+        );
+      }
 
-    const runtime = await registerLlamaRuntime();
+      const runtimeInstaller =
+        pipeline.runtimeInstaller;
 
-    success(
-      `Registered runtimes: ${
-        runtimeManager.listRuntimes().join(", ") || "none"
-      }`,
-    );
+      if (!runtimeInstaller) {
+        throw new Error(
+          "RuntimeInstaller is not connected.",
+        );
+      }
 
-    if (!runtimeManager.supportsModel(selectedModel)) {
-      throw new Error(
-        [
-          `RuntimeRegistry does not support model "${selectedModel.id}".`,
-          `Model runtime requirement: ${selectedModel.runtime}`,
-        ].join("\n"),
+      const runtimeLocator =
+        pipeline.runtimeLocator;
+
+      if (!runtimeLocator) {
+        throw new Error(
+          "LlamaRuntimeLocator is not connected.",
+        );
+      }
+
+      /*
+       * ----------------------------------------------------------------------
+       * Runtime installation
+       * ----------------------------------------------------------------------
+       */
+
+      progress(
+        "Ensuring the llama.cpp runtime is installed...",
       );
-    }
 
-    success(`Runtime supports "${selectedModel.id}".`);
+      const runtimeInstallation =
+        await runtimeInstaller.ensureLlamaCpp(
+          {
+            onDownloadProgress: (
+              downloadedBytes,
+              totalBytes,
+            ) => {
+              const percentage =
+                totalBytes &&
+                totalBytes > 0
+                  ? (downloadedBytes /
+                      totalBytes) *
+                    100
+                  : undefined;
 
-    progress("Preparing model load through ModelRuntimeManager...");
+              process.stdout.write(
+                `\r      ↓ runtime       ${formatPercentage(
+                  percentage,
+                ).padStart(
+                  7,
+                )} ${formatBytes(
+                  downloadedBytes,
+                )} / ${formatBytes(
+                  totalBytes,
+                )}   `,
+              );
 
-    await runtimeManager.prepareLoad(selectedModel);
+              if (
+                percentage !==
+                  undefined &&
+                percentage >= 100
+              ) {
+                process.stdout.write(
+                  "\n",
+                );
+              }
+            },
+          },
+        );
 
-    success("Runtime load preparation passed.");
+      process.stdout.write("\n");
 
-    progress("Loading verified model through ModelRuntimeManager...");
+      if (runtimeInstallation.downloaded) {
+        success(
+          `llama.cpp runtime downloaded: ${runtimeInstallation.version}`,
+        );
 
-    const gpuLayers = process.env.VEYRA_GPU_LAYERS
-      ? Number.parseInt(process.env.VEYRA_GPU_LAYERS, 10)
-      : undefined;
+        success(
+          `Runtime package: ${runtimeInstallation.packageName}`,
+        );
 
-    const threads = process.env.VEYRA_LLAMA_THREADS
-      ? Number.parseInt(process.env.VEYRA_LLAMA_THREADS, 10)
-      : undefined;
+        success(
+          `Runtime SHA-256: ${runtimeInstallation.packageSha256}`,
+        );
+      } else {
+        success(
+          `Existing llama.cpp runtime reused: ${runtimeInstallation.version}`,
+        );
+      }
 
-    const batchSize = process.env.VEYRA_LLAMA_BATCH_SIZE
-      ? Number.parseInt(process.env.VEYRA_LLAMA_BATCH_SIZE, 10)
-      : undefined;
-
-    await runtimeManager.load(selectedModel, {
-      contextSize: 4096,
-
-      gpuLayers: Number.isFinite(gpuLayers) ? gpuLayers : undefined,
-
-      threads: Number.isFinite(threads) ? threads : undefined,
-
-      batchSize: Number.isFinite(batchSize) ? batchSize : undefined,
-    });
-
-    pipeline.loaded = true;
-
-    success("ModelRuntimeManager.load() completed.");
-
-    success("llama.cpp runtime loaded.");
-
-    const health: ModelRuntimeHealth = await runtimeManager.health();
-
-    if (!health.ready) {
-      throw new Error(
-        [
-          "llama.cpp reported an unhealthy runtime after loading.",
-          `Runtime: ${health.runtimeName}`,
-          `Loaded model: ${health.loadedModelId ?? "none"}`,
-        ].join("\n"),
+      success(
+        `Runtime directory: ${runtimeInstallation.runtimeDirectory}`,
       );
-    }
 
-    if (health.loadedModelId !== selectedModel.id) {
-      throw new Error(
-        [
-          "Runtime loaded a different model than expected.",
-          "",
-          `Expected: ${selectedModel.id}`,
-          `Actual: ${health.loadedModelId ?? "none"}`,
-        ].join("\n"),
+      success(
+        `Runtime manifest: ${runtimeInstallation.manifestPath}`,
       );
-    }
 
-    success("Runtime health check passed.");
+      /*
+       * ----------------------------------------------------------------------
+       * Runtime locator
+       * ----------------------------------------------------------------------
+       *
+       * Do not blindly trust the installer path.
+       *
+       * The locator is the application's runtime discovery
+       * abstraction.
+       */
 
-    success(`Loaded model: ${health.loadedModelId}`);
-
-    if (runtime.name !== "llama_cpp") {
-      throw new Error(
-        `Resolved runtime has unexpected name "${runtime.name}".`,
+      progress(
+        "Resolving the installed runtime through LlamaRuntimeLocator...",
       );
-    }
 
-    success("Runtime identity verified: llama_cpp.");
-  });
+      const location =
+        await runtimeLocator.resolve();
+
+      if (!location) {
+        throw new Error(
+          [
+            "RuntimeInstaller completed successfully,",
+            "but LlamaRuntimeLocator could not resolve",
+            "the installed llama.cpp executable.",
+            "",
+            `Expected runtime directory: ${runtimeInstallation.runtimeDirectory}`,
+            `Expected executable: ${runtimeInstallation.executablePath}`,
+          ].join("\n"),
+        );
+      }
+
+      pipeline.runtimeExecutable =
+        location.executablePath;
+
+      success(
+        `Runtime source: ${location.source}`,
+      );
+
+      success(
+        `llama-server: ${location.executablePath}`,
+      );
+
+      success(
+        `Runtime directory: ${location.runtimeDirectory}`,
+      );
+
+      if (location.version) {
+        success(
+          `Runtime version: ${location.version}`,
+        );
+      }
+
+      /*
+       * ----------------------------------------------------------------------
+       * Runtime registration
+       * ----------------------------------------------------------------------
+       */
+
+      if (
+        runtimeRegistry.has("llama_cpp")
+      ) {
+        progress(
+          "llama_cpp is already registered.",
+        );
+
+        const existing =
+          runtimeRegistry.get(
+            "llama_cpp",
+          );
+
+        if (
+          !(existing instanceof
+            LlamaCppRuntime)
+        ) {
+          throw new Error(
+            [
+              "RuntimeRegistry already contains a",
+              "llama_cpp runtime, but it is not",
+              "the expected LlamaCppRuntime instance.",
+            ].join(" "),
+          );
+        }
+
+        pipeline.runtime =
+          existing;
+      } else {
+        progress(
+          "Registering llama_cpp runtime factory...",
+        );
+
+        runtimeRegistry.register(
+          "llama_cpp",
+          () =>
+            new LlamaCppRuntime({
+              executablePath:
+                location.executablePath,
+
+              host: RUNTIME_HOST,
+
+              port: RUNTIME_PORT,
+
+              startupTimeoutMs:
+                STARTUP_TIMEOUT_MS,
+
+              healthPollIntervalMs:
+                250,
+
+              shutdownTimeoutMs:
+                5_000,
+
+              mmprojGpuOffload: true,
+            }),
+        );
+
+        success(
+          "llama_cpp runtime factory registered.",
+        );
+
+        const runtime =
+          runtimeRegistry.get(
+            "llama_cpp",
+          );
+
+        if (
+          !(runtime instanceof
+            LlamaCppRuntime)
+        ) {
+          throw new Error(
+            "RuntimeRegistry did not return LlamaCppRuntime.",
+          );
+        }
+
+        pipeline.runtime =
+          runtime;
+      }
+
+      const runtime =
+        pipeline.runtime;
+
+      if (!runtime) {
+        throw new Error(
+          "LlamaCppRuntime instance was not created.",
+        );
+      }
+
+      success(
+        `Runtime instance created: ${runtime.name}`,
+      );
+
+      /*
+       * ----------------------------------------------------------------------
+       * Model/runtime compatibility
+       * ----------------------------------------------------------------------
+       */
+
+      success(
+        `Registered runtimes: ${
+          runtimeManager
+            .listRuntimes()
+            .join(", ") ||
+          "none"
+        }`,
+      );
+
+      if (
+        !runtimeManager.supportsModel(
+          selectedModel,
+        )
+      ) {
+        throw new Error(
+          [
+            `RuntimeRegistry does not support model "${selectedModel.id}".`,
+            `Model runtime requirement: ${selectedModel.runtime}`,
+          ].join("\n"),
+        );
+      }
+
+      success(
+        `Runtime supports "${selectedModel.id}".`,
+      );
+
+      /*
+       * ----------------------------------------------------------------------
+       * Runtime preparation
+       * ----------------------------------------------------------------------
+       */
+
+      progress(
+        "Preparing model load through ModelRuntimeManager...",
+      );
+
+      await runtimeManager.prepareLoad(
+        selectedModel,
+      );
+
+      success(
+        "Runtime load preparation passed.",
+      );
+
+      /*
+       * ----------------------------------------------------------------------
+       * REAL llama.cpp loading
+       * ----------------------------------------------------------------------
+       */
+
+      progress(
+        "Loading verified model through ModelRuntimeManager...",
+      );
+
+      const gpuLayers =
+        process.env.VEYRA_GPU_LAYERS
+          ? Number.parseInt(
+              process.env.VEYRA_GPU_LAYERS,
+              10,
+            )
+          : undefined;
+
+      const threads =
+        process.env.VEYRA_LLAMA_THREADS
+          ? Number.parseInt(
+              process.env.VEYRA_LLAMA_THREADS,
+              10,
+            )
+          : undefined;
+
+      const batchSize =
+        process.env.VEYRA_LLAMA_BATCH_SIZE
+          ? Number.parseInt(
+              process.env.VEYRA_LLAMA_BATCH_SIZE,
+              10,
+            )
+          : undefined;
+
+      await runtimeManager.load(
+        selectedModel,
+        {
+          contextSize: 4096,
+
+          gpuLayers:
+            Number.isFinite(
+              gpuLayers,
+            )
+              ? gpuLayers
+              : undefined,
+
+          threads:
+            Number.isFinite(
+              threads,
+            )
+              ? threads
+              : undefined,
+
+          batchSize:
+            Number.isFinite(
+              batchSize,
+            )
+              ? batchSize
+              : undefined,
+        },
+      );
+
+      pipeline.loaded = true;
+
+      success(
+        "ModelRuntimeManager.load() completed.",
+      );
+
+      success(
+        "llama.cpp runtime loaded.",
+      );
+
+      const health: ModelRuntimeHealth =
+        await runtimeManager.health();
+
+      if (!health.ready) {
+        throw new Error(
+          [
+            "llama.cpp reported an unhealthy runtime after loading.",
+            `Runtime: ${health.runtimeName}`,
+            `Loaded model: ${
+              health.loadedModelId ??
+              "none"
+            }`,
+          ].join("\n"),
+        );
+      }
+
+      if (
+        health.loadedModelId !==
+        selectedModel.id
+      ) {
+        throw new Error(
+          [
+            "Runtime loaded a different model than expected.",
+            "",
+            `Expected: ${selectedModel.id}`,
+            `Actual: ${
+              health.loadedModelId ??
+              "none"
+            }`,
+          ].join("\n"),
+        );
+      }
+
+      success(
+        "Runtime health check passed.",
+      );
+
+      success(
+        `Loaded model: ${health.loadedModelId}`,
+      );
+
+      if (
+        runtime.name !== "llama_cpp"
+      ) {
+        throw new Error(
+          `Resolved runtime has unexpected name "${runtime.name}".`,
+        );
+      }
+
+      success(
+        "Runtime identity verified: llama_cpp.",
+      );
+    },
+  );
 }
 
 /**
@@ -1450,72 +1985,123 @@ async function runInference(
   modelManager: ModelManager,
   selectedModel: ModelDefinition,
 ): Promise<void> {
-  await runStage(8, "Real inference", async () => {
-    pipeline.inferenceAttempted = true;
+  await runStage(
+    8,
+    "Real inference",
+    async () => {
+      pipeline.inferenceAttempted =
+        true;
 
-    progress("Sending a real prompt through ModelManager.generate()...");
-
-    info(`Model: ${selectedModel.id}`);
-
-    info(`Prompt: "${TEST_PROMPT}"`);
-
-    const startedAt = Date.now();
-
-    const result = await modelManager.generate({
-      prompt: TEST_PROMPT,
-
-      maxTokens: 32,
-
-      temperature: 0,
-
-      topP: 1,
-    });
-
-    const duration = Date.now() - startedAt;
-
-    const response = result.text.trim();
-
-    const normalized = response.replace(/^["']|["']$/g, "").trim();
-
-    console.log("");
-
-    info(`Response: "${response}"`);
-
-    info(`Duration: ${formatDuration(duration)}`);
-
-    if (result.promptTokens !== undefined) {
-      info(`Prompt tokens: ${result.promptTokens}`);
-    }
-
-    if (result.completionTokens !== undefined) {
-      info(`Completion tokens: ${result.completionTokens}`);
-    }
-
-    if (
-      result.tokensPerSecond !== undefined &&
-      Number.isFinite(result.tokensPerSecond)
-    ) {
-      info(`Tokens/sec: ${result.tokensPerSecond.toFixed(2)}`);
-    }
-
-    if (normalized !== EXPECTED_RESPONSE) {
-      throw new Error(
-        [
-          "Real inference completed, but the response",
-          "did not match the integration-test response.",
-          "",
-          `Expected: ${EXPECTED_RESPONSE}`,
-          `Received: ${normalized || "(empty)"}`,
-        ].join("\n"),
+      progress(
+        "Sending a real prompt through ModelManager.generate()...",
       );
-    }
 
-    pipeline.inferencePassed = true;
+      info(`Model: ${selectedModel.id}`);
 
-    success("Real inference completed.");
+      info(
+        `Prompt: "${TEST_PROMPT}"`,
+      );
 
-    success("Response matched VEYRA_LOCAL_TEST_OK.");
-  });
+      const startedAt = Date.now();
+
+      const result =
+        await modelManager.generate({
+          prompt: TEST_PROMPT,
+
+          maxTokens: 32,
+
+          temperature: 0,
+
+          topP: 1,
+        });
+
+      const duration =
+        Date.now() - startedAt;
+
+      const response =
+        result.text.trim();
+
+      const normalized =
+        response
+          .replace(
+            /^["']|["']$/g,
+            "",
+          )
+          .trim();
+
+      console.log("");
+
+      info(
+        `Response: "${response}"`,
+      );
+
+      info(
+        `Duration: ${formatDuration(
+          duration,
+        )}`,
+      );
+
+      if (
+        result.promptTokens !==
+        undefined
+      ) {
+        info(
+          `Prompt tokens: ${result.promptTokens}`,
+        );
+      }
+
+      if (
+        result.completionTokens !==
+        undefined
+      ) {
+        info(
+          `Completion tokens: ${result.completionTokens}`,
+        );
+      }
+
+      if (
+        result.tokensPerSecond !==
+          undefined &&
+        Number.isFinite(
+          result.tokensPerSecond,
+        )
+      ) {
+        info(
+          `Tokens/sec: ${result.tokensPerSecond.toFixed(
+            2,
+          )}`,
+        );
+      }
+
+      if (
+        normalized !==
+        EXPECTED_RESPONSE
+      ) {
+        throw new Error(
+          [
+            "Real inference completed, but the response",
+            "did not match the integration-test response.",
+            "",
+            `Expected: ${EXPECTED_RESPONSE}`,
+            `Received: ${
+              normalized || "(empty)"
+            }`,
+          ].join("\n"),
+        );
+      }
+
+      pipeline.inferencePassed =
+        true;
+
+      success(
+        "Real inference completed.",
+      );
+
+      success(
+        "Response matched VEYRA_LOCAL_TEST_OK.",
+      );
+    },
+  );
 }
 
 /**
@@ -1524,39 +2110,63 @@ async function runInference(
  * ============================================================================
  */
 
-async function finalHealthCheck(selectedModel: ModelDefinition): Promise<void> {
-  await runStage(9, "Final health check", async () => {
-    const runtimeManager = pipeline.runtimeManager;
+async function finalHealthCheck(
+  selectedModel: ModelDefinition,
+): Promise<void> {
+  await runStage(
+    9,
+    "Final health check",
+    async () => {
+      const runtimeManager =
+        pipeline.runtimeManager;
 
-    if (!runtimeManager) {
-      throw new Error("ModelRuntimeManager is not connected.");
-    }
+      if (!runtimeManager) {
+        throw new Error(
+          "ModelRuntimeManager is not connected.",
+        );
+      }
 
-    progress("Checking final runtime health...");
-
-    const health = await runtimeManager.health();
-
-    if (!health.ready) {
-      throw new Error("Final runtime health check reported not ready.");
-    }
-
-    if (health.loadedModelId !== selectedModel.id) {
-      throw new Error(
-        [
-          "Final health check found the wrong loaded model.",
-          "",
-          `Expected: ${selectedModel.id}`,
-          `Actual: ${health.loadedModelId ?? "none"}`,
-        ].join("\n"),
+      progress(
+        "Checking final runtime health...",
       );
-    }
 
-    success("Runtime healthy.");
+      const health =
+        await runtimeManager.health();
 
-    success(`Loaded model confirmed: ${health.loadedModelId}`);
+      if (!health.ready) {
+        throw new Error(
+          "Final runtime health check reported not ready.",
+        );
+      }
 
-    success("Inference state: PASSED");
-  });
+      if (
+        health.loadedModelId !==
+        selectedModel.id
+      ) {
+        throw new Error(
+          [
+            "Final health check found the wrong loaded model.",
+            "",
+            `Expected: ${selectedModel.id}`,
+            `Actual: ${
+              health.loadedModelId ??
+              "none"
+            }`,
+          ].join("\n"),
+        );
+      }
+
+      success("Runtime healthy.");
+
+      success(
+        `Loaded model confirmed: ${health.loadedModelId}`,
+      );
+
+      success(
+        "Inference state: PASSED",
+      );
+    },
+  );
 }
 
 /**
@@ -1570,15 +2180,23 @@ async function cleanup(): Promise<void> {
 
   if (pipeline.runtimeManager) {
     try {
-      progress("Unloading llama.cpp runtime...");
+      progress(
+        "Unloading llama.cpp runtime...",
+      );
 
       await pipeline.runtimeManager.unload();
 
       pipeline.loaded = false;
 
-      success("Runtime unloaded cleanly.");
+      success(
+        "Runtime unloaded cleanly.",
+      );
     } catch (error) {
-      console.error(`      ! Runtime unload failed: ${errorMessage(error)}`);
+      console.error(
+        `      ! Runtime unload failed: ${errorMessage(
+          error,
+        )}`,
+      );
     }
   }
 
@@ -1586,19 +2204,29 @@ async function cleanup(): Promise<void> {
     try {
       await pipeline.queue.flushPersistence();
 
-      success("Download queue persistence flushed.");
+      success(
+        "Download queue persistence flushed.",
+      );
     } catch (error) {
       console.error(
-        `      ! Queue persistence flush failed: ${errorMessage(error)}`,
+        `      ! Queue persistence flush failed: ${errorMessage(
+          error,
+        )}`,
       );
     }
 
     try {
       await pipeline.queue.dispose();
 
-      success("Download queue disposed.");
+      success(
+        "Download queue disposed.",
+      );
     } catch (error) {
-      console.error(`      ! Queue dispose failed: ${errorMessage(error)}`);
+      console.error(
+        `      ! Queue dispose failed: ${errorMessage(
+          error,
+        )}`,
+      );
     }
   }
 }
@@ -1609,7 +2237,9 @@ async function cleanup(): Promise<void> {
  * ============================================================================
  */
 
-function printFailureReport(error: unknown, overallStartedAt: number): void {
+function printFailureReport(
+  error: unknown,
+): void {
   const message = errorMessage(error);
 
   const code = errorCode(error);
@@ -1623,17 +2253,28 @@ function printFailureReport(error: unknown, overallStartedAt: number): void {
   console.error("");
 
   console.error(
-    `Model: ${pipeline.selectedModel?.displayName ?? "not selected"}`,
-  );
-
-  console.error(
-    `Model ID: ${
-      (pipeline.selectedModel?.id ?? TEST_MODEL_ID) || "not selected"
+    `Model: ${
+      pipeline.selectedModel
+        ?.displayName ??
+      "not selected"
     }`,
   );
 
   console.error(
-    `Runtime: ${pipeline.selectedModel?.runtime ?? "not selected"}`,
+    `Model ID: ${
+      (
+        pipeline.selectedModel?.id ??
+        TEST_MODEL_ID
+      ) || "not selected"
+    }`,
+  );
+
+  console.error(
+    `Runtime: ${
+      pipeline.selectedModel
+        ?.runtime ??
+      "not selected"
+    }`,
   );
 
   console.error("");
@@ -1648,46 +2289,104 @@ function printFailureReport(error: unknown, overallStartedAt: number): void {
 
   for (const stage of stages) {
     const symbol =
-      stage.state === "passed" ? "✓" : stage.state === "failed" ? "✗" : "…";
+      stage.state === "passed"
+        ? "✓"
+        : stage.state === "failed"
+          ? "✗"
+          : "…";
 
-    console.error(`      ${symbol} [${stage.number}/9] ${stage.name}`);
+    console.error(
+      `      ${symbol} [${stage.number}/9] ${stage.name}`,
+    );
 
-    if (stage.state === "failed") {
-      console.error(`          Code: ${stage.errorCode ?? code}`);
+    if (
+      stage.state === "failed"
+    ) {
+      console.error(
+        `          Code: ${
+          stage.errorCode ?? code
+        }`,
+      );
 
-      console.error(`          Reason: ${stage.reason ?? message}`);
+      console.error(
+        `          Reason: ${
+          stage.reason ?? message
+        }`,
+      );
     }
   }
 
   console.error("");
 
-  console.error(`Runtime loaded: ${pipeline.loaded ? "YES" : "NO"}`);
-
   console.error(
-    `Inference attempted: ${pipeline.inferenceAttempted ? "YES" : "NO"}`,
+    `Runtime loaded: ${
+      pipeline.loaded
+        ? "YES"
+        : "NO"
+    }`,
   );
 
-  console.error(`Inference passed: ${pipeline.inferencePassed ? "YES" : "NO"}`);
+  console.error(
+    `Inference attempted: ${
+      pipeline.inferenceAttempted
+        ? "YES"
+        : "NO"
+    }`,
+  );
+
+  console.error(
+    `Inference passed: ${
+      pipeline.inferencePassed
+        ? "YES"
+        : "NO"
+    }`,
+  );
 
   console.error("");
 
-  const elapsed = Date.now() - overallStartedAt;
+  const elapsed =
+    Date.now() - testStartedAt;
 
-  console.error(`Elapsed before failure: ${formatDuration(elapsed)}`);
+  console.error(
+    `Elapsed before failure: ${formatDuration(
+      elapsed,
+    )}`,
+  );
 
   console.error("");
 
-  if (code === "RUNTIME_INITIALIZATION_FAILED") {
-    console.error("Runtime requirement:");
+  if (
+    code ===
+    "RUNTIME_INITIALIZATION_FAILED"
+  ) {
+    console.error(
+      "Runtime requirement:",
+    );
 
-    console.error("Veyra requires a compatible llama-server executable.");
+    console.error(
+      "Veyra attempted automatic llama.cpp runtime installation.",
+    );
 
-    console.error("Set VEYRA_LLAMA_SERVER_PATH to its full path.");
+    console.error(
+      "Check the runtime installation directory under:",
+    );
+
+    console.error(
+      `${MODEL_ROOT}\\runtimes\\llama_cpp`,
+    );
+
+    console.error("");
+
+    console.error(
+      "Manual VEYRA_LLAMA_SERVER_PATH configuration is only an override.",
+    );
 
     console.error("");
   }
 
-  console.error("Pipeline stopped safely.");
+  console.error(
+    "Pipeline stopped safely.",
+  );
 
   console.error("");
 }
@@ -1699,7 +2398,8 @@ function printFailureReport(error: unknown, overallStartedAt: number): void {
  */
 
 async function main(): Promise<void> {
-  const overallStartedAt = Date.now();
+  const overallStartedAt =
+    Date.now();
 
   title("VEYRA LOCAL AI TEST");
 
@@ -1707,67 +2407,141 @@ async function main(): Promise<void> {
 
   console.log(line());
 
-  info(`Platform       ${process.platform}`);
+  info(
+    `Platform       ${process.platform}`,
+  );
 
-  info(`Architecture   ${process.arch}`);
+  info(
+    `Architecture   ${process.arch}`,
+  );
 
-  info(`Node           ${process.version}`);
+  info(
+    `Node           ${process.version}`,
+  );
 
-  info(`Working dir    ${process.cwd()}`);
+  info(
+    `Working dir    ${process.cwd()}`,
+  );
 
-  info(`Model data     ${MODEL_ROOT}`);
+  info(
+    `Model data     ${MODEL_ROOT}`,
+  );
 
-  info(`Test model     ${TEST_MODEL_ID || "Veyra selector"}`);
+  info(
+    `Test model     ${
+      TEST_MODEL_ID ||
+      "Veyra selector"
+    }`,
+  );
 
-  info(`Runtime host   ${RUNTIME_HOST}`);
+  info(
+    `Runtime host   ${RUNTIME_HOST}`,
+  );
 
-  info(`Runtime port   ${RUNTIME_PORT}`);
+  info(
+    `Runtime port   ${RUNTIME_PORT}`,
+  );
 
-  info(`Startup limit  ${formatDuration(STARTUP_TIMEOUT_MS)}`);
+  info(
+    `Startup limit  ${formatDuration(
+      STARTUP_TIMEOUT_MS,
+    )}`,
+  );
 
-  const profile = await detectHardware();
+  const profile =
+    await detectHardware();
 
-  const { modelManager, selectedModel } = await createModelPipeline(profile);
+  const {
+    modelManager,
+    selectedModel,
+  } =
+    await createModelPipeline(
+      profile,
+    );
 
-  await verifyCompatibility(profile, modelManager, selectedModel);
+  await verifyCompatibility(
+    profile,
+    modelManager,
+    selectedModel,
+  );
 
-  const alreadyInstalled = await checkInstallation(selectedModel);
+  const alreadyInstalled =
+    await checkInstallation(
+      selectedModel,
+    );
 
-  await installModel(modelManager, selectedModel, alreadyInstalled);
+  await installModel(
+    modelManager,
+    selectedModel,
+    alreadyInstalled,
+  );
 
-  await verifyInstallation(selectedModel);
+  await verifyInstallation(
+    selectedModel,
+  );
 
-  await loadRuntime(selectedModel);
+  await loadRuntime(
+    selectedModel,
+  );
 
-  await runInference(modelManager, selectedModel);
+  await runInference(
+    modelManager,
+    selectedModel,
+  );
 
-  await finalHealthCheck(selectedModel);
+  await finalHealthCheck(
+    selectedModel,
+  );
 
   await cleanup();
 
-  const duration = Date.now() - overallStartedAt;
+  const duration =
+    Date.now() -
+    overallStartedAt;
 
   title("TEST PASSED");
 
-  console.log(`Model:          ${selectedModel.displayName}`);
+  console.log(
+    `Model:          ${selectedModel.displayName}`,
+  );
 
-  console.log(`Model ID:       ${selectedModel.id}`);
+  console.log(
+    `Model ID:       ${selectedModel.id}`,
+  );
 
-  console.log("Runtime:        llama.cpp");
+  console.log(
+    "Runtime:        llama.cpp",
+  );
 
-  console.log("Installation:   VERIFIED");
+  console.log(
+    "Installation:   VERIFIED",
+  );
 
-  console.log("Manifest:       VERIFIED");
+  console.log(
+    "Manifest:       VERIFIED",
+  );
 
-  console.log("Integrity:      SHA-256 VERIFIED");
+  console.log(
+    "Integrity:      SHA-256 VERIFIED",
+  );
 
-  console.log("Runtime load:   PASSED");
+  console.log(
+    "Runtime load:   PASSED",
+  );
 
-  console.log("Inference:      PASSED");
+  console.log(
+    "Inference:      PASSED",
+  );
 
-  console.log(`Duration:       ${formatDuration(duration)}`);
+  console.log(
+    `Duration:       ${formatDuration(
+      duration,
+    )}`,
+  );
 
-  console.log("Status:         READY");
+  console.log(
+    "Status:         READY",
+  );
 
   console.log("");
 }
@@ -1778,16 +2552,20 @@ async function main(): Promise<void> {
  * ============================================================================
  */
 
-main().catch(async (error: unknown) => {
-  const startedAt = Date.now();
+main().catch(
+  async (error: unknown) => {
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      console.error(
+        `Cleanup error: ${errorMessage(
+          cleanupError,
+        )}`,
+      );
+    }
 
-  try {
-    await cleanup();
-  } catch (cleanupError) {
-    console.error(`Cleanup error: ${errorMessage(cleanupError)}`);
-  }
+    printFailureReport(error);
 
-  printFailureReport(error, startedAt);
-
-  process.exitCode = 1;
-});
+    process.exitCode = 1;
+  },
+);
