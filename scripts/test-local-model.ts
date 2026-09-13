@@ -644,26 +644,43 @@ async function createModelPipeline(profile: HardwareProfile): Promise<{
 
     progress("Creating ModelManager...");
 
-    const manager = new ModelManager(
-      {
-        selection: {
-          fallbackCount: 3,
-          allowWarnings: false,
-        },
+   const manager = new ModelManager(
+     {
+       selection: {
+         fallbackCount: 3,
 
-        installationManager,
+         /*
+          * This integration test intentionally permits warning-compatible
+          * models.
+          *
+          * A warning means the model is still considered runnable, but the
+          * hardware is below one or more recommended (not minimum) targets.
+          *
+          * Example on the current test machine:
+          * - Qwen3 0.6B minimum CPU cores: 2
+          * - Current physical CPU cores: 2
+          * - Recommended CPU cores: 4
+          *
+          * Therefore the model is:
+          *   compatible_with_warning
+          *
+          * It is NOT:
+          *   incompatible
+          *
+          * The test must allow this so we can validate the complete real
+          * installation -> runtime -> inference pipeline.
+          */
+         allowWarnings: true,
+       },
 
-        runtimeManager,
-      },
-
-      defaultModelRegistry,
-
-      undefined,
-
-      installationManager,
-
-      runtimeManager,
-    );
+       installationManager,
+       runtimeManager,
+     },
+     defaultModelRegistry,
+     undefined,
+     installationManager,
+     runtimeManager,
+   );
 
     success("ModelManager connected to installation and runtime managers.");
 
@@ -687,8 +704,58 @@ async function createModelPipeline(profile: HardwareProfile): Promise<{
 
     success(`Compatible models evaluated: ${plan.allCompatibleModels.length}`);
 
+    /**
+     * Diagnostic compatibility report
+     * ---------------------------------
+     * This intentionally evaluates every available LLM through
+     * ModelManager so we can see exactly why each model is
+     * compatible, warning-compatible, or incompatible.
+     *
+     * This does NOT bypass ModelSelector.
+     * It is diagnostic output only.
+     */
+    section("LLM compatibility diagnostics");
+
     const llmGroup = plan.groups.find((group) => group.modality === "llm");
 
+    if (!llmGroup) {
+      throw new Error("Veyra did not produce an LLM selection group.");
+    }
+
+    const llmCandidates = defaultModelRegistry
+      .listByModality("llm")
+      .filter((model) => model.availability === "available");
+
+    for (const model of llmCandidates) {
+      const compatibility = manager.evaluateModel(model.id, profile);
+
+      info(
+        `${model.displayName}: ${compatibility.level} ` +
+          `(score ${compatibility.score}/100)`,
+      );
+
+      for (const reason of compatibility.reasons) {
+        info(`  reason: ${reason}`);
+      }
+
+      for (const warning of compatibility.warnings) {
+        info(`  warning: ${warning}`);
+      }
+
+      for (const reason of compatibility.blockingReasons) {
+        info(`  blocked: ${reason}`);
+      }
+    }
+
+    if (llmGroup.primary) {
+      success(
+        `Selected LLM: ${llmGroup.primary.model.displayName} ` +
+          `(${llmGroup.primary.compatibility.level})`,
+      );
+    } else {
+      info("No LLM primary was selected.");
+    }
+    
     if (!llmGroup?.primary) {
       const availableModels = defaultModelRegistry
         .listByModality("llm")
