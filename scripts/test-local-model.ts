@@ -985,6 +985,48 @@ async function installModel(
     if (alreadyInstalled) {
       success("Existing verified installation will be reused.");
 
+      /*
+       * Even when the model is already installed, check the current
+       * load-readiness separately from installation status.
+       *
+       * Installation and runtime loading are intentionally independent.
+       */
+      const installationManager = pipeline.installationManager;
+
+      const paths = pipeline.paths;
+
+      if (installationManager && paths) {
+        const modelDirectory = paths.getModelDirectory(
+          selectedModel.modality,
+          selectedModel.id,
+        );
+
+        try {
+          const prepared = await installationManager.prepareModel(
+            selectedModel,
+            modelDirectory,
+          );
+
+          if (prepared.memorySafe) {
+            success("Installed model is currently memory-safe to load.");
+          } else {
+            info(
+              "Installed model is valid, but current memory pressure prevents immediate loading.",
+            );
+
+            for (const warning of prepared.warnings) {
+              info(`  ${warning}`);
+            }
+          }
+        } catch (error) {
+          info(
+            `Could not perform post-install memory diagnostics: ${errorMessage(
+              error,
+            )}`,
+          );
+        }
+      }
+
       return;
     }
 
@@ -1003,8 +1045,17 @@ async function installModel(
     const installation = await modelManager.install(selectedModel.id, {
       priority: selectedModel.priority,
 
-      requireMemorySafety: true,
-
+      /*
+       * IMPORTANT
+       * =========
+       *
+       * Do NOT require memory safety during installation.
+       *
+       * Downloading a GGUF file does not load the model into RAM.
+       *
+       * ModelRuntimeManager will perform the real memory-safety check
+       * when the model is actually loaded.
+       */
       onProgress: (downloadProgress) => {
         const current = downloadProgress.percentage;
 
@@ -1052,31 +1103,70 @@ async function installModel(
 
     success(`Primary artifact: ${installation.download.filePath}`);
 
-    /**
-     * IMPORTANT
-     * =========
+    /*
+     * ModelManager's public installation result intentionally contains
+     * installation/package information, not the lower-level memory
+     * diagnostic fields.
      *
-     * ModelInstallationResult has:
-     *
-     *   installation: StoredModel
-     *
-     *   download: ...
-     *
-     * The manifest path is NOT directly on
-     * ModelInstallationResult.
-     *
-     * ModelManifest itself also does NOT
-     * contain manifestPath.
-     *
-     * The authoritative filesystem path is
-     * produced by ModelPaths.
+     * Ask ModelInstallationManager for the current load-readiness state.
      */
+    const installationManager = pipeline.installationManager;
+
+    if (!installationManager) {
+      throw new Error(
+        "ModelInstallationManager is not available after installation.",
+      );
+    }
+
     const paths = pipeline.paths;
 
     if (!paths) {
       throw new Error("ModelPaths is not available after installation.");
     }
 
+    const modelDirectory = paths.getModelDirectory(
+      selectedModel.modality,
+      selectedModel.id,
+    );
+
+    const prepared = await installationManager.prepareModel(
+      selectedModel,
+      modelDirectory,
+    );
+
+    if (prepared.memorySafe) {
+      success("Model is currently memory-safe to load.");
+    } else {
+      info(
+        "Model installation completed successfully, but the model should not be loaded yet because of current memory pressure.",
+      );
+
+      for (const warning of prepared.warnings) {
+        info(`  ${warning}`);
+      }
+
+      info(
+        `Available RAM: ${formatBytes(prepared.memory.availableMemoryBytes)}`,
+      );
+
+      info(
+        `Safety reserve: ${formatBytes(prepared.memory.safetyReserveBytes)}`,
+      );
+
+      info(
+        `Effective available RAM: ${formatBytes(
+          prepared.memory.effectiveAvailableBytes,
+        )}`,
+      );
+
+      info(`Required RAM: ${formatBytes(prepared.memory.requiredMemoryBytes)}`);
+
+      info(`Memory shortfall: ${formatBytes(prepared.memory.shortfallBytes)}`);
+    }
+
+    /*
+     * The manifest path is authoritative through ModelPaths.
+     */
     const manifestPath = paths.getManifestPath(
       selectedModel.modality,
       selectedModel.id,
@@ -1084,9 +1174,8 @@ async function installModel(
 
     success(`Manifest: ${manifestPath}`);
 
-    /**
-     * Also verify that the actual manifest
-     * exists on disk.
+    /*
+     * Verify that the manifest actually exists on disk.
      */
     try {
       await fs.access(manifestPath);

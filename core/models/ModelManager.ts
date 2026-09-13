@@ -107,6 +107,13 @@ export interface ModelInstallOptions {
 
   readonly priority?: number;
 
+  /**
+   * Requests a memory-safety preflight during installation.
+   *
+   * This does not prevent package download when memory is currently low.
+   * Memory safety is enforced when the model is actually loaded by the
+   * runtime manager.
+   */
   readonly requireMemorySafety?: boolean;
 }
 

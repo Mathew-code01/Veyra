@@ -25,7 +25,10 @@ import { ModelStorage, type StoredModel } from "../storage/ModelStorage";
 
 import { DiskSpaceGuard } from "./DiskSpaceGuard";
 
-import { MemoryPressureGuard } from "./MemoryPressureGuard";
+import {
+  MemoryPressureGuard,
+  type MemoryPressureResult,
+} from "./MemoryPressureGuard";
 
 import {
   buildModelInstallationPlan,
@@ -33,6 +36,12 @@ import {
 } from "./ModelInstallationPlan";
 
 import { ModelDownloadQueue } from "./ModelDownloadQueue";
+
+/**
+ * ============================================================================
+ * Configuration
+ * ============================================================================
+ */
 
 export interface ModelInstallationManagerOptions {
   readonly queue: ModelDownloadQueue;
@@ -46,6 +55,12 @@ export interface ModelInstallationManagerOptions {
   readonly memoryPressureGuard?: MemoryPressureGuard;
 }
 
+/**
+ * ============================================================================
+ * Preparation
+ * ============================================================================
+ */
+
 export interface PrepareModelInstallResult {
   readonly model: ModelDefinition;
 
@@ -53,30 +68,43 @@ export interface PrepareModelInstallResult {
 
   readonly diskSpaceAvailableBytes: number;
 
+  /**
+   * Whether the model can currently be loaded into memory.
+   *
+   * This does NOT determine whether downloading is allowed.
+   */
   readonly memorySafe: boolean;
 
   readonly memoryShortfallBytes: number;
 
+  readonly memory: MemoryPressureResult;
+
+  /**
+   * Whether the package can be downloaded.
+   *
+   * This is primarily controlled by disk capacity.
+   */
   readonly canDownload: boolean;
 
+  /**
+   * Whether the model can be loaded right now.
+   */
   readonly canLoadNow: boolean;
 
   readonly warnings: readonly string[];
 }
 
+/**
+ * ============================================================================
+ * Installation result
+ * ============================================================================
+ */
+
 export interface ModelInstallationResult {
   readonly model: ModelDefinition;
 
-  /**
-   * Primary model artifact.
-   *
-   * Kept for compatibility with ModelManager.
-   */
   readonly download: ModelDownloadResult;
 
-  /**
-   * Complete package result.
-   */
   readonly packageDownload: ModelPackageDownloadResult;
 
   readonly manifest: ModelManifest;
@@ -86,11 +114,40 @@ export interface ModelInstallationResult {
   readonly queuedItemId: string | null;
 
   readonly alreadyInstalled: boolean;
+
+  /**
+   * Memory status at installation time.
+   *
+   * This is diagnostic information only.
+   *
+   * A false value does NOT mean installation failed.
+   */
+  readonly memorySafeAtInstall: boolean;
+
+  readonly memoryWarnings: readonly string[];
 }
+
+/**
+ * ============================================================================
+ * Options
+ * ============================================================================
+ */
 
 export interface InstallModelOptions {
   readonly priority?: number;
 
+  /**
+   * Legacy compatibility option.
+   *
+   * Installation itself should normally not be blocked by RAM because the
+   * package download is not the same operation as loading the model.
+   *
+   * Runtime loading remains protected by ModelRuntimeManager.
+   *
+   * If true, the caller explicitly requests a pre-install memory check.
+   * The check is reported through the result/warnings but does not prevent
+   * downloading.
+   */
   readonly requireMemorySafety?: boolean;
 
   readonly signal?: AbortSignal;
@@ -101,6 +158,12 @@ export interface InstallModelOptions {
 
   readonly onPackageProgress?: (progress: ModelPackageDownloadProgress) => void;
 }
+
+/**
+ * ============================================================================
+ * Helpers
+ * ============================================================================
+ */
 
 function assertPackage(
   model: ModelDefinition,
@@ -113,6 +176,12 @@ function assertPackage(
 
   return model.package;
 }
+
+/**
+ * ============================================================================
+ * ModelInstallationManager
+ * ============================================================================
+ */
 
 export class ModelInstallationManager {
   private readonly diskSpaceGuard: DiskSpaceGuard;
@@ -141,6 +210,10 @@ export class ModelInstallationManager {
       options.memoryPressureGuard ?? new MemoryPressureGuard();
   }
 
+  // ==========================================================================
+  // Accessors
+  // ==========================================================================
+
   public getStorage(): ModelStorage {
     return this.storage;
   }
@@ -153,6 +226,10 @@ export class ModelInstallationManager {
     return this.packageDownloader;
   }
 
+  // ==========================================================================
+  // Planning
+  // ==========================================================================
+
   public buildPlan(
     profile: HardwareProfile,
     models: readonly ModelDefinition[],
@@ -160,6 +237,10 @@ export class ModelInstallationManager {
   ): ModelInstallationPlan {
     return buildModelInstallationPlan(profile, models, options);
   }
+
+  // ==========================================================================
+  // Preparation
+  // ==========================================================================
 
   public async prepareModel(
     model: ModelDefinition,
@@ -180,6 +261,8 @@ export class ModelInstallationManager {
         memorySafe: false,
 
         memoryShortfallBytes: 0,
+
+        memory: this.memoryPressureGuard.inspect(0),
 
         canDownload: false,
 
@@ -212,13 +295,27 @@ export class ModelInstallationManager {
 
     if (!disk.sufficient) {
       warnings.push(
-        `Insufficient disk space. Veyra needs ${disk.requiredBytes} bytes including safety margin, but only ${disk.freeBytes} bytes are available.`,
+        `Insufficient disk space. Veyra needs ${disk.requiredBytes} bytes including the storage safety margin, but only ${disk.freeBytes} bytes are available.`,
       );
     }
 
+    /*
+     * Memory does not block downloading.
+     *
+     * The model may safely remain installed on disk and become loadable later
+     * when the user closes applications or otherwise frees memory.
+     */
     if (!memory.safe) {
       warnings.push(
-        "Current memory availability is insufficient. The model can remain downloaded, but Veyra should not load it until enough memory is available.",
+        `The model is not safe to load right now. ` +
+          `${memory.shortfallBytes} bytes of additional effective memory are required. ` +
+          `The model can still be downloaded and installed.`,
+      );
+    }
+
+    if (memory.availablePercent < 25) {
+      warnings.push(
+        `System memory is currently under pressure (${memory.availablePercent.toFixed(1)}% available).`,
       );
     }
 
@@ -233,6 +330,8 @@ export class ModelInstallationManager {
 
       memoryShortfallBytes: memory.shortfallBytes,
 
+      memory,
+
       canDownload: disk.sufficient,
 
       canLoadNow: disk.sufficient && memory.safe,
@@ -241,12 +340,10 @@ export class ModelInstallationManager {
     });
   }
 
-  /**
-   * Legacy single-item queue entry point.
-   *
-   * Complete packages are installed by
-   * ModelPackageDownloader through installModel().
-   */
+  // ==========================================================================
+  // Legacy queue entry point
+  // ==========================================================================
+
   public async enqueueModel(
     model: ModelDefinition,
     destinationDirectory: string,
@@ -264,10 +361,24 @@ export class ModelInstallationManager {
       );
     }
 
-    if (options.requireMemorySafety === true && !prepared.canLoadNow) {
-      throw new Error(
-        `Cannot automatically install "${model.displayName}" because current memory pressure is too high.`,
-      );
+    /*
+     * IMPORTANT:
+     *
+     * Memory is intentionally not a download blocker.
+     *
+     * Even when requireMemorySafety is true, the model can still be downloaded.
+     * Runtime loading will independently enforce memory safety.
+     *
+     * This prevents the old situation where a machine with enough available
+     * RAM was incorrectly prevented from installing a model simply because
+     * Veyra had reserved a fixed 2 GB.
+     */
+    if (options.requireMemorySafety === true && !prepared.memorySafe) {
+      /*
+       * Intentionally continue.
+       *
+       * The queue represents package acquisition, not model execution.
+       */
     }
 
     return this.queue.enqueue(
@@ -277,11 +388,10 @@ export class ModelInstallationManager {
     );
   }
 
-  /**
-   * Return a verified persistent installation.
-   *
-   * Never downloads.
-   */
+  // ==========================================================================
+  // Installed model lookup
+  // ==========================================================================
+
   public async getInstalledModel(
     model: ModelDefinition,
   ): Promise<StoredModel | null> {
@@ -290,9 +400,10 @@ export class ModelInstallationManager {
     return this.storage.getStoredModel(model);
   }
 
-  /**
-   * Complete production package installation.
-   */
+  // ==========================================================================
+  // Complete installation
+  // ==========================================================================
+
   public async installModel(
     model: ModelDefinition,
     options: InstallModelOptions = {},
@@ -303,13 +414,6 @@ export class ModelInstallationManager {
       );
     }
 
-    /*
-     * Validate that a package exists.
-     *
-     * The returned variable is intentionally
-     * not retained because the actual package
-     * downloader validates the package again.
-     */
     assertPackage(model);
 
     if (options.signal?.aborted) {
@@ -319,12 +423,13 @@ export class ModelInstallationManager {
     await this.storage.initialize();
 
     /*
-     * Never redownload a package that is already
-     * verified and persisted.
+     * Never redownload a verified installation.
      */
     const existing = await this.storage.getStoredModel(model);
 
     if (existing) {
+      const memory = this.memoryPressureGuard.inspectModel(model);
+
       return Object.freeze({
         model,
 
@@ -340,6 +445,17 @@ export class ModelInstallationManager {
         queuedItemId: null,
 
         alreadyInstalled: true,
+
+        memorySafeAtInstall: memory.safe,
+
+        memoryWarnings: Object.freeze(
+          memory.safe
+            ? []
+            : [
+                `Model is installed but cannot currently be loaded safely. ` +
+                  `${memory.shortfallBytes} bytes of additional effective memory are required.`,
+              ],
+        ),
       });
     }
 
@@ -349,27 +465,25 @@ export class ModelInstallationManager {
 
     const prepared = await this.prepareModel(model, modelDirectory);
 
+    /*
+     * Disk space is a hard installation requirement.
+     */
     if (!prepared.canDownload) {
       throw new Error(
-        `Cannot install "${model.displayName}" because there is insufficient disk space.`,
+        `Cannot install "${model.displayName}" because there is insufficient disk space. ` +
+          `Required: ${prepared.diskSpaceRequiredBytes} bytes. ` +
+          `Available: ${prepared.diskSpaceAvailableBytes} bytes.`,
       );
-    }
-
-    if (options.requireMemorySafety === true && !prepared.canLoadNow) {
-      throw new Error(
-        `Cannot install "${model.displayName}" because current memory pressure is too high.`,
-      );
-    }
-
-    if (options.overwrite) {
-      await this.storage.remove(model);
-
-      await this.storage.createModelDirectory(model);
     }
 
     /*
-     * PackageDownloader owns the complete
-     * multi-artifact installation.
+     * Memory is intentionally NOT a hard installation requirement.
+     *
+     * This is the central fix.
+     *
+     * The package is downloaded, verified and persisted.
+     * ModelRuntimeManager is responsible for deciding whether it can be
+     * loaded into RAM at the moment the user actually wants inference.
      */
     const packageDownload = await this.packageDownloader.download(model, {
       destinationDirectory: modelDirectory,
@@ -381,20 +495,8 @@ export class ModelInstallationManager {
       keepPartialOnAbort: true,
 
       onProgress: (progress: ModelPackageDownloadProgress) => {
-        /*
-         * Always expose package progress.
-         */
         options.onPackageProgress?.(progress);
 
-        /*
-         * ModelManager still expects the
-         * legacy ModelDownloadProgress shape.
-         *
-         * Do not attempt to inspect
-         * primaryArtifactId here because
-         * ModelPackageDownloadProgress does
-         * not contain that property.
-         */
         options.onProgress?.(
           Object.freeze({
             modelId: progress.modelId,
@@ -418,12 +520,7 @@ export class ModelInstallationManager {
     });
 
     /*
-     * All package artifacts have now been
-     * downloaded and individually verified.
-     *
-     * Storage creates the persistent manifest
-     * and performs the final package-level
-     * integrity validation.
+     * Register package and perform final integrity verification.
      */
     const manifest = await this.storage.registerInstalledPackage(
       model,
@@ -440,6 +537,14 @@ export class ModelInstallationManager {
       );
     }
 
+    /*
+     * Re-profile memory after installation.
+     *
+     * This is useful because the system may have changed while the package
+     * was downloading.
+     */
+    const memoryAfterInstall = this.memoryPressureGuard.inspectModel(model);
+
     return Object.freeze({
       model,
 
@@ -454,8 +559,23 @@ export class ModelInstallationManager {
       queuedItemId: null,
 
       alreadyInstalled: false,
+
+      memorySafeAtInstall: memoryAfterInstall.safe,
+
+      memoryWarnings: Object.freeze(
+        memoryAfterInstall.safe
+          ? []
+          : [
+              `Model installed successfully, but it should not be loaded yet. ` +
+                `${memoryAfterInstall.shortfallBytes} bytes of additional effective memory are required.`,
+            ],
+      ),
     });
   }
+
+  // ==========================================================================
+  // Stored-model compatibility helpers
+  // ==========================================================================
 
   private createDownloadResultFromStoredModel(
     stored: StoredModel,
