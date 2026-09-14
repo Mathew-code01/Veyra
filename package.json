@@ -24,7 +24,8 @@
     "format:check": "prettier --check .",
     "clean": "node scripts/clean.js",
     "dev:electron": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "veyra:model:test": "tsx scripts/test-local-model.ts"
+    "veyra:model:test": "tsx scripts/test-local-model.ts",
+    "veyra:voice:test": "tsx scripts/test-local-voice.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

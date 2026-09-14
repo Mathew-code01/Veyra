@@ -12,13 +12,14 @@ import path from "node:path";
 import { ModelPaths } from "../storage/ModelPaths";
 
 import {
-  RuntimeManifest,
   readRuntimeManifest,
   writeRuntimeManifest,
+  type RuntimeManifest,
 } from "./RuntimeManifest";
 
 import {
-  RuntimePackage,
+  type ManagedRuntimeKind,
+  type RuntimePackage,
   RuntimePackageRegistry,
 } from "./RuntimePackageRegistry";
 
@@ -26,10 +27,8 @@ import { RuntimeDownloader } from "./RuntimeDownloader";
 
 const execFileAsync = promisify(execFile);
 
-const RUNTIME_NAME = "llama_cpp";
-
 export interface RuntimeInstallResult {
-  readonly runtime: "llama_cpp";
+  readonly runtime: ManagedRuntimeKind;
 
   readonly version: string;
 
@@ -58,7 +57,18 @@ export interface RuntimeInstallerOptions {
   readonly downloader?: RuntimeDownloader;
 }
 
-function throwIfAborted(signal?: AbortSignal): void {
+interface RuntimeInstallOptions {
+  readonly signal?: AbortSignal;
+
+  readonly onDownloadProgress?: (
+    downloadedBytes: number,
+    totalBytes?: number,
+  ) => void;
+}
+
+function throwIfAborted(
+  signal?: AbortSignal,
+): void {
   if (signal?.aborted) {
     throw new DOMException(
       "Operation was aborted.",
@@ -67,7 +77,9 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
-function isSafeVersion(value: string): boolean {
+function isSafeVersion(
+  value: string,
+): boolean {
   return (
     Boolean(value) &&
     value !== "." &&
@@ -78,13 +90,17 @@ function isSafeVersion(value: string): boolean {
   );
 }
 
-function normalizeRelativePath(value: string): string {
+function normalizeRelativePath(
+  value: string,
+): string {
   return value
-    .split(path.sep)
-    .join(path.posix.sep);
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "");
 }
 
-function isSafeRelativePath(value: string): boolean {
+function isSafeRelativePath(
+  value: string,
+): boolean {
   if (
     !value ||
     path.isAbsolute(value)
@@ -115,32 +131,54 @@ function isSafeRelativePath(value: string): boolean {
   );
 }
 
+function isHexSha256(
+  value: string,
+): boolean {
+  return /^[a-f0-9]{64}$/i.test(
+    value,
+  );
+}
+
+function getRuntimeDisplayName(
+  runtime: ManagedRuntimeKind,
+): string {
+  switch (runtime) {
+    case "llama_cpp":
+      return "llama.cpp";
+
+    case "whisper_cpp":
+      return "whisper.cpp";
+
+    default: {
+      const exhaustiveCheck: never =
+        runtime;
+
+      return String(
+        exhaustiveCheck,
+      );
+    }
+  }
+}
+
 /**
  * RuntimeInstaller
  *
- * Responsibilities:
+ * Installs and reuses Veyra-managed executable runtimes.
  *
- * - Reuse an already-installed verified llama.cpp runtime.
- * - Download llama.cpp only when no valid runtime exists.
- * - Verify the downloaded archive.
- * - Extract the runtime.
- * - Discover llama-server.exe.
- * - Write and verify runtime-manifest.json.
- * - Roll back incomplete installations.
+ * Managed runtimes:
  *
- * Runtime reuse strategy:
+ *     llama_cpp
+ *     whisper_cpp
  *
- *     Existing valid runtime
- *             ↓
- *          REUSE
+ * Model packages such as Kokoro are deliberately NOT installed here.
  *
- *     No valid runtime
- *             ↓
- *     Resolve official package
- *             ↓
- *          DOWNLOAD
- *             ↓
- *          INSTALL
+ * Kokoro's:
+ *
+ *     model_fp16.onnx
+ *     af.bin
+ *
+ * are model artifacts and belong to ModelInstallationManager /
+ * ModelStorage.
  */
 export class RuntimeInstaller {
   private readonly paths: ModelPaths;
@@ -165,26 +203,41 @@ export class RuntimeInstaller {
   }
 
   /**
-   * Ensure that the llama.cpp runtime required by Veyra exists.
+   * Ensure llama.cpp exists.
    *
-   * Resolution order:
-   *
-   * 1. Reuse an existing verified managed runtime.
-   * 2. If none exists, resolve the current official package.
-   * 3. Download it.
-   * 4. Install it.
-   *
-   * This makes the operation idempotent.
+   * Existing valid managed runtime is reused before GitHub is queried.
    */
   public async ensureLlamaCpp(
-    options: {
-      readonly signal?: AbortSignal;
+    options: RuntimeInstallOptions = {},
+  ): Promise<RuntimeInstallResult> {
+    return this.ensureRuntime(
+      "llama_cpp",
+      options,
+    );
+  }
 
-      readonly onDownloadProgress?: (
-        downloadedBytes: number,
-        totalBytes?: number,
-      ) => void;
-    } = {},
+  /**
+   * Ensure whisper.cpp exists.
+   *
+   * Existing valid managed runtime is reused before GitHub is queried.
+   */
+  public async ensureWhisperCpp(
+    options: RuntimeInstallOptions = {},
+  ): Promise<RuntimeInstallResult> {
+    return this.ensureRuntime(
+      "whisper_cpp",
+      options,
+    );
+  }
+
+  /**
+   * Generic managed runtime installer.
+   *
+   * This is the main implementation used by the runtime-specific methods.
+   */
+  public async ensureRuntime(
+    runtime: ManagedRuntimeKind,
+    options: RuntimeInstallOptions = {},
   ): Promise<RuntimeInstallResult> {
     throwIfAborted(
       options.signal,
@@ -192,18 +245,20 @@ export class RuntimeInstaller {
 
     /*
      * ------------------------------------------------------------------------
-     * STEP 1
+     * STEP 1 — Reuse existing managed runtime
      * ------------------------------------------------------------------------
      *
-     * FIRST look for an already-installed managed runtime.
+     * Do this before contacting GitHub.
      *
-     * This happens BEFORE RuntimePackageRegistry is queried.
+     * This means:
      *
-     * Therefore an installed b10947 runtime is reused even if GitHub now has
-     * b10948 or another newer version.
+     *   installed b10947
+     *
+     * remains reusable even when GitHub now publishes b10948.
      */
     const existingRuntime =
       await this.findExistingManagedRuntime(
+        runtime,
         options.signal,
       );
 
@@ -217,22 +272,31 @@ export class RuntimeInstaller {
 
     /*
      * ------------------------------------------------------------------------
-     * STEP 2
+     * STEP 2 — Resolve official package
      * ------------------------------------------------------------------------
-     *
-     * No valid managed runtime exists.
-     *
-     * Now resolve the official llama.cpp package.
      */
     const runtimePackage =
-      await this.registry.resolveLlamaCpp({
-        signal:
-          options.signal,
-      });
+      await this.registry.resolve(
+        runtime,
+        {
+          signal:
+            options.signal,
+        },
+      );
 
     throwIfAborted(
       options.signal,
     );
+
+    if (
+      runtimePackage.runtime !==
+      runtime
+    ) {
+      throw new Error(
+        `Runtime registry returned "${runtimePackage.runtime}" while ` +
+          `"${runtime}" was requested.`,
+      );
+    }
 
     if (
       !isSafeVersion(
@@ -240,35 +304,39 @@ export class RuntimeInstaller {
       )
     ) {
       throw new Error(
-        `Unsafe llama.cpp runtime version "${runtimePackage.version}".`,
+        `Unsafe ${getRuntimeDisplayName(runtime)} runtime version ` +
+          `"${runtimePackage.version}".`,
+      );
+    }
+
+    if (
+      !isHexSha256(
+        runtimePackage.sha256,
+      )
+    ) {
+      throw new Error(
+        `The ${getRuntimeDisplayName(runtime)} runtime package does not ` +
+          `contain a valid SHA-256 digest.`,
       );
     }
 
     /*
      * ------------------------------------------------------------------------
-     * STEP 3
+     * STEP 3 — Determine paths
      * ------------------------------------------------------------------------
-     *
-     * Determine installation paths.
      */
     const runtimeDirectory =
       this.paths.getRuntimeVersionDirectory(
-        RUNTIME_NAME,
+        runtime,
         runtimePackage.version,
       );
 
     const manifestPath =
       this.paths.getRuntimeManifestPath(
-        RUNTIME_NAME,
+        runtime,
         runtimePackage.version,
       );
 
-    /*
-     * The package executable path is only the expected path.
-     *
-     * The archive may contain a top-level directory, so the actual path is
-     * discovered during extraction.
-     */
     const expectedExecutablePath =
       path.join(
         runtimeDirectory,
@@ -277,13 +345,8 @@ export class RuntimeInstaller {
 
     /*
      * ------------------------------------------------------------------------
-     * STEP 4
+     * STEP 4 — Exact version race protection
      * ------------------------------------------------------------------------
-     *
-     * Exact version reuse check.
-     *
-     * This protects against a race where another Veyra process installs the
-     * exact runtime while this process is resolving the package.
      */
     const existingExact =
       await this.tryUseExistingRuntime(
@@ -299,52 +362,51 @@ export class RuntimeInstaller {
 
     /*
      * ------------------------------------------------------------------------
-     * STEP 5
+     * STEP 5 — Remove incomplete installation
      * ------------------------------------------------------------------------
-     *
-     * Remove incomplete/corrupt installation.
      */
     await fs.rm(
       runtimeDirectory,
       {
-        recursive: true,
-        force: true,
+        recursive:
+          true,
+        force:
+          true,
       },
     );
 
     const runtimeRoot =
       this.paths.getRuntimeDirectory(
-        RUNTIME_NAME,
+        runtime,
       );
 
     await fs.mkdir(
       runtimeRoot,
       {
-        recursive: true,
+        recursive:
+          true,
       },
     );
 
     const stagingDirectory =
       path.join(
         runtimeRoot,
-        `.${runtimePackage.version}.installing-${process.pid}-${Date.now()}`,
+        `.${runtimePackage.version}.installing-` +
+          `${process.pid}-${Date.now()}`,
       );
 
     await fs.mkdir(
       stagingDirectory,
       {
-        recursive: true,
+        recursive:
+          true,
       },
     );
 
     /*
      * ------------------------------------------------------------------------
-     * STEP 6
+     * STEP 6 — Download package
      * ------------------------------------------------------------------------
-     *
-     * Download archive.
-     *
-     * Keep the .zip extension because Windows Expand-Archive requires it.
      */
     const cacheDirectory =
       this.paths.getCacheDirectory();
@@ -352,7 +414,8 @@ export class RuntimeInstaller {
     await fs.mkdir(
       cacheDirectory,
       {
-        recursive: true,
+        recursive:
+          true,
       },
     );
 
@@ -367,11 +430,6 @@ export class RuntimeInstaller {
         options.signal,
       );
 
-      /*
-       * ----------------------------------------------------------------------
-       * Download
-       * ----------------------------------------------------------------------
-       */
       const downloadResult =
         await this.downloader.download(
           runtimePackage,
@@ -390,8 +448,23 @@ export class RuntimeInstaller {
       );
 
       /*
+       * RuntimeDownloader is responsible for package SHA verification.
+       *
+       * Still validate the returned value before installing anything.
+       */
+      if (
+        downloadResult.sha256.toLowerCase() !==
+        runtimePackage.sha256.toLowerCase()
+      ) {
+        throw new Error(
+          `${getRuntimeDisplayName(runtime)} downloaded package SHA-256 ` +
+            `does not match the registry digest.`,
+        );
+      }
+
+      /*
        * ----------------------------------------------------------------------
-       * Extract
+       * STEP 7 — Extract archive
        * ----------------------------------------------------------------------
        */
       await this.extractArchive(
@@ -406,7 +479,7 @@ export class RuntimeInstaller {
 
       /*
        * ----------------------------------------------------------------------
-       * Find executable
+       * STEP 8 — Locate executable
        * ----------------------------------------------------------------------
        */
       const stagedExecutable =
@@ -417,47 +490,32 @@ export class RuntimeInstaller {
 
       /*
        * ----------------------------------------------------------------------
-       * Determine actual executable path
+       * STEP 9 — Validate discovered path
        * ----------------------------------------------------------------------
        */
       const stagedRelativeExecutablePath =
-        path.relative(
-          stagingDirectory,
-          stagedExecutable,
+        normalizeRelativePath(
+          path.relative(
+            stagingDirectory,
+            stagedExecutable,
+          ),
         );
 
       if (
         !stagedRelativeExecutablePath ||
-        path.isAbsolute(
-          stagedRelativeExecutablePath,
-        ) ||
-        stagedRelativeExecutablePath
-          .split(path.sep)
-          .includes("..")
-      ) {
-        throw new Error(
-          "The discovered llama-server executable resolved outside the runtime staging directory.",
-        );
-      }
-
-      const installedExecutableRelativePath =
-        normalizeRelativePath(
-          stagedRelativeExecutablePath,
-        );
-
-      if (
         !isSafeRelativePath(
-          installedExecutableRelativePath,
+          stagedRelativeExecutablePath,
         )
       ) {
         throw new Error(
-          `The discovered llama-server executable path is unsafe: ${installedExecutableRelativePath}`,
+          `The discovered ${getRuntimeDisplayName(runtime)} executable ` +
+            `resolved outside the runtime staging directory.`,
         );
       }
 
       /*
        * ----------------------------------------------------------------------
-       * Validate executable
+       * STEP 10 — Validate executable
        * ----------------------------------------------------------------------
        */
       await this.assertExecutable(
@@ -466,7 +524,7 @@ export class RuntimeInstaller {
 
       /*
        * ----------------------------------------------------------------------
-       * Promote staging directory
+       * STEP 11 — Promote staging directory
        * ----------------------------------------------------------------------
        */
       await fs.rename(
@@ -476,7 +534,7 @@ export class RuntimeInstaller {
 
       /*
        * ----------------------------------------------------------------------
-       * Final executable
+       * STEP 12 — Final executable
        * ----------------------------------------------------------------------
        */
       const finalExecutable =
@@ -491,11 +549,12 @@ export class RuntimeInstaller {
 
       /*
        * ----------------------------------------------------------------------
-       * Create runtime manifest
+       * STEP 13 — Write runtime manifest
        * ----------------------------------------------------------------------
        */
       const manifest: RuntimeManifest = {
-        schemaVersion: 1,
+        schemaVersion:
+          1,
 
         runtime:
           runtimePackage.runtime,
@@ -522,7 +581,7 @@ export class RuntimeInstaller {
           downloadResult.sha256,
 
         executableRelativePath:
-          installedExecutableRelativePath,
+          stagedRelativeExecutablePath,
 
         installedAt:
           new Date().toISOString(),
@@ -535,7 +594,7 @@ export class RuntimeInstaller {
 
       /*
        * ----------------------------------------------------------------------
-       * Verify manifest
+       * STEP 14 — Read manifest back
        * ----------------------------------------------------------------------
        */
       const verifiedManifest =
@@ -545,13 +604,64 @@ export class RuntimeInstaller {
 
       if (!verifiedManifest) {
         throw new Error(
-          "Runtime manifest could not be read after installation.",
+          `${getRuntimeDisplayName(runtime)} runtime manifest could not ` +
+            `be read after installation.`,
+        );
+      }
+
+      /*
+       * ----------------------------------------------------------------------
+       * STEP 15 — Verify manifest identity
+       * ----------------------------------------------------------------------
+       */
+      if (
+        verifiedManifest.runtime !==
+        runtimePackage.runtime
+      ) {
+        throw new Error(
+          "Runtime manifest runtime identity does not match the installed package.",
         );
       }
 
       if (
-        verifiedManifest.packageSha256 !==
-        runtimePackage.sha256
+        verifiedManifest.version !==
+        runtimePackage.version
+      ) {
+        throw new Error(
+          "Runtime manifest version does not match the installed package.",
+        );
+      }
+
+      if (
+        verifiedManifest.platform !==
+        runtimePackage.platform
+      ) {
+        throw new Error(
+          "Runtime manifest platform does not match the installed package.",
+        );
+      }
+
+      if (
+        verifiedManifest.architecture !==
+        runtimePackage.architecture
+      ) {
+        throw new Error(
+          "Runtime manifest architecture does not match the installed package.",
+        );
+      }
+
+      if (
+        verifiedManifest.variant !==
+        runtimePackage.variant
+      ) {
+        throw new Error(
+          "Runtime manifest variant does not match the installed package.",
+        );
+      }
+
+      if (
+        verifiedManifest.packageSha256.toLowerCase() !==
+        runtimePackage.sha256.toLowerCase()
       ) {
         throw new Error(
           "Runtime manifest SHA-256 does not match the verified runtime package.",
@@ -559,17 +669,18 @@ export class RuntimeInstaller {
       }
 
       if (
-        verifiedManifest.executableRelativePath !==
-        installedExecutableRelativePath
+        !isSafeRelativePath(
+          verifiedManifest.executableRelativePath,
+        )
       ) {
         throw new Error(
-          "Runtime manifest executable path does not match the installed runtime executable.",
+          "Runtime manifest contains an unsafe executable path.",
         );
       }
 
       /*
        * ----------------------------------------------------------------------
-       * Final executable verification
+       * STEP 16 — Verify final executable from manifest
        * ----------------------------------------------------------------------
        */
       const manifestExecutablePath =
@@ -584,13 +695,14 @@ export class RuntimeInstaller {
 
       /*
        * ----------------------------------------------------------------------
-       * Remove temporary archive
+       * STEP 17 — Remove archive only after successful installation
        * ----------------------------------------------------------------------
        */
       await fs.rm(
         archivePath,
         {
-          force: true,
+          force:
+            true,
         },
       );
 
@@ -626,72 +738,59 @@ export class RuntimeInstaller {
     } catch (error) {
       /*
        * ----------------------------------------------------------------------
-       * Installation rollback
+       * ROLLBACK
        * ----------------------------------------------------------------------
        */
       await fs.rm(
         stagingDirectory,
         {
-          recursive: true,
-          force: true,
+          recursive:
+            true,
+          force:
+            true,
         },
       );
 
       await fs.rm(
         archivePath,
         {
-          force: true,
+          force:
+            true,
         },
       );
 
       await fs.rm(
         runtimeDirectory,
         {
-          recursive: true,
-          force: true,
+          recursive:
+            true,
+          force:
+            true,
         },
       );
 
       throw new Error(
-        `Failed to install llama.cpp runtime: ${
-          error instanceof Error
-            ? error.message
-            : String(error)
-        }`,
+        `Failed to install ${getRuntimeDisplayName(runtime)} runtime: ` +
+          `${
+            error instanceof Error
+              ? error.message
+              : String(error)
+          }`,
         {
-          cause: error,
+          cause:
+            error,
         },
       );
     }
   }
 
   /**
-   * ==========================================================================
-   * Existing managed runtime discovery
-   * ==========================================================================
+   * Find the newest valid managed runtime.
    *
-   * Searches:
-   *
-   * AppData\Local\Veyra\runtimes\llama_cpp\
-   *
-   * Example:
-   *
-   * llama_cpp/
-   * ├── b10947/
-   * │   ├── llama-server.exe
-   * │   └── runtime-manifest.json
-   * │
-   * └── b10946/
-   *     ├── llama-server.exe
-   *     └── runtime-manifest.json
-   *
-   * The newest valid installed runtime is selected.
-   *
-   * IMPORTANT:
-   *
-   * This method does NOT query GitHub.
+   * GitHub is NOT queried here.
    */
   private async findExistingManagedRuntime(
+    runtime: ManagedRuntimeKind,
     signal?: AbortSignal,
   ): Promise<RuntimeInstallResult | null> {
     throwIfAborted(
@@ -700,15 +799,9 @@ export class RuntimeInstaller {
 
     const runtimeRoot =
       this.paths.getRuntimeDirectory(
-        RUNTIME_NAME,
+        runtime,
       );
 
-    /*
-     * Explicitly type the directory entries as Dirent<string>[].
-     *
-     * This avoids the Node.js fs.readdir overload ambiguity where TypeScript
-     * can otherwise infer Dirent<NonSharedBuffer>[].
-     */
     let entries: Dirent<string>[];
 
     try {
@@ -748,40 +841,25 @@ export class RuntimeInstaller {
     const versions =
       entries
         .filter(
-          (
-            entry,
-          ) =>
+          (entry) =>
             entry.isDirectory() &&
             isSafeVersion(
               entry.name,
             ) &&
-            !entry.name.startsWith(
-              ".",
-            ),
+            !entry.name.startsWith("."),
         )
         .map(
-          (
-            entry,
-          ) =>
+          (entry) =>
             entry.name,
         )
         .sort(
-          (
-            a,
-            b,
-          ) =>
+          (a, b) =>
             this.compareRuntimeVersions(
               b,
               a,
             ),
         );
 
-    /*
-     * Newest valid runtime wins.
-     *
-     * If the newest directory is corrupt, continue looking for an older
-     * valid runtime.
-     */
     for (
       const version of versions
     ) {
@@ -797,7 +875,7 @@ export class RuntimeInstaller {
 
       const manifestPath =
         this.paths.getRuntimeManifestPath(
-          RUNTIME_NAME,
+          runtime,
           version,
         );
 
@@ -810,12 +888,9 @@ export class RuntimeInstaller {
         continue;
       }
 
-      /*
-       * Validate manifest runtime identity.
-       */
       if (
         manifest.runtime !==
-        RUNTIME_NAME
+        runtime
       ) {
         continue;
       }
@@ -835,12 +910,31 @@ export class RuntimeInstaller {
         continue;
       }
 
-      /*
-       * Validate executable relative path.
-       */
+      if (
+        manifest.platform !==
+        process.platform
+      ) {
+        continue;
+      }
+
+      if (
+        manifest.architecture !==
+        this.getCurrentArchitecture()
+      ) {
+        continue;
+      }
+
       if (
         !isSafeRelativePath(
           manifest.executableRelativePath,
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        !isHexSha256(
+          manifest.packageSha256,
         )
       ) {
         continue;
@@ -858,35 +952,16 @@ export class RuntimeInstaller {
         );
       } catch {
         /*
-         * Runtime is incomplete/corrupt.
+         * Corrupt/incomplete runtime.
          *
-         * Do not delete it here. Continue searching.
+         * Do not delete it while scanning.
          */
         continue;
       }
 
-      /*
-       * Validate stored package SHA.
-       *
-       * We do NOT redownload the archive just to verify this.
-       *
-       * The SHA was already verified during installation.
-       */
-      if (
-        !manifest.packageSha256 ||
-        !/^[a-fA-F0-9]{64}$/.test(
-          manifest.packageSha256,
-        )
-      ) {
-        continue;
-      }
-
-      /*
-       * Valid managed runtime found.
-       */
       return Object.freeze({
         runtime:
-          RUNTIME_NAME,
+          runtime,
 
         version:
           manifest.version,
@@ -918,87 +993,10 @@ export class RuntimeInstaller {
   }
 
   /**
-   * ==========================================================================
-   * Runtime version comparison
-   * ==========================================================================
+   * Exact package/version reuse.
    *
-   * llama.cpp versions normally look like:
-   *
-   *     b10947
-   *     b10946
-   *     b10945
-   *
-   * Numeric build versions are compared numerically.
-   *
-   * Unknown version formats fall back to natural lexical comparison.
-   */
-  private compareRuntimeVersions(
-    left: string,
-    right: string,
-  ): number {
-    const leftBuild =
-      this.extractBuildNumber(
-        left,
-      );
-
-    const rightBuild =
-      this.extractBuildNumber(
-        right,
-      );
-
-    if (
-      leftBuild !== null &&
-      rightBuild !== null
-    ) {
-      return (
-        leftBuild -
-        rightBuild
-      );
-    }
-
-    return left.localeCompare(
-      right,
-      undefined,
-      {
-        numeric:
-          true,
-        sensitivity:
-          "base",
-      },
-    );
-  }
-
-  private extractBuildNumber(
-    version: string,
-  ): number | null {
-    const match =
-      /^b(\d+)$/i.exec(
-        version.trim(),
-      );
-
-    if (!match) {
-      return null;
-    }
-
-    const value =
-      Number(
-        match[1],
-      );
-
-    return Number.isSafeInteger(
-      value,
-    )
-      ? value
-      : null;
-  }
-
-  /**
-   * ==========================================================================
-   * Exact package/version reuse
-   * ==========================================================================
-   *
-   * This protects against a race where another process installs the exact
-   * runtime while this process is resolving the package.
+   * Used after resolving a package from GitHub in case another process
+   * installed that exact version between the initial scan and resolution.
    */
   private async tryUseExistingRuntime(
     runtimePackage: RuntimePackage,
@@ -1015,9 +1013,6 @@ export class RuntimeInstaller {
       return null;
     }
 
-    /*
-     * Validate runtime identity.
-     */
     if (
       manifest.runtime !==
       runtimePackage.runtime
@@ -1053,13 +1048,9 @@ export class RuntimeInstaller {
       return null;
     }
 
-    /*
-     * The installed runtime must correspond to the package selected by the
-     * registry.
-     */
     if (
-      manifest.packageSha256 !==
-      runtimePackage.sha256
+      manifest.packageSha256.toLowerCase() !==
+      runtimePackage.sha256.toLowerCase()
     ) {
       return null;
     }
@@ -1072,9 +1063,6 @@ export class RuntimeInstaller {
       return null;
     }
 
-    /*
-     * Prefer executable path recorded in manifest.
-     */
     const manifestExecutablePath =
       path.join(
         runtimeDirectory,
@@ -1087,7 +1075,7 @@ export class RuntimeInstaller {
       );
     } catch {
       /*
-       * Backwards-compatible fallback for an older manifest.
+       * Backwards-compatible fallback.
        */
       try {
         await this.assertExecutable(
@@ -1107,7 +1095,7 @@ export class RuntimeInstaller {
 
     return Object.freeze({
       runtime:
-        RUNTIME_NAME,
+        runtimePackage.runtime,
 
       version:
         manifest.version,
@@ -1172,9 +1160,7 @@ export class RuntimeInstaller {
   }
 
   /**
-   * ==========================================================================
-   * Archive extraction
-   * ==========================================================================
+   * Extract a Windows ZIP archive.
    */
   private async extractArchive(
     archivePath: string,
@@ -1200,14 +1186,13 @@ export class RuntimeInstaller {
         .endsWith(".zip")
     ) {
       throw new Error(
-        `Runtime archive must have a .zip extension before extraction. Received: ${archivePath}`,
+        `Runtime archive must have a .zip extension before extraction. ` +
+          `Received: ${archivePath}`,
       );
     }
 
     const powershell =
-      process.env.ComSpec
-        ? "powershell.exe"
-        : "powershell";
+      "powershell.exe";
 
     const script = [
       "$ErrorActionPreference = 'Stop';",
@@ -1244,14 +1229,32 @@ export class RuntimeInstaller {
   }
 
   /**
-   * ==========================================================================
-   * Executable discovery
-   * ==========================================================================
+   * Locate the expected executable.
+   *
+   * Archives sometimes contain a top-level directory:
+   *
+   * llama-b10947-bin-win-cpu-x64/
+   *     llama-server.exe
+   *
+   * or:
+   *
+   * Release/
+   *     whisper-cli.exe
    */
   private async findExecutable(
     stagingDirectory: string,
     relativePath: string,
   ): Promise<string> {
+    if (
+      !isSafeRelativePath(
+        relativePath,
+      )
+    ) {
+      throw new Error(
+        `Unsafe runtime executable path: ${relativePath}`,
+      );
+    }
+
     const directPath =
       path.join(
         stagingDirectory,
@@ -1266,10 +1269,7 @@ export class RuntimeInstaller {
       return directPath;
     } catch {
       /*
-       * Some release archives contain:
-       *
-       * llama-b10947-bin-win-cpu-x64/
-       *     llama-server.exe
+       * Fall back to filename discovery.
        */
     }
 
@@ -1292,7 +1292,8 @@ export class RuntimeInstaller {
       0
     ) {
       throw new Error(
-        `Runtime executable "${executableName}" was not found in the downloaded archive.`,
+        `Runtime executable "${executableName}" was not found in ` +
+          `the downloaded archive.`,
       );
     }
 
@@ -1300,8 +1301,46 @@ export class RuntimeInstaller {
       matches.length >
       1
     ) {
+      /*
+       * Prefer a path whose suffix matches the expected relative path.
+       *
+       * Example:
+       *
+       * Release/whisper-cli.exe
+       */
+      const expectedNormalized =
+        normalizeRelativePath(
+          relativePath,
+        ).toLowerCase();
+
+      const preferred =
+        matches.filter(
+          (match) => {
+            const relative =
+              normalizeRelativePath(
+                path.relative(
+                  stagingDirectory,
+                  match,
+                ),
+              ).toLowerCase();
+
+            return (
+              relative ===
+              expectedNormalized
+            );
+          },
+        );
+
+      if (
+        preferred.length ===
+        1
+      ) {
+        return preferred[0];
+      }
+
       throw new Error(
-        `Multiple runtime executables named "${executableName}" were found in the downloaded archive.`,
+        `Multiple runtime executables named "${executableName}" were found ` +
+          `in the downloaded archive.`,
       );
     }
 
@@ -1313,12 +1352,6 @@ export class RuntimeInstaller {
     filename: string,
     matches: string[],
   ): Promise<void> {
-    /*
-     * Explicitly type this result as Dirent<string>[].
-     *
-     * This is important with the Node.js type definitions currently used by
-     * this project because readdir() has multiple generic overloads.
-     */
     const entries: Dirent<string>[] =
       await fs.readdir(
         directory,
@@ -1363,11 +1396,6 @@ export class RuntimeInstaller {
     }
   }
 
-  /**
-   * ==========================================================================
-   * Executable validation
-   * ==========================================================================
-   */
   private async assertExecutable(
     executablePath: string,
   ): Promise<void> {
@@ -1389,11 +1417,95 @@ export class RuntimeInstaller {
     );
   }
 
+  private getCurrentArchitecture(): string {
+    switch (process.arch) {
+      case "x64":
+        return "x64";
+
+      case "arm64":
+        return "arm64";
+
+      case "arm":
+        return "arm";
+
+      case "ia32":
+        return "ia32";
+
+      default:
+        return process.arch;
+    }
+  }
+
   /**
-   * ==========================================================================
-   * PowerShell escaping
-   * ==========================================================================
+   * Compare runtime versions.
+   *
+   * llama.cpp builds:
+   *
+   *     b10947
+   *     b10946
+   *
+   * are compared numerically.
    */
+  private compareRuntimeVersions(
+    left: string,
+    right: string,
+  ): number {
+    const leftBuild =
+      this.extractBuildNumber(
+        left,
+      );
+
+    const rightBuild =
+      this.extractBuildNumber(
+        right,
+      );
+
+    if (
+      leftBuild !== null &&
+      rightBuild !== null
+    ) {
+      return (
+        leftBuild -
+        rightBuild
+      );
+    }
+
+    return left.localeCompare(
+      right,
+      undefined,
+      {
+        numeric:
+          true,
+        sensitivity:
+          "base",
+      },
+    );
+  }
+
+  private extractBuildNumber(
+    version: string,
+  ): number | null {
+    const match =
+      /^b(\d+)$/i.exec(
+        version.trim(),
+      );
+
+    if (!match) {
+      return null;
+    }
+
+    const value =
+      Number(
+        match[1],
+      );
+
+    return Number.isSafeInteger(
+      value,
+    )
+      ? value
+      : null;
+  }
+
   private quotePowerShell(
     value: string,
   ): string {
