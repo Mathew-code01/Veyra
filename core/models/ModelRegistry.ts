@@ -688,22 +688,22 @@ const KOKORO_MODEL_FP16: ModelArtifact = Object.freeze({
  * Exact size:
  * 524,288 bytes
  */
-const KOKORO_AF_VOICE: ModelArtifact = Object.freeze({
-  id: "voice-af",
+const KOKORO_AF_HEART_VOICE: ModelArtifact = Object.freeze({
+  id: "voice-af-heart",
 
   url:
-    `${HF}/onnx-community/Kokoro-82M-ONNX/resolve/main/` +
-    "voices/af.bin?download=true",
+    `${HF}/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/` +
+    "voices/af_heart.bin?download=true",
 
-  filename: "af.bin",
+  filename: "af_heart.bin",
 
-  sizeBytes: 524_288,
+  sizeBytes: 522_240,
 
-  sha256: "a4f11d9d055a12bfa0db2668a3e4f0ef8fd1f1ccca69494479718e44dbf9e41a",
+  sha256: "d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b",
 
   role: "voice",
 
-  tags: ["voice", "af", "english", "kokoro", "tts"],
+  tags: ["voice", "af_heart", "american-english", "female", "kokoro", "tts"],
 });
 
 /**
@@ -1962,7 +1962,7 @@ const MODEL_DEFINITIONS: readonly ModelDefinition[] = [
       recommendedCpuCores: 4,
 
       estimatedDiskBytes:
-        KOKORO_MODEL_FP16.sizeBytes + KOKORO_AF_VOICE.sizeBytes,
+        KOKORO_MODEL_FP16.sizeBytes + KOKORO_AF_HEART_VOICE.sizeBytes,
     },
 
     performance: {
@@ -1994,8 +1994,8 @@ const MODEL_DEFINITIONS: readonly ModelDefinition[] = [
     },
 
     package: createPackage(
-      [KOKORO_MODEL_FP16, KOKORO_AF_VOICE],
-      ["model", "voice-af"],
+      [KOKORO_MODEL_FP16, KOKORO_AF_HEART_VOICE],
+      ["model", "voice-af-heart"],
     ),
 
     supportedHardwareTiers: [

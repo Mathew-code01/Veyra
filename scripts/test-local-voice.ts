@@ -96,7 +96,7 @@ import { RuntimeRegistry } from "../core/models/runtime/RuntimeRegistry";
 import { WhisperCppRuntime } from "../core/models/runtime/WhisperCppRuntime";
 
 import { KokoroRuntime } from "../core/models/runtime/KokoroRuntime";
-
+import { KokoroPackageInstaller } from "../core/models/installation/KokoroPackageInstaller";
 /**
  * ============================================================================
  * Configuration
@@ -477,30 +477,167 @@ async function main(): Promise<void> {
       printSuccess("Whisper runtime unloaded.");
     });
 
+    
+/**
+ * ------------------------------------------------------------------------
+ * Stage 12 — Install/reuse Kokoro package
+ * ------------------------------------------------------------------------
+ *
+ * The generic ModelInstallationManager installs/registers the Veyra model.
+ *
+ * Kokoro additionally requires its complete Transformers.js package layout:
+ *
+ *   config.json
+ *   tokenizer.json
+ *   tokenizer_config.json
+ *   onnx/model_fp16.onnx
+ *   voices/af_heart.bin
+ *
+ * KokoroPackageInstaller is responsible for completing and verifying that
+ * package.
+ * ------------------------------------------------------------------------
+ */
+
+await runStage(
+  results,
+  "12",
+  "Install/reuse Kokoro model",
+  async () => {
     /**
-     * ------------------------------------------------------------------------
-     * Stage 12 — Install/reuse Kokoro package
-     * ------------------------------------------------------------------------
+     * ----------------------------------------------------------------------
+     * 1. Install/register the model through the normal Veyra pipeline.
+     * ----------------------------------------------------------------------
      */
 
-    await runStage(results, "12", "Install/reuse Kokoro model", async () => {
-      await context!.modelManager.ensureInstalled(context!.kokoroModel.id);
+    await context!.modelManager.ensureInstalled(
+      context!.kokoroModel.id,
+    );
 
-      const stored = await context!.storage.getStoredModel(
+    /**
+     * ----------------------------------------------------------------------
+     * 2. Retrieve the actual Veyra storage record.
+     * ----------------------------------------------------------------------
+     *
+     * IMPORTANT:
+     *
+     * This must happen BEFORE using `stored`.
+     * ----------------------------------------------------------------------
+     */
+
+    const stored =
+      await context!.storage.getStoredModel(
         context!.kokoroModel,
       );
 
-      if (!stored) {
-        throw new Error(
-          `Kokoro model "${context!.kokoroModel.id}" ` +
-            "is not registered as installed.",
-        );
-      }
+    if (!stored) {
+      throw new Error(
+        `Kokoro model "${context!.kokoroModel.id}" ` +
+          "is not registered as installed.",
+      );
+    }
 
-      printSuccess(`Kokoro package ready: ${context!.kokoroModel.displayName}`);
+    /**
+     * ----------------------------------------------------------------------
+     * 3. Resolve the model directory.
+     * ----------------------------------------------------------------------
+     */
 
-      printInfo(`Primary artifact: ${stored.artifactPath}`);
-    });
+    const kokoroModelDirectory =
+      context!.storage.getModelDirectory(
+        context!.kokoroModel,
+      );
+
+    /**
+     * ----------------------------------------------------------------------
+     * 4. Complete the Kokoro package.
+     * ----------------------------------------------------------------------
+     *
+     * The installer downloads only the missing/invalid Kokoro-specific
+     * assets and verifies them.
+     *
+     * No fake success is possible here.
+     * ----------------------------------------------------------------------
+     */
+
+    const kokoroPackageInstaller =
+      new KokoroPackageInstaller();
+
+    const packageResult =
+      await kokoroPackageInstaller.install({
+        modelDirectory:
+          kokoroModelDirectory,
+
+        modelArtifactPath:
+          stored.artifactPath,
+
+        voice:
+          TEST_VOICE,
+      });
+
+    /**
+     * ----------------------------------------------------------------------
+     * 5. Report the resulting package.
+     * ----------------------------------------------------------------------
+     */
+
+    printSuccess(
+      `Kokoro package ready: ${context!.kokoroModel.displayName}`,
+    );
+
+    printInfo(
+      `Model directory: ${packageResult.modelDirectory}`,
+    );
+
+    printInfo(
+      `Primary artifact: ${packageResult.modelPath}`,
+    );
+
+    printInfo(
+      `Voice: ${packageResult.voice}`,
+    );
+
+    printInfo(
+      `Voice artifact: ${packageResult.voicePath}`,
+    );
+
+    printInfo(
+      `Downloaded this run: ${formatBytes(
+        packageResult.downloadedBytes,
+      )}`,
+    );
+
+    printInfo(
+      `Package tracked size: ${formatBytes(
+        packageResult.totalBytes,
+      )}`,
+    );
+
+    if (
+      packageResult.downloadedFiles.length > 0
+    ) {
+      printInfo(
+        `Downloaded files: ${packageResult.downloadedFiles.join(
+          ", ",
+        )}`,
+      );
+    } else {
+      printInfo(
+        "Downloaded files: none — existing verified package reused.",
+      );
+    }
+
+    if (
+      packageResult.reusedFiles.length > 0
+    ) {
+      printInfo(
+        `Reused files: ${packageResult.reusedFiles.join(
+          ", ",
+        )}`,
+      );
+    }
+  },
+);
+
 
     /**
      * ------------------------------------------------------------------------
