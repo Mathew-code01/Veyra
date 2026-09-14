@@ -1,3 +1,5 @@
+// core/models/ModelRegistry.ts
+
 import type { HardwareTier } from "../hardware/HardwareProfile";
 
 /**
@@ -1943,7 +1945,7 @@ const MODEL_DEFINITIONS: readonly ModelDefinition[] = [
 
     modality: "tts",
 
-    runtime: "onnx",
+    runtime: "kokoro",
 
     availability: "available",
 
