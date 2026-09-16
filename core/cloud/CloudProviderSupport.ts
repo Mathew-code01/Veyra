@@ -6,11 +6,12 @@
 // RESPONSIBILITIES:
 // - credential resolution
 // - authorization headers
+// - API-key headers
 // - model lookup
 // - capability validation
 // - SSE parsing
-// - stream creation
-// - common response validation
+// - cancellable lazy stream creation
+// - common content normalization
 //
 // DOES NOT:
 // - choose providers
@@ -35,6 +36,10 @@ import { CloudError } from "./contracts/CloudError";
 
 import { CloudHttpClient } from "./CloudHttpClient";
 
+// ============================================================================
+// DEPENDENCIES
+// ============================================================================
+
 export interface CloudProviderDependencies {
   readonly http?: CloudHttpClient;
 
@@ -47,25 +52,33 @@ export interface ResolvedCloudProviderDependencies {
   readonly credentialResolver: CloudCredentialResolver;
 }
 
+// ============================================================================
+// DEPENDENCY RESOLUTION
+// ============================================================================
+
 export function resolveProviderDependencies(
   dependencies: CloudProviderDependencies = {},
 ): ResolvedCloudProviderDependencies {
-  if (dependencies.credentialResolver) {
-    return {
-      http: dependencies.http ?? new CloudHttpClient(),
-
-      credentialResolver: dependencies.credentialResolver,
-    };
+  if (!dependencies.credentialResolver) {
+    throw new CloudError(
+      "A CloudCredentialResolver is required.",
+      "CONFIGURATION",
+      {
+        retryable: false,
+      },
+    );
   }
 
-  throw new CloudError(
-    "A CloudCredentialResolver is required.",
-    "CONFIGURATION",
-    {
-      retryable: false,
-    },
-  );
+  return {
+    http: dependencies.http ?? new CloudHttpClient(),
+
+    credentialResolver: dependencies.credentialResolver,
+  };
 }
+
+// ============================================================================
+// CREDENTIALS
+// ============================================================================
 
 export async function resolveCredential(
   config: CloudProviderConfig,
@@ -84,7 +97,7 @@ export async function resolveCredential(
 
   const value = await resolver.resolve(config.credential);
 
-  if (!value) {
+  if (!value || !value.trim()) {
     throw new CloudError(
       `Credential "${config.credential.id}" for provider "${config.id}" could not be resolved.`,
       "AUTHENTICATION",
@@ -95,8 +108,12 @@ export async function resolveCredential(
     );
   }
 
-  return value;
+  return value.trim();
 }
+
+// ============================================================================
+// MODEL RESOLUTION
+// ============================================================================
 
 export function resolveModel(
   models: readonly CloudModel[],
@@ -132,6 +149,10 @@ export function resolveModel(
   return model;
 }
 
+// ============================================================================
+// CAPABILITY VALIDATION
+// ============================================================================
+
 export function assertCapability(
   capabilities: CloudCapabilities,
   capability:
@@ -156,6 +177,10 @@ export function assertCapability(
   }
 }
 
+// ============================================================================
+// AUTH HEADERS
+// ============================================================================
+
 export function createAuthorizationHeaders(
   apiKey: string,
   additionalHeaders: Readonly<Record<string, string>> | undefined = undefined,
@@ -176,99 +201,189 @@ export function createApiKeyHeaders(
   };
 }
 
+// ============================================================================
+// STREAMING
+// ============================================================================
+
+export type CloudStreamResponseSource =
+  Response | ((signal: AbortSignal) => Response | Promise<Response>);
+
+function createLinkedAbortController(externalSignal?: AbortSignal): {
+  readonly controller: AbortController;
+  readonly signal: AbortSignal;
+  readonly cleanup: () => void;
+} {
+  const controller = new AbortController();
+
+  if (!externalSignal) {
+    return {
+      controller,
+      signal: controller.signal,
+      cleanup: () => undefined,
+    };
+  }
+
+  const abortFromExternal = (): void => {
+    controller.abort();
+  };
+
+  if (externalSignal.aborted) {
+    controller.abort();
+  } else {
+    externalSignal.addEventListener("abort", abortFromExternal, {
+      once: true,
+    });
+  }
+
+  return {
+    controller,
+    signal: controller.signal,
+    cleanup: () => {
+      externalSignal.removeEventListener("abort", abortFromExternal);
+    },
+  };
+}
+
+/**
+ * Creates a CloudStream synchronously while allowing the underlying
+ * network request and credential resolution to happen lazily.
+ *
+ * This is important because CloudProvider.stream() is intentionally
+ * synchronous at the contract level.
+ */
 export function createStream(
   providerId: string,
   model: string,
-  response: Response,
+  responseSource: CloudStreamResponseSource,
   parser: (payload: unknown, sequence: number) => CloudStreamEvent | null,
+  externalSignal?: AbortSignal,
 ): CloudStream {
-  const body = response.body;
-
-  if (!body) {
-    throw new CloudError(
-      "Cloud provider returned an empty streaming body.",
-      "INVALID_RESPONSE",
-      {
-        retryable: false,
-        providerId,
-      },
-    );
-  }
-
-  const controller = new AbortController();
+  const linked = createLinkedAbortController(externalSignal);
 
   let cancelled = false;
 
+  const startedAt = Date.now();
+
   const stream = async function* (): AsyncGenerator<CloudStreamEvent> {
-    const reader = body.getReader();
-
-    const decoder = new TextDecoder();
-
-    let buffer = "";
-    let sequence = 0;
+    let response: Response;
 
     try {
-      while (!cancelled) {
-        const result = await reader.read();
+      if (cancelled || linked.signal.aborted) {
+        return;
+      }
 
-        if (result.done) {
-          break;
-        }
+      response =
+        typeof responseSource === "function"
+          ? await responseSource(linked.signal)
+          : responseSource;
 
-        buffer += decoder.decode(result.value, {
-          stream: true,
-        });
+      if (cancelled || linked.signal.aborted) {
+        return;
+      }
 
-        const events = buffer.split(/\r?\n\r?\n/);
+      if (!response.body) {
+        throw new CloudError(
+          "Cloud provider returned an empty streaming body.",
+          "INVALID_RESPONSE",
+          {
+            retryable: false,
+            providerId,
+          },
+        );
+      }
 
-        buffer = events.pop() ?? "";
+      const reader = response.body.getReader();
 
-        for (const event of events) {
-          if (cancelled) {
+      const decoder = new TextDecoder();
+
+      let buffer = "";
+
+      let sequence = 0;
+
+      try {
+        while (!cancelled && !linked.signal.aborted) {
+          const result = await reader.read();
+
+          if (result.done) {
             break;
           }
 
-          const payload = parseSSEPayload(event);
+          buffer += decoder.decode(result.value, {
+            stream: true,
+          });
 
-          if (payload === null || payload === "[DONE]") {
-            continue;
-          }
+          const events = buffer.split(/\r?\n\r?\n/);
 
-          const parsed = safeJsonParse(payload);
+          buffer = events.pop() ?? "";
 
-          if (parsed === undefined) {
-            continue;
-          }
+          for (const event of events) {
+            if (cancelled || linked.signal.aborted) {
+              break;
+            }
 
-          const mapped = parser(parsed, sequence++);
+            const payload = parseSSEPayload(event);
 
-          if (mapped) {
-            yield mapped;
-          }
-        }
-      }
+            if (payload === null) {
+              continue;
+            }
 
-      if (buffer.trim()) {
-        const payload = parseSSEPayload(buffer);
+            if (payload === "[DONE]") {
+              yield {
+                type: "done",
+                sequence: sequence++,
+                providerId,
+                model,
+                timestamp: Date.now(),
+              };
 
-        if (payload && payload !== "[DONE]") {
-          const parsed = safeJsonParse(payload);
+              cancelled = true;
 
-          if (parsed !== undefined) {
+              break;
+            }
+
+            const parsed = safeJsonParse(payload);
+
+            if (parsed === undefined) {
+              continue;
+            }
+
             const mapped = parser(parsed, sequence++);
 
             if (mapped) {
               yield mapped;
+
+              if (mapped.type === "done") {
+                cancelled = true;
+                break;
+              }
             }
           }
         }
+
+        if (!cancelled && !linked.signal.aborted && buffer.trim()) {
+          const payload = parseSSEPayload(buffer);
+
+          if (payload && payload !== "[DONE]") {
+            const parsed = safeJsonParse(payload);
+
+            if (parsed !== undefined) {
+              const mapped = parser(parsed, sequence++);
+
+              if (mapped) {
+                yield mapped;
+              }
+            }
+          }
+        }
+      } finally {
+        try {
+          await reader.cancel();
+        } catch {
+          // The stream may already have been closed or aborted.
+        }
       }
     } finally {
-      try {
-        await reader.cancel();
-      } catch {
-        // Stream is already closed/cancelled.
-      }
+      linked.cleanup();
     }
   };
 
@@ -279,11 +394,16 @@ export function createStream(
 
     model,
 
-    startedAt: Date.now(),
+    startedAt,
 
     cancel: () => {
+      if (cancelled) {
+        return;
+      }
+
       cancelled = true;
-      controller.abort();
+
+      linked.controller.abort();
     },
 
     [Symbol.asyncIterator]() {
@@ -291,6 +411,10 @@ export function createStream(
     },
   };
 }
+
+// ============================================================================
+// SSE
+// ============================================================================
 
 export function parseSSEPayload(event: string): string | null {
   const lines = event.split(/\r?\n/);
@@ -310,6 +434,10 @@ export function parseSSEPayload(event: string): string | null {
   return dataLines.join("\n").trim();
 }
 
+// ============================================================================
+// SAFE JSON
+// ============================================================================
+
 export function safeJsonParse(value: string): unknown | undefined {
   try {
     return JSON.parse(value);
@@ -317,6 +445,10 @@ export function safeJsonParse(value: string): unknown | undefined {
     return undefined;
   }
 }
+
+// ============================================================================
+// CONTENT HELPERS
+// ============================================================================
 
 export function normalizeContent(content: string | readonly unknown[]): string {
   if (typeof content === "string") {
@@ -329,9 +461,17 @@ export function normalizeContent(content: string | readonly unknown[]): string {
         typeof part === "object" &&
         part !== null &&
         "text" in part &&
-        typeof (part as { text?: unknown }).text === "string"
+        typeof (
+          part as {
+            text?: unknown;
+          }
+        ).text === "string"
       ) {
-        return (part as { text: string }).text;
+        return (
+          part as {
+            text: string;
+          }
+        ).text;
       }
 
       return "";
@@ -350,6 +490,10 @@ export function toOpenAIMessageContent(
   return content;
 }
 
+// ============================================================================
+// TIMEOUT
+// ============================================================================
+
 export function createTimeoutOptions(
   options: CloudExecutionOptions | undefined,
   providerTimeoutMs: number,
@@ -359,6 +503,7 @@ export function createTimeoutOptions(
 } {
   return {
     signal: options?.signal,
+
     timeoutMs: options?.timeoutMs ?? providerTimeoutMs,
   };
 }

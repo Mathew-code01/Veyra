@@ -20,10 +20,20 @@ import type { CloudResponse } from "./contracts/CloudResponse";
 
 import type { CloudStream } from "./contracts/CloudStream";
 
+import type { CloudHealth } from "./contracts/CloudHealth";
+
 import { CloudError } from "./contracts/CloudError";
+
+// ============================================================================
+// CLOUD GATEWAY
+// ============================================================================
 
 export class CloudGateway {
   public constructor(private readonly registry: CloudProviderRegistry) {}
+
+  // ==========================================================================
+  // EXECUTE
+  // ==========================================================================
 
   public async execute(
     providerId: string,
@@ -45,6 +55,10 @@ export class CloudGateway {
 
     return provider.execute(request, options);
   }
+
+  // ==========================================================================
+  // STREAM
+  // ==========================================================================
 
   public stream(
     providerId: string,
@@ -78,12 +92,41 @@ export class CloudGateway {
     return provider.stream(request, options);
   }
 
-  public async healthCheck(providerId?: string) {
+  // ==========================================================================
+  // HEALTH CHECK
+  // ==========================================================================
+
+  /**
+   * Check one explicitly selected provider.
+   *
+   * Supplying providerId guarantees a single CloudHealth result.
+   */
+  public async healthCheck(providerId: string): Promise<CloudHealth>;
+
+  /**
+   * Check every registered provider.
+   */
+  public async healthCheck(): Promise<CloudHealth[]>;
+
+  /**
+   * Implementation for both overloads.
+   */
+  public async healthCheck(
+    providerId?: string,
+  ): Promise<CloudHealth | CloudHealth[]> {
+    // ------------------------------------------------------------------------
+    // SINGLE PROVIDER
+    // ------------------------------------------------------------------------
+
     if (providerId) {
       const provider = this.registry.get(providerId);
 
       return provider.healthCheck();
     }
+
+    // ------------------------------------------------------------------------
+    // ALL PROVIDERS
+    // ------------------------------------------------------------------------
 
     const providers = this.registry.list();
 

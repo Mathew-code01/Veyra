@@ -1,44 +1,114 @@
-// core/ai/AIError.ts
+// ============================================================================
+// FILE: core/ai/AIError.ts
+// PURPOSE:
+// Canonical AI-layer error representation.
+//
+// IMPORTANT:
+// AIError uses the shared ErrorCode vocabulary from:
+//   core/errors/ErrorCode.ts
+//
+// AIErrorDetails contains structured diagnostic metadata used by AIManager,
+// LocalModelProvider, CloudAIProvider, and other AI-layer components.
+// ============================================================================
 
-export type AIErrorCode =
-  | "INVALID_REQUEST"
-  | "AUTHENTICATION"
-  | "AUTHORIZATION"
-  | "RATE_LIMIT"
-  | "TIMEOUT"
-  | "NETWORK"
-  | "PROVIDER"
-  | "MODEL_NOT_FOUND"
-  | "MODEL_NOT_INSTALLED"
-  | "MODEL_UNSUPPORTED"
-  | "MODEL_NOT_LOADED"
-  | "CONTENT_BLOCKED"
-  | "INVALID_RESPONSE"
-  | "UNAVAILABLE"
-  | "ABORTED"
-  | "UNKNOWN";
+import { defaultErrorRetryable, type ErrorCode } from "../errors/ErrorCode";
+
+// ============================================================================
+// ERROR CODE
+// ============================================================================
+
+/**
+ * Backwards-compatible AI-layer alias.
+ *
+ * ErrorCode.ts remains the single source of truth.
+ */
+export type AIErrorCode = ErrorCode;
+
+// ============================================================================
+// ERROR DETAILS
+// ============================================================================
 
 export interface AIErrorDetails {
+  /**
+   * HTTP/status-like code when one exists.
+   *
+   * Local model/runtime errors may not have a status.
+   */
   readonly status?: number;
 
+  /**
+   * Provider that produced the error.
+   *
+   * Examples:
+   *   gemini
+   *   groq
+   *   mistral
+   *   cloud:gemini
+   *   local
+   */
   readonly provider?: string;
 
+  /**
+   * Model involved in the failure.
+   */
   readonly model?: string;
 
+  /**
+   * Runtime involved in the failure.
+   *
+   * Examples:
+   *   llama_cpp
+   *   cloud
+   *   local
+   */
   readonly runtime?: string;
 
+  /**
+   * Runtime that the caller expected.
+   *
+   * This is diagnostic metadata used by AIManager when a registered
+   * provider is not the expected Veyra provider implementation.
+   *
+   * Examples:
+   *   "local"
+   *   "cloud"
+   */
+  readonly expectedRuntime?: "local" | "cloud";
+
+  /**
+   * Optional provider/server-supplied retry delay.
+   */
   readonly retryAfterMs?: number;
 
+  /**
+   * Original underlying error.
+   */
   readonly cause?: unknown;
 
+  /**
+   * Additional structured diagnostic information.
+   */
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
+// ============================================================================
+// AI ERROR
+// ============================================================================
+
 export class AIError extends Error {
+  /**
+   * Canonical Veyra error code.
+   */
   readonly code: AIErrorCode;
 
+  /**
+   * Whether the operation may reasonably be retried.
+   */
   readonly retryable: boolean;
 
+  /**
+   * Structured diagnostic information.
+   */
   readonly details: AIErrorDetails;
 
   public constructor(
@@ -46,19 +116,20 @@ export class AIError extends Error {
     code: AIErrorCode,
     options: {
       readonly retryable?: boolean;
-
       readonly details?: AIErrorDetails;
-
       readonly cause?: unknown;
     } = {},
   ) {
     super(message);
 
     this.name = "AIError";
-
     this.code = code;
 
-    this.retryable = options.retryable ?? false;
+    /**
+     * Use the shared canonical retryability rules unless the caller
+     * explicitly provides a retryable value.
+     */
+    this.retryable = options.retryable ?? defaultErrorRetryable(code);
 
     this.details = {
       ...options.details,
@@ -68,12 +139,20 @@ export class AIError extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 
+  // ==========================================================================
+  // UNKNOWN ERROR NORMALIZATION
+  // ==========================================================================
+
   public static fromUnknown(error: unknown, details?: AIErrorDetails): AIError {
     if (error instanceof AIError) {
       return error;
     }
 
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (
+      typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError"
+    ) {
       return new AIError("AI request was aborted.", "ABORTED", {
         retryable: false,
         details,
@@ -95,6 +174,10 @@ export class AIError extends Error {
       cause: error,
     });
   }
+
+  // ==========================================================================
+  // LOCAL MODEL ERRORS
+  // ==========================================================================
 
   public static modelNotFound(model: string): AIError {
     return new AIError(
