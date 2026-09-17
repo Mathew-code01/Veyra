@@ -33,3 +33,6 @@ dist-server/
 *.njsproj
 *.sln
 *.sw?
+
+
+.env

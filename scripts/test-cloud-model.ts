@@ -47,6 +47,8 @@
 //
 // ============================================================================
 
+import "dotenv/config";
+
 import { CloudAIProvider } from "../core/ai/CloudAIProvider";
 
 import {

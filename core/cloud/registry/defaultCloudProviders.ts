@@ -308,7 +308,7 @@ export function createDefaultCloudProviders(
       timeoutMs,
       maxRetries,
       defaultModels: {
-        text_generation: "llama-3.3-70b-versatile",
+        text_generation: "openai/gpt-oss-120b",
         speech_to_text: "whisper-large-v3",
       },
     });

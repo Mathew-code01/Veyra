@@ -1,24 +1,43 @@
 // ============================================================================
 // FILE: core/cloud/providers/Groq/GroqProvider.ts
 // PURPOSE:
-// Groq cloud provider adapter.
+// Production Groq cloud provider adapter.
 //
 // SUPPORTED:
 // - text generation
-// - streaming
+// - streaming text generation
 // - speech-to-text
 // - text-to-speech
 //
 // AUTH:
 // CloudCredentialResolver only.
+//
+// BASE URL:
+// The configured Groq base URL already includes:
+//
+//   https://api.groq.com/openai/v1
+//
+// Therefore endpoint paths MUST NOT append /openai/v1 again.
+//
+// GPT-OSS:
+// Groq GPT-OSS models are reasoning models.
+//
+// Veyra therefore:
+// - uses max_completion_tokens
+// - can control reasoning_effort
+// - excludes reasoning from normal assistant text
+// - never maps reasoning into response.text
+//
+// DEBUGGING:
+// Set GROQ_DEBUG_WIRE=true to enable sanitized local wire diagnostics.
+//
+// IMPORTANT:
+// Authorization headers/API keys are NEVER logged.
 // ============================================================================
 
 import type { CloudProvider } from "../../CloudProvider";
-
 import type { CloudProviderConfig } from "../../CloudProviderConfig";
-
 import type { CloudCapabilities } from "../../CloudCapabilities";
-
 import type { CloudModel } from "../../CloudModel";
 
 import { GROQ_MODELS } from "./GroqModels";
@@ -37,11 +56,9 @@ import type {
 } from "../../contracts/CloudResponse";
 
 import type { CloudStream } from "../../contracts/CloudStream";
-
 import type { CloudHealth } from "../../contracts/CloudHealth";
 
 import { CloudError } from "../../contracts/CloudError";
-
 import { CloudHttpClient } from "../../CloudHttpClient";
 
 import {
@@ -52,6 +69,10 @@ import {
   createStream,
   type CloudProviderDependencies,
 } from "../../CloudProviderSupport";
+
+// ============================================================================
+// PROVIDER
+// ============================================================================
 
 export class GroqProvider implements CloudProvider {
   public readonly id = "groq";
@@ -79,6 +100,10 @@ export class GroqProvider implements CloudProvider {
   private readonly credentialResolver: NonNullable<
     CloudProviderDependencies["credentialResolver"]
   >;
+
+  // ========================================================================
+  // CONSTRUCTOR
+  // ========================================================================
 
   public constructor(
     config: CloudProviderConfig,
@@ -111,6 +136,10 @@ export class GroqProvider implements CloudProvider {
     this.credentialResolver = dependencies.credentialResolver;
   }
 
+  // ========================================================================
+  // EXECUTION
+  // ========================================================================
+
   public async execute(
     request: CloudRequest,
     options: CloudExecutionOptions = {},
@@ -132,13 +161,14 @@ export class GroqProvider implements CloudProvider {
           "UNSUPPORTED",
           {
             providerId: this.id,
+            retryable: false,
           },
         );
     }
   }
 
   // ========================================================================
-  // Text
+  // TEXT GENERATION
   // ========================================================================
 
   private async generateText(
@@ -158,6 +188,7 @@ export class GroqProvider implements CloudProvider {
         "UNSUPPORTED",
         {
           providerId: this.id,
+          retryable: false,
         },
       );
     }
@@ -173,33 +204,48 @@ export class GroqProvider implements CloudProvider {
       this.credentialResolver,
     );
 
+    const requestBody: GroqChatRequest = {
+      model: model.modelId,
+
+      messages: this.toGroqMessages(request.messages),
+
+      temperature: request.options?.temperature,
+
+      top_p: request.options?.topP,
+
+      max_completion_tokens: request.options?.maxOutputTokens,
+
+      stop: request.options?.stopSequences,
+
+      // GPT-OSS reasoning should not become
+      // Veyra's visible assistant response.
+      include_reasoning: false,
+
+      // Low reasoning is sufficient for normal
+      // smoke tests and reduces unnecessary
+      // reasoning-token consumption.
+      reasoning_effort: this.isGptOssModel(model.modelId) ? "low" : undefined,
+
+      stream: false,
+    };
+
+    this.traceRequest(requestBody, "non-streaming");
+
     const response = await this.http.json<GroqChatResponse>({
-      url: `${this.baseUrl()}/openai/v1/chat/completions`,
+      url: `${this.baseUrl()}/chat/completions`,
 
       method: "POST",
 
       headers: createAuthorizationHeaders(apiKey, this.config.headers),
 
-      body: {
-        model: model.modelId,
-
-        messages: this.toGroqMessages(request.messages),
-
-        temperature: request.options?.temperature,
-
-        top_p: request.options?.topP,
-
-        max_tokens: request.options?.maxOutputTokens,
-
-        stop: request.options?.stopSequences,
-
-        stream: false,
-      },
+      body: requestBody,
 
       signal: options.signal,
 
       timeoutMs: options.timeoutMs ?? this.config.timeoutMs,
     });
+
+    this.traceResponse(response, "non-streaming");
 
     const choice = response.choices?.[0];
 
@@ -209,6 +255,31 @@ export class GroqProvider implements CloudProvider {
         "INVALID_RESPONSE",
         {
           providerId: this.id,
+          retryable: false,
+        },
+      );
+    }
+
+    const text = this.extractMessageText(choice.message?.content);
+
+    if (!text) {
+      const finishReason = choice.finish_reason ?? "unknown";
+
+      const reasoningReturned =
+        typeof choice.message?.reasoning === "string" &&
+        choice.message.reasoning.length > 0;
+
+      throw new CloudError(
+        [
+          `Groq returned a completion without final text content.`,
+          `model=${model.modelId}`,
+          `finish_reason=${finishReason}`,
+          `reasoning_returned=${reasoningReturned}`,
+        ].join(" "),
+        "INVALID_RESPONSE",
+        {
+          providerId: this.id,
+          retryable: false,
         },
       );
     }
@@ -220,7 +291,7 @@ export class GroqProvider implements CloudProvider {
 
       model: model.modelId,
 
-      text: this.extractMessageText(choice.message?.content),
+      text,
 
       finishReason: choice.finish_reason,
 
@@ -241,12 +312,8 @@ export class GroqProvider implements CloudProvider {
   }
 
   // ========================================================================
-  // Streaming
-  // ========================================================================
-
-  // ==========================================================================
   // STREAMING
-  // ==========================================================================
+  // ========================================================================
 
   public stream(
     request: CloudRequest,
@@ -271,6 +338,10 @@ export class GroqProvider implements CloudProvider {
 
     return this.createLazyStream(request, model.modelId, options);
   }
+
+  // ========================================================================
+  // LAZY STREAM
+  // ========================================================================
 
   private createLazyStream(
     request: Extract<
@@ -348,6 +419,10 @@ export class GroqProvider implements CloudProvider {
     };
   }
 
+  // ========================================================================
+  // CREATE STREAM
+  // ========================================================================
+
   private async createStream(
     request: Extract<
       CloudRequest,
@@ -363,8 +438,30 @@ export class GroqProvider implements CloudProvider {
       this.credentialResolver,
     );
 
+    const requestBody: GroqChatRequest = {
+      model: modelId,
+
+      messages: this.toGroqMessages(request.messages),
+
+      temperature: request.options?.temperature,
+
+      top_p: request.options?.topP,
+
+      max_completion_tokens: request.options?.maxOutputTokens,
+
+      stop: request.options?.stopSequences,
+
+      include_reasoning: false,
+
+      reasoning_effort: this.isGptOssModel(modelId) ? "low" : undefined,
+
+      stream: true,
+    };
+
+    this.traceRequest(requestBody, "streaming");
+
     const response = await this.http.raw({
-      url: `${this.baseUrl()}/openai/v1/chat/completions`,
+      url: `${this.baseUrl()}/chat/completions`,
 
       method: "POST",
 
@@ -376,21 +473,7 @@ export class GroqProvider implements CloudProvider {
         "Content-Type": "application/json",
       },
 
-      body: JSON.stringify({
-        model: modelId,
-
-        messages: this.toGroqMessages(request.messages),
-
-        temperature: request.options?.temperature,
-
-        top_p: request.options?.topP,
-
-        max_tokens: request.options?.maxOutputTokens,
-
-        stop: request.options?.stopSequences,
-
-        stream: true,
-      }),
+      body: JSON.stringify(requestBody),
 
       signal: options.signal,
 
@@ -400,12 +483,13 @@ export class GroqProvider implements CloudProvider {
     return createStream(this.id, modelId, response, (payload, sequence) => {
       const data = payload as GroqChatChunk;
 
-      const delta = data.choices?.[0]?.delta?.content;
+      const choice = data.choices?.[0];
+
+      const delta = this.extractMessageText(choice?.delta?.content);
 
       if (!delta) {
         return {
-          type:
-            data.choices?.[0]?.finish_reason === "stop" ? "done" : "metadata",
+          type: choice?.finish_reason === "stop" ? "done" : "metadata",
 
           data,
 
@@ -438,7 +522,7 @@ export class GroqProvider implements CloudProvider {
   }
 
   // ========================================================================
-  // Speech-to-text
+  // SPEECH TO TEXT
   // ========================================================================
 
   private async transcribe(
@@ -455,7 +539,7 @@ export class GroqProvider implements CloudProvider {
     const model = resolveModel(
       this.models,
       request.model,
-      this.config.defaultModels?.speech_to_text ?? "whisper-large-v3-turbo",
+      this.config.defaultModels?.speech_to_text ?? "whisper-large-v3",
     );
 
     const apiKey = await resolveCredential(
@@ -495,7 +579,7 @@ export class GroqProvider implements CloudProvider {
     }
 
     const response = await this.http.json<GroqTranscriptionResponse>({
-      url: `${this.baseUrl()}/openai/v1/audio/transcriptions`,
+      url: `${this.baseUrl()}/audio/transcriptions`,
 
       method: "POST",
 
@@ -534,7 +618,7 @@ export class GroqProvider implements CloudProvider {
   }
 
   // ========================================================================
-  // Text-to-speech
+  // TEXT TO SPEECH
   // ========================================================================
 
   private async synthesize(
@@ -561,7 +645,7 @@ export class GroqProvider implements CloudProvider {
     );
 
     const response = await this.http.raw({
-      url: `${this.baseUrl()}/openai/v1/audio/speech`,
+      url: `${this.baseUrl()}/audio/speech`,
 
       method: "POST",
 
@@ -604,7 +688,7 @@ export class GroqProvider implements CloudProvider {
   }
 
   // ========================================================================
-  // Health
+  // HEALTH CHECK
   // ========================================================================
 
   public async healthCheck(signal?: AbortSignal): Promise<CloudHealth> {
@@ -617,7 +701,7 @@ export class GroqProvider implements CloudProvider {
       );
 
       const response = await this.http.raw({
-        url: `${this.baseUrl()}/openai/v1/models`,
+        url: `${this.baseUrl()}/models`,
 
         method: "GET",
 
@@ -655,13 +739,27 @@ export class GroqProvider implements CloudProvider {
     }
   }
 
+  // ========================================================================
+  // URL
+  // ========================================================================
+
   private baseUrl(): string {
-    return this.config.baseUrl.replace(/\/+$/, "") || "https://api.groq.com";
+    const configured = this.config.baseUrl.trim().replace(/\/+$/, "");
+
+    if (!configured) {
+      return "https://api.groq.com/openai/v1";
+    }
+
+    return configured;
   }
+
+  // ========================================================================
+  // MESSAGE MAPPING
+  // ========================================================================
 
   private toGroqMessages(
     messages: readonly CloudMessage[],
-  ): readonly Record<string, unknown>[] {
+  ): readonly GroqMessage[] {
     return messages.map((message) => ({
       role: message.role,
 
@@ -669,9 +767,160 @@ export class GroqProvider implements CloudProvider {
     }));
   }
 
-  private extractMessageText(content: string | null | undefined): string {
-    return content ?? "";
+  // ========================================================================
+  // MODEL HELPERS
+  // ========================================================================
+
+  private isGptOssModel(modelId: string): boolean {
+    return (
+      modelId === "openai/gpt-oss-120b" || modelId === "openai/gpt-oss-20b"
+    );
   }
+
+  // ========================================================================
+  // RESPONSE HELPERS
+  // ========================================================================
+
+  private extractMessageText(
+    content: string | readonly GroqContentPart[] | null | undefined,
+  ): string {
+    if (typeof content === "string") {
+      return content.trim();
+    }
+
+    if (!Array.isArray(content)) {
+      return "";
+    }
+
+    return content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+
+        if (part.type === "text" && typeof part.text === "string") {
+          return part.text;
+        }
+
+        return "";
+      })
+      .join("")
+      .trim();
+  }
+
+  // ========================================================================
+  // SAFE DEBUGGING
+  // ========================================================================
+
+  private isWireDebugEnabled(): boolean {
+    return process.env.GROQ_DEBUG_WIRE === "true";
+  }
+
+  private traceRequest(
+    body: GroqChatRequest,
+    mode: "streaming" | "non-streaming",
+  ): void {
+    if (!this.isWireDebugEnabled()) {
+      return;
+    }
+
+    const safeMessages = body.messages.map((message) => ({
+      role: message.role,
+
+      content:
+        typeof message.content === "string"
+          ? message.content
+          : "[non-string content]",
+
+      contentLength:
+        typeof message.content === "string"
+          ? message.content.length
+          : undefined,
+    }));
+
+    console.log("");
+    console.log("[Groq wire debug] REQUEST");
+    console.log(
+      JSON.stringify(
+        {
+          endpoint: `${this.baseUrl()}/chat/completions`,
+
+          mode,
+
+          model: body.model,
+
+          messages: safeMessages,
+
+          temperature: body.temperature,
+
+          top_p: body.top_p,
+
+          max_completion_tokens: body.max_completion_tokens,
+
+          include_reasoning: body.include_reasoning,
+
+          reasoning_effort: body.reasoning_effort,
+
+          stream: body.stream,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
+  private traceResponse(
+    response: GroqChatResponse,
+    mode: "streaming" | "non-streaming",
+  ): void {
+    if (!this.isWireDebugEnabled()) {
+      return;
+    }
+
+    const choice = response.choices?.[0];
+
+    const content = this.extractMessageText(choice?.message?.content);
+
+    console.log("");
+    console.log("[Groq wire debug] RESPONSE");
+
+    console.log(
+      JSON.stringify(
+        {
+          mode,
+
+          id: response.id,
+
+          choiceCount: response.choices?.length ?? 0,
+
+          finishReason: choice?.finish_reason,
+
+          hasContent: content.length > 0,
+
+          contentLength: content.length,
+
+          contentPreview: content.slice(0, 500),
+
+          reasoningReturned:
+            typeof choice?.message?.reasoning === "string" &&
+            choice.message.reasoning.length > 0,
+
+          reasoningLength:
+            typeof choice?.message?.reasoning === "string"
+              ? choice.message.reasoning.length
+              : 0,
+
+          usage: response.usage,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
+  // ========================================================================
+  // AUDIO MIME TYPES
+  // ========================================================================
 
   private mimeTypeForAudio(
     format: "wav" | "mp3" | "ogg" | "flac" | "mulaw" | undefined,
@@ -697,23 +946,61 @@ export class GroqProvider implements CloudProvider {
 }
 
 // ============================================================================
-// Groq wire types
+// GROQ WIRE TYPES
 // ============================================================================
+
+interface GroqMessage {
+  readonly role: string;
+
+  readonly content: string | readonly GroqContentPart[] | null;
+}
+
+interface GroqContentPart {
+  readonly type?: string;
+
+  readonly text?: string;
+}
+
+interface GroqChatRequest {
+  readonly model: string;
+
+  readonly messages: readonly GroqMessage[];
+
+  readonly temperature?: number | undefined;
+
+  readonly top_p?: number | undefined;
+
+  readonly max_completion_tokens?: number | undefined;
+
+  readonly stop?: string | readonly string[] | undefined;
+
+  readonly include_reasoning?: boolean | undefined;
+
+  readonly reasoning_effort?: "low" | "medium" | "high" | undefined;
+
+  readonly stream: boolean;
+}
+
+interface GroqChatMessage {
+  readonly content?: string | readonly GroqContentPart[] | null;
+
+  readonly reasoning?: string | null;
+}
 
 interface GroqChatResponse {
   readonly id?: string;
 
   readonly choices?: readonly {
-    readonly message?: {
-      readonly content?: string | null;
-    };
+    readonly message?: GroqChatMessage;
 
     readonly finish_reason?: string;
   }[];
 
   readonly usage?: {
     readonly prompt_tokens?: number;
+
     readonly completion_tokens?: number;
+
     readonly total_tokens?: number;
   };
 }
@@ -721,7 +1008,9 @@ interface GroqChatResponse {
 interface GroqChatChunk {
   readonly choices?: readonly {
     readonly delta?: {
-      readonly content?: string | null;
+      readonly content?: string | readonly GroqContentPart[] | null;
+
+      readonly reasoning?: string | null;
     };
 
     readonly finish_reason?: string | null;
@@ -737,7 +1026,9 @@ interface GroqTranscriptionResponse {
 
   readonly segments?: readonly {
     readonly start: number;
+
     readonly end: number;
+
     readonly text: string;
   }[];
 }

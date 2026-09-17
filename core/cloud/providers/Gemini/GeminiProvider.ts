@@ -10,14 +10,18 @@
 // - document analysis through multimodal generation
 // - structured output
 // - tool calling
+//
+// API:
+// https://generativelanguage.googleapis.com/v1beta
+//
+// IMPORTANT:
+// The configured base URL already contains /v1beta.
+// Provider methods therefore append /models/... rather than /v1beta/models/...
 // ============================================================================
 
 import type { CloudProvider } from "../../CloudProvider";
-
 import type { CloudProviderConfig } from "../../CloudProviderConfig";
-
 import type { CloudCapabilities } from "../../CloudCapabilities";
-
 import type { CloudModel } from "../../CloudModel";
 
 import { GEMINI_MODELS } from "./GeminiModels";
@@ -35,11 +39,9 @@ import type {
 } from "../../contracts/CloudResponse";
 
 import type { CloudStream } from "../../contracts/CloudStream";
-
 import type { CloudHealth } from "../../contracts/CloudHealth";
 
 import { CloudError } from "../../contracts/CloudError";
-
 import { CloudHttpClient } from "../../CloudHttpClient";
 
 import {
@@ -51,6 +53,10 @@ import {
   type CloudProviderDependencies,
 } from "../../CloudProviderSupport";
 
+// ============================================================================
+// TYPES
+// ============================================================================
+
 type GeminiGeneratableRequest = Extract<
   CloudRequest,
   {
@@ -59,6 +65,10 @@ type GeminiGeneratableRequest = Extract<
 >;
 
 type GeminiGenerationOptions = GeminiGeneratableRequest["options"];
+
+// ============================================================================
+// PROVIDER
+// ============================================================================
 
 export class GeminiProvider implements CloudProvider {
   public readonly id = "gemini";
@@ -86,6 +96,10 @@ export class GeminiProvider implements CloudProvider {
   private readonly credentialResolver: NonNullable<
     CloudProviderDependencies["credentialResolver"]
   >;
+
+  // ==========================================================================
+  // CONSTRUCTOR
+  // ==========================================================================
 
   public constructor(
     config: CloudProviderConfig,
@@ -118,9 +132,9 @@ export class GeminiProvider implements CloudProvider {
     this.credentialResolver = dependencies.credentialResolver;
   }
 
-  // ========================================================================
+  // ==========================================================================
   // EXECUTE
-  // ========================================================================
+  // ==========================================================================
 
   public async execute(
     request: CloudRequest,
@@ -163,9 +177,9 @@ export class GeminiProvider implements CloudProvider {
     }
   }
 
-  // ========================================================================
-  // GENERATE
-  // ========================================================================
+  // ==========================================================================
+  // GENERATE CONTENT
+  // ==========================================================================
 
   private async generateContent(
     request: GeminiGeneratableRequest,
@@ -190,8 +204,16 @@ export class GeminiProvider implements CloudProvider {
 
     const body = this.createGenerateBody(request);
 
+    // IMPORTANT:
+    // baseUrl() already ends with /v1beta.
+    //
+    // Correct:
+    // /v1beta/models/{model}:generateContent
+    //
+    // Incorrect:
+    // /v1beta/v1beta/models/{model}:generateContent
     const url =
-      `${this.baseUrl()}/v1beta/models/` +
+      `${this.baseUrl()}/models/` +
       `${encodeURIComponent(model.modelId)}` +
       `:generateContent`;
 
@@ -236,9 +258,9 @@ export class GeminiProvider implements CloudProvider {
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // STREAMING
-  // ========================================================================
+  // ==========================================================================
 
   public stream(
     request: CloudRequest,
@@ -273,15 +295,20 @@ export class GeminiProvider implements CloudProvider {
 
     return createStream(
       this.id,
+
       model.modelId,
+
       async (signal) => {
         const apiKey = await resolveCredential(
           this.config,
           this.credentialResolver,
         );
 
+        // IMPORTANT:
+        // Do not add /v1beta here because baseUrl()
+        // already contains /v1beta.
         const url =
-          `${this.baseUrl()}/v1beta/models/` +
+          `${this.baseUrl()}/models/` +
           `${encodeURIComponent(model.modelId)}` +
           `:streamGenerateContent?alt=sse`;
 
@@ -305,6 +332,7 @@ export class GeminiProvider implements CloudProvider {
           timeoutMs: options.timeoutMs ?? this.config.timeoutMs,
         });
       },
+
       (payload, sequence) => {
         const data = payload as GeminiGenerateResponse;
 
@@ -342,13 +370,14 @@ export class GeminiProvider implements CloudProvider {
           timestamp: Date.now(),
         };
       },
+
       options.signal,
     );
   }
 
-  // ========================================================================
-  // HEALTH
-  // ========================================================================
+  // ==========================================================================
+  // HEALTH CHECK
+  // ==========================================================================
 
   public async healthCheck(signal?: AbortSignal): Promise<CloudHealth> {
     const startedAt = Date.now();
@@ -359,8 +388,13 @@ export class GeminiProvider implements CloudProvider {
         this.credentialResolver,
       );
 
+      // Correct Gemini endpoint:
+      //
+      // GET /v1beta/models
+      //
+      // baseUrl() already contains /v1beta.
       const response = await this.http.raw({
-        url: `${this.baseUrl()}/v1beta/models`,
+        url: `${this.baseUrl()}/models`,
 
         method: "GET",
 
@@ -400,9 +434,9 @@ export class GeminiProvider implements CloudProvider {
     }
   }
 
-  // ========================================================================
+  // ==========================================================================
   // REQUEST BODY
-  // ========================================================================
+  // ==========================================================================
 
   private createGenerateBody(
     request: GeminiGeneratableRequest,
@@ -446,9 +480,9 @@ export class GeminiProvider implements CloudProvider {
     return body;
   }
 
-  // ========================================================================
+  // ==========================================================================
   // GEMINI CONTENTS
-  // ========================================================================
+  // ==========================================================================
 
   private toGeminiContents(
     messages: readonly CloudMessage[],
@@ -459,6 +493,10 @@ export class GeminiProvider implements CloudProvider {
       parts: this.toGeminiParts(message.content),
     }));
   }
+
+  // ==========================================================================
+  // GEMINI PARTS
+  // ==========================================================================
 
   private toGeminiParts(
     content: string | readonly CloudContentPart[],
@@ -496,9 +534,9 @@ export class GeminiProvider implements CloudProvider {
     });
   }
 
-  // ========================================================================
+  // ==========================================================================
   // GENERATION OPTIONS
-  // ========================================================================
+  // ==========================================================================
 
   private toGenerationConfig(
     options: GeminiGenerationOptions | undefined,
@@ -528,9 +566,9 @@ export class GeminiProvider implements CloudProvider {
     return config;
   }
 
-  // ========================================================================
+  // ==========================================================================
   // RESPONSE TEXT
-  // ========================================================================
+  // ==========================================================================
 
   private extractText(response: GeminiGenerateResponse): string {
     return (
@@ -541,20 +579,38 @@ export class GeminiProvider implements CloudProvider {
     );
   }
 
-  // ========================================================================
+  // ==========================================================================
   // BASE URL
-  // ========================================================================
+  // ==========================================================================
 
+  /**
+   * Returns the Gemini API root.
+   *
+   * Configuration normally provides:
+   *
+   * https://generativelanguage.googleapis.com/v1beta
+   *
+   * We normalize the value so providers can safely append:
+   *
+   * /models/{model}
+   */
   private baseUrl(): string {
-    return (
-      this.config.baseUrl.replace(/\/+$/, "") ||
-      "https://generativelanguage.googleapis.com"
-    );
+    const configuredBaseUrl = this.config.baseUrl.trim().replace(/\/+$/, "");
+
+    if (!configuredBaseUrl) {
+      return "https://generativelanguage.googleapis.com/v1beta";
+    }
+
+    if (configuredBaseUrl.endsWith("/v1beta")) {
+      return configuredBaseUrl;
+    }
+
+    return `${configuredBaseUrl}/v1beta`;
   }
 }
 
 // ============================================================================
-// WIRE TYPES
+// GEMINI WIRE TYPES
 // ============================================================================
 
 interface GeminiGenerateResponse {
