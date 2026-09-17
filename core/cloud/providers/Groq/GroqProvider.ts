@@ -24,15 +24,14 @@
 //
 // Veyra therefore:
 // - uses max_completion_tokens
-// - can control reasoning_effort
 // - excludes reasoning from normal assistant text
 // - never maps reasoning into response.text
 //
-// DEBUGGING:
-// Set GROQ_DEBUG_WIRE=true to enable sanitized local wire diagnostics.
-//
-// IMPORTANT:
-// Authorization headers/API keys are NEVER logged.
+// SECURITY:
+// - API keys are never logged.
+// - Request bodies are never logged.
+// - Response bodies are never logged.
+// - Provider-level wire debugging is intentionally absent from production.
 // ============================================================================
 
 import type { CloudProvider } from "../../CloudProvider";
@@ -101,9 +100,9 @@ export class GroqProvider implements CloudProvider {
     CloudProviderDependencies["credentialResolver"]
   >;
 
-  // ========================================================================
+  // ==========================================================================
   // CONSTRUCTOR
-  // ========================================================================
+  // ==========================================================================
 
   public constructor(
     config: CloudProviderConfig,
@@ -136,9 +135,9 @@ export class GroqProvider implements CloudProvider {
     this.credentialResolver = dependencies.credentialResolver;
   }
 
-  // ========================================================================
+  // ==========================================================================
   // EXECUTION
-  // ========================================================================
+  // ==========================================================================
 
   public async execute(
     request: CloudRequest,
@@ -167,9 +166,9 @@ export class GroqProvider implements CloudProvider {
     }
   }
 
-  // ========================================================================
+  // ==========================================================================
   // TEXT GENERATION
-  // ========================================================================
+  // ==========================================================================
 
   private async generateText(
     request: Extract<
@@ -217,19 +216,10 @@ export class GroqProvider implements CloudProvider {
 
       stop: request.options?.stopSequences,
 
-      // GPT-OSS reasoning should not become
-      // Veyra's visible assistant response.
-      include_reasoning: false,
-
-      // Low reasoning is sufficient for normal
-      // smoke tests and reduces unnecessary
-      // reasoning-token consumption.
-      reasoning_effort: this.isGptOssModel(model.modelId) ? "low" : undefined,
+      include_reasoning: this.isGptOssModel(model.modelId) ? false : undefined,
 
       stream: false,
     };
-
-    this.traceRequest(requestBody, "non-streaming");
 
     const response = await this.http.json<GroqChatResponse>({
       url: `${this.baseUrl()}/chat/completions`,
@@ -245,8 +235,6 @@ export class GroqProvider implements CloudProvider {
       timeoutMs: options.timeoutMs ?? this.config.timeoutMs,
     });
 
-    this.traceResponse(response, "non-streaming");
-
     const choice = response.choices?.[0];
 
     if (!choice) {
@@ -260,7 +248,16 @@ export class GroqProvider implements CloudProvider {
       );
     }
 
-    const text = this.extractMessageText(choice.message?.content);
+    /*
+     * IMPORTANT:
+     *
+     * Non-streaming content may safely be normalized.
+     * Streaming deltas must NOT be trimmed individually.
+     *
+     * A streaming delta may contain leading/trailing whitespace
+     * which is meaningful when concatenated with the next delta.
+     */
+    const text = this.extractMessageText(choice.message?.content).trim();
 
     if (!text) {
       const finishReason = choice.finish_reason ?? "unknown";
@@ -271,7 +268,7 @@ export class GroqProvider implements CloudProvider {
 
       throw new CloudError(
         [
-          `Groq returned a completion without final text content.`,
+          "Groq returned a completion without final text content.",
           `model=${model.modelId}`,
           `finish_reason=${finishReason}`,
           `reasoning_returned=${reasoningReturned}`,
@@ -311,9 +308,9 @@ export class GroqProvider implements CloudProvider {
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // STREAMING
-  // ========================================================================
+  // ==========================================================================
 
   public stream(
     request: CloudRequest,
@@ -339,9 +336,9 @@ export class GroqProvider implements CloudProvider {
     return this.createLazyStream(request, model.modelId, options);
   }
 
-  // ========================================================================
+  // ==========================================================================
   // LAZY STREAM
-  // ========================================================================
+  // ==========================================================================
 
   private createLazyStream(
     request: Extract<
@@ -419,9 +416,9 @@ export class GroqProvider implements CloudProvider {
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // CREATE STREAM
-  // ========================================================================
+  // ==========================================================================
 
   private async createStream(
     request: Extract<
@@ -451,14 +448,10 @@ export class GroqProvider implements CloudProvider {
 
       stop: request.options?.stopSequences,
 
-      include_reasoning: false,
-
-      reasoning_effort: this.isGptOssModel(modelId) ? "low" : undefined,
+      include_reasoning: this.isGptOssModel(modelId) ? false : undefined,
 
       stream: true,
     };
-
-    this.traceRequest(requestBody, "streaming");
 
     const response = await this.http.raw({
       url: `${this.baseUrl()}/chat/completions`,
@@ -485,6 +478,12 @@ export class GroqProvider implements CloudProvider {
 
       const choice = data.choices?.[0];
 
+      /*
+       * DO NOT trim this value.
+       *
+       * Streaming deltas are fragments of a larger response.
+       * Leading spaces are significant.
+       */
       const delta = this.extractMessageText(choice?.delta?.content);
 
       if (!delta) {
@@ -521,9 +520,9 @@ export class GroqProvider implements CloudProvider {
     });
   }
 
-  // ========================================================================
+  // ==========================================================================
   // SPEECH TO TEXT
-  // ========================================================================
+  // ==========================================================================
 
   private async transcribe(
     request: Extract<
@@ -617,9 +616,9 @@ export class GroqProvider implements CloudProvider {
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // TEXT TO SPEECH
-  // ========================================================================
+  // ==========================================================================
 
   private async synthesize(
     request: Extract<
@@ -687,9 +686,9 @@ export class GroqProvider implements CloudProvider {
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // HEALTH CHECK
-  // ========================================================================
+  // ==========================================================================
 
   public async healthCheck(signal?: AbortSignal): Promise<CloudHealth> {
     const startedAt = Date.now();
@@ -739,9 +738,9 @@ export class GroqProvider implements CloudProvider {
     }
   }
 
-  // ========================================================================
+  // ==========================================================================
   // URL
-  // ========================================================================
+  // ==========================================================================
 
   private baseUrl(): string {
     const configured = this.config.baseUrl.trim().replace(/\/+$/, "");
@@ -753,9 +752,9 @@ export class GroqProvider implements CloudProvider {
     return configured;
   }
 
-  // ========================================================================
+  // ==========================================================================
   // MESSAGE MAPPING
-  // ========================================================================
+  // ==========================================================================
 
   private toGroqMessages(
     messages: readonly CloudMessage[],
@@ -767,9 +766,9 @@ export class GroqProvider implements CloudProvider {
     }));
   }
 
-  // ========================================================================
+  // ==========================================================================
   // MODEL HELPERS
-  // ========================================================================
+  // ==========================================================================
 
   private isGptOssModel(modelId: string): boolean {
     return (
@@ -777,15 +776,31 @@ export class GroqProvider implements CloudProvider {
     );
   }
 
-  // ========================================================================
+  // ==========================================================================
   // RESPONSE HELPERS
-  // ========================================================================
+  // ==========================================================================
 
+  /**
+   * Extracts content while preserving whitespace.
+   *
+   * This is intentionally NOT trimmed.
+   *
+   * Why:
+   * Streaming responses are delivered as fragments. A fragment can
+   * legitimately begin with a space:
+   *
+   *   "Hello"
+   *   " world"
+   *
+   * Trimming each fragment would incorrectly produce:
+   *
+   *   "Helloworld"
+   */
   private extractMessageText(
     content: string | readonly GroqContentPart[] | null | undefined,
   ): string {
     if (typeof content === "string") {
-      return content.trim();
+      return content;
     }
 
     if (!Array.isArray(content)) {
@@ -804,123 +819,12 @@ export class GroqProvider implements CloudProvider {
 
         return "";
       })
-      .join("")
-      .trim();
+      .join("");
   }
 
-  // ========================================================================
-  // SAFE DEBUGGING
-  // ========================================================================
-
-  private isWireDebugEnabled(): boolean {
-    return process.env.GROQ_DEBUG_WIRE === "true";
-  }
-
-  private traceRequest(
-    body: GroqChatRequest,
-    mode: "streaming" | "non-streaming",
-  ): void {
-    if (!this.isWireDebugEnabled()) {
-      return;
-    }
-
-    const safeMessages = body.messages.map((message) => ({
-      role: message.role,
-
-      content:
-        typeof message.content === "string"
-          ? message.content
-          : "[non-string content]",
-
-      contentLength:
-        typeof message.content === "string"
-          ? message.content.length
-          : undefined,
-    }));
-
-    console.log("");
-    console.log("[Groq wire debug] REQUEST");
-    console.log(
-      JSON.stringify(
-        {
-          endpoint: `${this.baseUrl()}/chat/completions`,
-
-          mode,
-
-          model: body.model,
-
-          messages: safeMessages,
-
-          temperature: body.temperature,
-
-          top_p: body.top_p,
-
-          max_completion_tokens: body.max_completion_tokens,
-
-          include_reasoning: body.include_reasoning,
-
-          reasoning_effort: body.reasoning_effort,
-
-          stream: body.stream,
-        },
-        null,
-        2,
-      ),
-    );
-  }
-
-  private traceResponse(
-    response: GroqChatResponse,
-    mode: "streaming" | "non-streaming",
-  ): void {
-    if (!this.isWireDebugEnabled()) {
-      return;
-    }
-
-    const choice = response.choices?.[0];
-
-    const content = this.extractMessageText(choice?.message?.content);
-
-    console.log("");
-    console.log("[Groq wire debug] RESPONSE");
-
-    console.log(
-      JSON.stringify(
-        {
-          mode,
-
-          id: response.id,
-
-          choiceCount: response.choices?.length ?? 0,
-
-          finishReason: choice?.finish_reason,
-
-          hasContent: content.length > 0,
-
-          contentLength: content.length,
-
-          contentPreview: content.slice(0, 500),
-
-          reasoningReturned:
-            typeof choice?.message?.reasoning === "string" &&
-            choice.message.reasoning.length > 0,
-
-          reasoningLength:
-            typeof choice?.message?.reasoning === "string"
-              ? choice.message.reasoning.length
-              : 0,
-
-          usage: response.usage,
-        },
-        null,
-        2,
-      ),
-    );
-  }
-
-  // ========================================================================
+  // ==========================================================================
   // AUDIO MIME TYPES
-  // ========================================================================
+  // ==========================================================================
 
   private mimeTypeForAudio(
     format: "wav" | "mp3" | "ogg" | "flac" | "mulaw" | undefined,
@@ -975,8 +879,6 @@ interface GroqChatRequest {
   readonly stop?: string | readonly string[] | undefined;
 
   readonly include_reasoning?: boolean | undefined;
-
-  readonly reasoning_effort?: "low" | "medium" | "high" | undefined;
 
   readonly stream: boolean;
 }
