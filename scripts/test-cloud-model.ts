@@ -1,4 +1,3 @@
-
 // ============================================================================
 // FILE: scripts/test-cloud-model.ts
 // PURPOSE:
@@ -12,10 +11,10 @@
 //   Default Cloud Provider Registry
 //       |
 //       v
-//   CloudProvider
+//   Cloud Provider
 //       |
 //       v
-//   CloudGateway
+//   Cloud Gateway
 //       |
 //       v
 //   CloudAIProvider
@@ -23,27 +22,7 @@
 //       v
 //   Real Cloud API
 //
-// This is intentionally an integration test rather than a unit test.
-//
-// It verifies that the complete cloud-model execution path is connected.
-//
-// USAGE:
-//
-//   npm run veyra:cloud:test
-//
-// Optional:
-//
-//   CLOUD_TEST_PROVIDER=gemini npm run veyra:cloud:test
-//
-//   CLOUD_TEST_PROVIDER=groq npm run veyra:cloud:test
-//
-//   CLOUD_TEST_PROVIDER=mistral npm run veyra:cloud:test
-//
-//   CLOUD_TEST_PROVIDER=cerebras npm run veyra:cloud:test
-//
-//   CLOUD_TEST_PROVIDER=openrouter npm run veyra:cloud:test
-//
-//   CLOUD_TEST_PROVIDER=huggingface npm run veyra:cloud:test
+// This verifies the complete cloud execution path.
 //
 // ============================================================================
 
@@ -80,10 +59,27 @@ interface TestConfiguration {
 // CONSTANTS
 // ============================================================================
 
-const DEFAULT_TIMEOUT_MS = 45_000;
+const DEFAULT_TIMEOUT_MS =
+  45_000;
+
+/**
+ * GPT-OSS reasoning tokens are part of the completion budget.
+ *
+ * 32 tokens is too small for a reliable reasoning-model smoke test.
+ *
+ * 512 gives the model enough room for reasoning while still keeping
+ * this test extremely small.
+ */
+const TEST_MAX_OUTPUT_TOKENS =
+  512;
 
 const DEFAULT_TEST_PROMPT =
-  "Reply with exactly: Veyra cloud integration test successful.";
+  [
+    "This is an automated Veyra integration test.",
+    "Do not explain anything.",
+    "Return exactly:",
+    "Veyra cloud integration test successful.",
+  ].join(" ");
 
 // ============================================================================
 // ENVIRONMENT
@@ -92,7 +88,8 @@ const DEFAULT_TEST_PROMPT =
 function getEnvironmentValue(
   name: string,
 ): string | undefined {
-  const value = process.env[name];
+  const value =
+    process.env[name];
 
   if (
     typeof value !== "string" ||
@@ -108,26 +105,36 @@ function getEnvironmentValue(
 // CONFIGURATION
 // ============================================================================
 
-function getConfiguration(): TestConfiguration {
+function getConfiguration():
+  TestConfiguration {
   return {
     providerId:
-      getEnvironmentValue("CLOUD_TEST_PROVIDER") ??
-      "gemini",
+      getEnvironmentValue(
+        "CLOUD_TEST_PROVIDER",
+      ) ?? "gemini",
 
     model:
-      getEnvironmentValue("CLOUD_TEST_MODEL"),
+      getEnvironmentValue(
+        "CLOUD_TEST_MODEL",
+      ),
 
     timeoutMs:
       parsePositiveInteger(
-        getEnvironmentValue("CLOUD_TEST_TIMEOUT_MS"),
+        getEnvironmentValue(
+          "CLOUD_TEST_TIMEOUT_MS",
+        ),
         DEFAULT_TIMEOUT_MS,
       ),
 
     skipHealth:
-      getEnvironmentValue("CLOUD_TEST_SKIP_HEALTH") === "true",
+      getEnvironmentValue(
+        "CLOUD_TEST_SKIP_HEALTH",
+      ) === "true",
 
     skipStreaming:
-      getEnvironmentValue("CLOUD_TEST_SKIP_STREAMING") === "true",
+      getEnvironmentValue(
+        "CLOUD_TEST_SKIP_STREAMING",
+      ) === "true",
   };
 }
 
@@ -143,7 +150,8 @@ function parsePositiveInteger(
     return fallback;
   }
 
-  const parsed = Number(value);
+  const parsed =
+    Number(value);
 
   if (
     !Number.isInteger(parsed) ||
@@ -161,9 +169,19 @@ function parsePositiveInteger(
 
 function printHeader(): void {
   console.log("");
-  console.log("============================================================");
-  console.log(" Veyra Cloud AI Integration Test");
-  console.log("============================================================");
+
+  console.log(
+    "============================================================",
+  );
+
+  console.log(
+    " Veyra Cloud AI Integration Test",
+  );
+
+  console.log(
+    "============================================================",
+  );
+
   console.log("");
 }
 
@@ -171,25 +189,34 @@ function printSection(
   title: string,
 ): void {
   console.log("");
-  console.log(`--- ${title} ---`);
+
+  console.log(
+    `--- ${title} ---`,
+  );
 }
 
 function printSuccess(
   message: string,
 ): void {
-  console.log(`  ✓ ${message}`);
+  console.log(
+    `  ✓ ${message}`,
+  );
 }
 
 function printFailure(
   message: string,
 ): void {
-  console.error(`  ✗ ${message}`);
+  console.error(
+    `  ✗ ${message}`,
+  );
 }
 
 function printInfo(
   message: string,
 ): void {
-  console.log(`  • ${message}`);
+  console.log(
+    `  • ${message}`,
+  );
 }
 
 // ============================================================================
@@ -204,8 +231,12 @@ function createResult(
 ): TestResult {
   return {
     name,
+
     passed,
-    durationMs: Date.now() - startedAt,
+
+    durationMs:
+      Date.now() - startedAt,
+
     ...(details
       ? {
           details,
@@ -230,22 +261,38 @@ function createTestRequest(
         }
       : {}),
 
+    /**
+     * GPT-OSS works well with the actual instruction
+     * in the user message.
+     *
+     * This also keeps the integration test independent
+     * from provider-specific system-prompt behavior.
+     */
     messages: [
       {
-        role: "system",
-        content:
-          "You are running an automated Veyra cloud integration test. Keep your response extremely short.",
-      },
-
-      {
         role: "user",
-        content: DEFAULT_TEST_PROMPT,
+
+        content:
+          DEFAULT_TEST_PROMPT,
       },
     ],
 
     options: {
+      /**
+       * Deterministic integration test.
+       */
       temperature: 0,
-      maxOutputTokens: 32,
+
+      /**
+       * IMPORTANT:
+       *
+       * GPT-OSS is a reasoning model.
+       * Its reasoning consumes completion tokens.
+       *
+       * 32 was too small.
+       */
+      maxOutputTokens:
+        TEST_MAX_OUTPUT_TOKENS,
     },
   };
 
@@ -302,22 +349,33 @@ function getCredentialEnvironmentVariable(
 async function main(): Promise<void> {
   printHeader();
 
-  const configuration = getConfiguration();
+  const configuration =
+    getConfiguration();
 
-  const results: TestResult[] = [];
+  const results: TestResult[] =
+    [];
 
-  printSection("Configuration");
+  printSection(
+    "Configuration",
+  );
 
   printInfo(
     `Provider: ${configuration.providerId}`,
   );
 
   printInfo(
-    `Model: ${configuration.model ?? "provider default"}`,
+    `Model: ${
+      configuration.model ??
+      "provider default"
+    }`,
   );
 
   printInfo(
     `Timeout: ${configuration.timeoutMs}ms`,
+  );
+
+  printInfo(
+    `Test max completion tokens: ${TEST_MAX_OUTPUT_TOKENS}`,
   );
 
   printInfo(
@@ -336,12 +394,23 @@ async function main(): Promise<void> {
     }`,
   );
 
-  // ==========================================================================
+  printInfo(
+    `Groq wire debug: ${
+      getEnvironmentValue(
+        "GROQ_DEBUG_WIRE",
+      ) === "true"
+        ? "enabled"
+        : "disabled"
+    }`,
+  );
+
+  // ========================================================================
   // CREDENTIAL CHECK
-  // ==========================================================================
+  // ========================================================================
 
   {
-    const startedAt = Date.now();
+    const startedAt =
+      Date.now();
 
     const environmentVariable =
       getCredentialEnvironmentVariable(
@@ -349,13 +418,16 @@ async function main(): Promise<void> {
       );
 
     if (
-      environmentVariable === "UNKNOWN"
+      environmentVariable ===
+      "UNKNOWN"
     ) {
       printInfo(
         "Credential variable could not be determined for this provider.",
       );
     } else if (
-      getEnvironmentValue(environmentVariable)
+      getEnvironmentValue(
+        environmentVariable,
+      )
     ) {
       printSuccess(
         `Credential detected: ${environmentVariable}`,
@@ -374,7 +446,9 @@ async function main(): Promise<void> {
         ),
       );
 
-      printSummary(results);
+      printSummary(
+        results,
+      );
 
       process.exitCode = 1;
 
@@ -390,27 +464,36 @@ async function main(): Promise<void> {
     );
   }
 
-  // ==========================================================================
+  // ========================================================================
   // REGISTRY
-  // ==========================================================================
+  // ========================================================================
 
-  printSection("Provider Registry");
+  printSection(
+    "Provider Registry",
+  );
 
   let registry:
-    ReturnType<typeof createDefaultCloudProviderRegistry>;
+    ReturnType<
+      typeof createDefaultCloudProviderRegistry
+    >;
 
   try {
     registry =
-      createDefaultCloudProviderRegistry({
-        allowUnconfigured: true,
+      createDefaultCloudProviderRegistry(
+        {
+          allowUnconfigured:
+            true,
 
-        timeoutMs:
-          configuration.timeoutMs,
+          timeoutMs:
+            configuration.timeoutMs,
 
-        maxRetries: 2,
+          maxRetries:
+            2,
 
-        applicationName: "Veyra Cloud Integration Test",
-      });
+          applicationName:
+            "Veyra Cloud Integration Test",
+        },
+      );
 
     const provider =
       registry.tryGet(
@@ -432,22 +515,28 @@ async function main(): Promise<void> {
     );
 
     printInfo(
-      `Streaming: ${
-        provider.capabilities.streaming
-      }`,
+      `Streaming: ${provider.capabilities.streaming}`,
     );
 
     printInfo(
-      `Vision: ${
-        provider.capabilities.vision
-      }`,
+      `Vision: ${provider.capabilities.vision}`,
     );
 
     printInfo(
-      `Structured output: ${
-        provider.capabilities.structuredOutput
-      }`,
+      `Structured output: ${provider.capabilities.structuredOutput}`,
     );
+
+    if (
+      configuration.providerId ===
+      "groq"
+    ) {
+      printInfo(
+        `Groq test model: ${
+          configuration.model ??
+          "openai/gpt-oss-120b"
+        }`,
+      );
+    }
 
     results.push(
       createResult(
@@ -473,16 +562,18 @@ async function main(): Promise<void> {
       ),
     );
 
-    printSummary(results);
+    printSummary(
+      results,
+    );
 
     process.exitCode = 1;
 
     return;
   }
 
-  // ==========================================================================
+  // ========================================================================
   // CLOUD AI PROVIDER
-  // ==========================================================================
+  // ========================================================================
 
   const cloudProvider =
     new CloudAIProvider({
@@ -495,14 +586,19 @@ async function main(): Promise<void> {
         `test:cloud:${configuration.providerId}`,
     });
 
-  // ==========================================================================
+  // ========================================================================
   // HEALTH
-  // ==========================================================================
+  // ========================================================================
 
-  if (!configuration.skipHealth) {
-    printSection("Health Check");
+  if (
+    !configuration.skipHealth
+  ) {
+    printSection(
+      "Health Check",
+    );
 
-    const startedAt = Date.now();
+    const startedAt =
+      Date.now();
 
     try {
       const health =
@@ -523,8 +619,10 @@ async function main(): Promise<void> {
       }
 
       if (
-        health.status === "healthy" ||
-        health.status === "degraded"
+        health.status ===
+          "healthy" ||
+        health.status ===
+          "degraded"
       ) {
         printSuccess(
           `Cloud provider health check completed with status "${health.status}".`,
@@ -540,7 +638,7 @@ async function main(): Promise<void> {
         );
       } else {
         printFailure(
-          `Cloud provider is unavailable.`,
+          "Cloud provider is unavailable.",
         );
 
         results.push(
@@ -572,14 +670,17 @@ async function main(): Promise<void> {
     }
   }
 
-  // ==========================================================================
+  // ========================================================================
   // GENERATION
-  // ==========================================================================
+  // ========================================================================
 
-  printSection("Non-Streaming Generation");
+  printSection(
+    "Non-Streaming Generation",
+  );
 
   {
-    const startedAt = Date.now();
+    const startedAt =
+      Date.now();
 
     try {
       const request =
@@ -615,21 +716,15 @@ async function main(): Promise<void> {
       );
 
       printInfo(
-        `Model: ${
-          response.metadata.model
-        }`,
+        `Model: ${response.metadata.model}`,
       );
 
       printInfo(
-        `Request ID: ${
-          response.metadata.requestId
-        }`,
+        `Request ID: ${response.metadata.requestId}`,
       );
 
       printInfo(
-        `Latency: ${
-          response.metadata.latencyMs
-        }ms`,
+        `Latency: ${response.metadata.latencyMs}ms`,
       );
 
       const usage =
@@ -670,16 +765,19 @@ async function main(): Promise<void> {
     }
   }
 
-  // ==========================================================================
+  // ========================================================================
   // STREAMING
-  // ==========================================================================
+  // ========================================================================
 
   if (
     !configuration.skipStreaming
   ) {
-    printSection("Streaming Generation");
+    printSection(
+      "Streaming Generation",
+    );
 
-    const startedAt = Date.now();
+    const startedAt =
+      Date.now();
 
     try {
       const provider =
@@ -694,7 +792,8 @@ async function main(): Promise<void> {
       }
 
       if (
-        !provider.capabilities.streaming
+        !provider.capabilities
+          .streaming
       ) {
         printInfo(
           "Provider does not advertise streaming support. Skipping streaming test.",
@@ -719,11 +818,14 @@ async function main(): Promise<void> {
             request,
           );
 
-        let combinedText = "";
+        let combinedText =
+          "";
 
-        let chunkCount = 0;
+        let chunkCount =
+          0;
 
-        let receivedDone = false;
+        let receivedDone =
+          false;
 
         for await (
           const chunk of stream
@@ -731,11 +833,13 @@ async function main(): Promise<void> {
           chunkCount += 1;
 
           if (chunk.text) {
-            combinedText += chunk.text;
+            combinedText +=
+              chunk.text;
           }
 
           if (chunk.done) {
-            receivedDone = true;
+            receivedDone =
+              true;
           }
         }
 
@@ -794,19 +898,24 @@ async function main(): Promise<void> {
     }
   }
 
-  // ==========================================================================
+  // ========================================================================
   // SUMMARY
-  // ==========================================================================
+  // ========================================================================
 
-  printSummary(results);
+  printSummary(
+    results,
+  );
 
   const failed =
     results.filter(
-      (result) => !result.passed,
+      (result) =>
+        !result.passed,
     );
 
   process.exitCode =
-    failed.length > 0 ? 1 : 0;
+    failed.length > 0
+      ? 1
+      : 0;
 }
 
 // ============================================================================
@@ -818,7 +927,9 @@ async function withTimeout<T>(
   timeoutMs: number,
 ): Promise<T> {
   let timeoutHandle:
-    ReturnType<typeof setTimeout> | undefined;
+    ReturnType<
+      typeof setTimeout
+    > | undefined;
 
   try {
     return await Promise.race([
@@ -827,19 +938,24 @@ async function withTimeout<T>(
       new Promise<T>(
         (_, reject) => {
           timeoutHandle =
-            setTimeout(() => {
-              reject(
-                new Error(
-                  `Operation timed out after ${timeoutMs}ms.`,
-                ),
-              );
-            }, timeoutMs);
+            setTimeout(
+              () => {
+                reject(
+                  new Error(
+                    `Operation timed out after ${timeoutMs}ms.`,
+                  ),
+                );
+              },
+              timeoutMs,
+            );
         },
       ),
     ]);
   } finally {
     if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
+      clearTimeout(
+        timeoutHandle,
+      );
     }
   }
 }
@@ -851,7 +967,9 @@ async function withTimeout<T>(
 function getErrorMessage(
   error: unknown,
 ): string {
-  if (error instanceof Error) {
+  if (
+    error instanceof Error
+  ) {
     return error.message;
   }
 
@@ -862,7 +980,9 @@ function getErrorMessage(
   }
 
   try {
-    return JSON.stringify(error);
+    return JSON.stringify(
+      error,
+    );
   } catch {
     return String(error);
   }
@@ -875,9 +995,13 @@ function getErrorMessage(
 function printSummary(
   results: readonly TestResult[],
 ): void {
-  printSection("Test Summary");
+  printSection(
+    "Test Summary",
+  );
 
-  for (const result of results) {
+  for (
+    const result of results
+  ) {
     const symbol =
       result.passed
         ? "✓"
@@ -899,15 +1023,18 @@ function printSummary(
 
   const passed =
     results.filter(
-      (result) => result.passed,
+      (result) =>
+        result.passed,
     ).length;
 
   const failed =
     results.filter(
-      (result) => !result.passed,
+      (result) =>
+        !result.passed,
     ).length;
 
   console.log("");
+
   console.log(
     `  Passed: ${passed}`,
   );
@@ -951,15 +1078,20 @@ function printSummary(
 // PROCESS ENTRYPOINT
 // ============================================================================
 
-main().catch((error: unknown) => {
-  console.error("");
-  console.error(
-    "Fatal cloud integration test error:",
-  );
-  console.error(
-    getErrorMessage(error),
-  );
-  console.error("");
+main().catch(
+  (error: unknown) => {
+    console.error("");
 
-  process.exitCode = 1;
-});
+    console.error(
+      "Fatal cloud integration test error:",
+    );
+
+    console.error(
+      getErrorMessage(error),
+    );
+
+    console.error("");
+
+    process.exitCode = 1;
+  },
+);

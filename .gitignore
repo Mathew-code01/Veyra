@@ -36,3 +36,7 @@ dist-server/
 
 
 .env
+# Local environment secrets
+.env
+.env.*
+!.env.example
