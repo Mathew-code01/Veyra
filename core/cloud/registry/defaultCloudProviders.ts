@@ -1,5 +1,7 @@
+
 // ============================================================================
 // FILE: core/cloud/registry/defaultCloudProviders.ts
+//
 // PURPOSE:
 // Creates and registers Veyra's built-in cloud providers.
 //
@@ -232,6 +234,18 @@ export function createDefaultCloudProviders(
   // ==========================================================================
   // GEMINI
   // ==========================================================================
+  //
+  // DEFAULT:
+  //   gemini-2.5-flash
+  //
+  // ADVANCED:
+  //   gemini-3.1-pro-preview
+  //
+  // We intentionally keep 2.5 Flash as the default because it is the
+  // stable/general-purpose Gemini model in this catalog.
+  //
+  // gemini-3.1-pro-preview remains explicitly selectable through model ID.
+  // ==========================================================================
 
   if (allowUnconfigured || hasEnvironmentVariable("GEMINI_API_KEY")) {
     const config = createProviderConfig({
@@ -253,6 +267,14 @@ export function createDefaultCloudProviders(
         vision: "gemini-2.5-flash",
 
         document_analysis: "gemini-2.5-flash",
+      },
+
+      metadata: {
+        advancedModel: "gemini-3.1-pro-preview",
+
+        defaultModel: "gemini-2.5-flash",
+
+        previewModels: ["gemini-3.1-pro-preview"],
       },
     });
 

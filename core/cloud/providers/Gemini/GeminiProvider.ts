@@ -1,3 +1,4 @@
+
 // ============================================================================
 // FILE: core/cloud/providers/Gemini/GeminiProvider.ts
 // PURPOSE:
@@ -338,6 +339,66 @@ export class GeminiProvider implements CloudProvider {
 
         const text = this.extractText(data);
 
+        /**
+         * Gemini's streaming protocol does not use the same explicit
+         * `[DONE]` sentinel used by OpenAI-compatible APIs.
+         *
+         * Instead, the final Gemini SSE payload contains:
+         *
+         *   candidates[0].finishReason
+         *
+         * Example:
+         *
+         *   {
+         *     "candidates": [
+         *       {
+         *         "finishReason": "STOP"
+         *       }
+         *     ]
+         *   }
+         *
+         * The shared CloudAIProvider expects a CloudStreamEvent with
+         * `type: "done"` so it can translate that event into:
+         *
+         *   AIStreamChunk.done === true
+         *
+         * Therefore Gemini must explicitly translate its terminal
+         * finishReason into a Veyra `done` event.
+         *
+         * This is intentionally handled here instead of changing the
+         * shared createStream() implementation because OpenAI-compatible
+         * providers such as Groq and Hugging Face already emit their
+         * terminal events correctly.
+         */
+        const finishReason = data.candidates?.[0]?.finishReason;
+
+        if (finishReason) {
+          return {
+            type: "done",
+
+            data: {
+              text,
+
+              finishReason,
+
+              response: data,
+            },
+
+            sequence,
+
+            providerId: this.id,
+
+            model: model.modelId,
+
+            timestamp: Date.now(),
+          };
+        }
+
+        /**
+         * Normal Gemini content event.
+         *
+         * Only emit a text_delta when the payload actually contains text.
+         */
         if (text) {
           return {
             type: "text_delta",
@@ -356,6 +417,11 @@ export class GeminiProvider implements CloudProvider {
           };
         }
 
+        /**
+         * Gemini may send intermediate payloads containing metadata,
+         * usage information, safety information, or other transport-level
+         * fields without generated text.
+         */
         return {
           type: "metadata",
 
@@ -619,6 +685,13 @@ interface GeminiGenerateResponse {
       readonly parts?: readonly GeminiPart[];
     };
 
+    /**
+     * Gemini supplies this on the terminal generation payload.
+     *
+     * Typical value:
+     *
+     *   "STOP"
+     */
     readonly finishReason?: string;
   }[];
 
