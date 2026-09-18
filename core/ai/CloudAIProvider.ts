@@ -1,3 +1,4 @@
+
 // ============================================================================
 // FILE: core/ai/CloudAIProvider.ts
 // PURPOSE:
@@ -36,6 +37,16 @@
 //                       +--> CloudProvider
 //
 // CloudAIProvider is therefore an adapter, not a second AI architecture.
+//
+// IMPORTANT:
+//
+// AIResponse is the shared core contract for BOTH:
+//
+// - LocalModelProvider
+// - CloudAIProvider
+//
+// CloudAIProvider must therefore never introduce cloud-only response shapes
+// into core/ai.
 // ============================================================================
 
 import type {
@@ -46,7 +57,13 @@ import type {
 
 import type { AIRequest } from "./AIRequest";
 
-import type { AIResponse, AIStreamChunk } from "./AIResponse";
+import type {
+  AIEmbeddingResponse,
+  AIResponse,
+  AIResponseMetadata,
+  AIStreamChunk,
+  AITextResponse,
+} from "./AIResponse";
 
 import { AIError, type AIErrorCode } from "./AIError";
 
@@ -210,11 +227,17 @@ export class CloudAIProvider implements AIProvider {
     if (signal?.aborted) {
       return {
         provider: this.name,
+
         status: "unavailable",
+
         latencyMs: 0,
+
         checkedAt: Date.now(),
+
         error: "Health check was aborted.",
+
         runtime: "cloud",
+
         details: {
           providerId: this.providerId,
 
@@ -225,7 +248,7 @@ export class CloudAIProvider implements AIProvider {
 
     try {
       /**
-       * Because CloudGateway now has overloads, supplying providerId returns
+       * Because CloudGateway has overloads, supplying providerId returns
        * CloudHealth directly rather than CloudHealth | CloudHealth[].
        */
       const health = await this.gateway.healthCheck(this.providerId);
@@ -347,51 +370,182 @@ export class CloudAIProvider implements AIProvider {
     request: AIRequest,
     latencyMs: number,
   ): AIResponse {
-    const responseRecord = this.asRecord(response);
-
     const requestRecord = this.asRecord(request);
 
-    const text = this.extractString(responseRecord, "text");
-
-    /**
-     * A generic AIResponse must contain text.
-     *
-     * CloudResponse may contain transport-level response variants, so do not
-     * silently turn an incompatible response into an empty successful answer.
-     */
-    if (text === undefined) {
-      throw new AIError(
-        `${this.name}: Cloud provider returned a response without text.`,
-        "INVALID_RESPONSE",
-        {
-          retryable: false,
-
-          details: {
-            provider: this.name,
-
-            runtime: "cloud",
-
-            details: {
-              providerId: this.providerId,
-            },
-          },
-        },
-      );
-    }
-
     const model =
-      this.extractString(responseRecord, "model") ??
+      this.normalizeString(response.model) ??
       this.extractString(requestRecord, "model") ??
       "unknown";
 
     const requestId =
-      this.extractString(responseRecord, "requestId") ??
+      this.normalizeString(response.requestId) ??
       this.extractString(requestRecord, "requestId") ??
       this.createFallbackRequestId();
 
-    const finishReason = this.extractString(responseRecord, "finishReason");
+    const metadata = this.createResponseMetadata(
+      response,
+      model,
+      requestId,
+      latencyMs,
+    );
 
-    const usage = this.mapUsage(responseRecord["usage"]);
+    // ------------------------------------------------------------------------
+    // TEXT-LIKE RESPONSES
+    // ------------------------------------------------------------------------
+
+    switch (response.type) {
+      case "text_generation":
+      case "vision":
+      case "speech_to_text":
+      case "document_analysis": {
+        const text = this.normalizeString(response.text);
+
+        if (text === undefined) {
+          throw this.createInvalidResponseError(
+            "Cloud provider returned a text response without text.",
+            model,
+            requestId,
+          );
+        }
+
+        const result: AITextResponse = {
+          type: response.type,
+
+          text,
+
+          metadata,
+        };
+
+        return Object.freeze(result);
+      }
+
+      // ----------------------------------------------------------------------
+      // EMBEDDING
+      // ----------------------------------------------------------------------
+
+      case "embedding": {
+        const embeddings = this.normalizeEmbeddings(response.embeddings);
+
+        if (embeddings.length === 0) {
+          throw this.createInvalidResponseError(
+            "Cloud provider returned an embedding response without embeddings.",
+            model,
+            requestId,
+          );
+        }
+
+        const dimensions = response.dimensions;
+
+        if (!Number.isInteger(dimensions) || dimensions <= 0) {
+          throw this.createInvalidResponseError(
+            `Cloud provider returned invalid embedding dimensions: ${String(
+              dimensions,
+            )}.`,
+            model,
+            requestId,
+          );
+        }
+
+        for (const embedding of embeddings) {
+          if (embedding.length !== dimensions) {
+            throw this.createInvalidResponseError(
+              `Cloud provider returned an embedding vector with ${embedding.length} dimensions; expected ${dimensions}.`,
+              model,
+              requestId,
+            );
+          }
+        }
+
+        /**
+         * Keep embeddings as a first-class AI response.
+         *
+         * This is part of the shared core/ai contract and therefore works
+         * consistently for cloud and future local embedding providers.
+         */
+        const result: AIEmbeddingResponse = {
+          type: "embedding",
+
+          embeddings,
+
+          dimensions,
+
+          metadata,
+        };
+
+        /**
+         * Deep-freeze the vectors at the AI boundary so consumers cannot
+         * mutate provider-owned response data.
+         */
+        return Object.freeze({
+          ...result,
+
+          embeddings: Object.freeze(
+            embeddings.map((embedding) => Object.freeze(embedding)),
+          ),
+        });
+      }
+
+      // ----------------------------------------------------------------------
+      // TEXT TO SPEECH
+      // ----------------------------------------------------------------------
+
+      case "text_to_speech":
+        /**
+         * AIResponse currently represents textual and embedding results.
+         *
+         * TTS has a binary audio payload and therefore must not be silently
+         * converted to text or JSON.
+         *
+         * It will receive a dedicated AI audio response contract when the
+         * generic audio response layer is introduced.
+         */
+        throw this.createInvalidResponseError(
+          "Cloud provider returned a text-to-speech response, but the generic AIResponse contract does not yet support audio responses.",
+          model,
+          requestId,
+        );
+
+      // ----------------------------------------------------------------------
+      // EXHAUSTIVENESS
+      // ----------------------------------------------------------------------
+
+      default: {
+        const exhaustiveResponse: never = response;
+
+        throw this.createInvalidResponseError(
+          `Cloud provider returned unsupported response type: ${String(
+            exhaustiveResponse,
+          )}.`,
+          model,
+          requestId,
+        );
+      }
+    }
+  }
+
+  // ==========================================================================
+  // RESPONSE METADATA
+  // ==========================================================================
+
+  private createResponseMetadata(
+    response: CloudResponse,
+    model: string,
+    requestId: string,
+    latencyMs: number,
+  ): AIResponseMetadata {
+    /**
+     * CloudResponse is a discriminated union.
+     *
+     * Most response variants expose `usage`, but CloudTextToSpeechResponse
+     * intentionally does not.
+     *
+     * Therefore we must narrow the union before accessing `usage`.
+     *
+     * This keeps the cloud contract honest instead of adding a meaningless
+     * optional usage field to response types that cannot provide it.
+     */
+    const usage =
+      "usage" in response ? this.mapUsage(response.usage) : undefined;
 
     const details: Record<string, unknown> = {
       runtime: "cloud",
@@ -399,33 +553,127 @@ export class CloudAIProvider implements AIProvider {
       providerId: this.providerId,
     };
 
-    return {
-      text,
+    let finishReason: string | undefined;
 
-      metadata: {
+    if (response.type === "text_generation" || response.type === "vision") {
+      finishReason = response.finishReason;
+    }
+
+    if (response.type === "speech_to_text") {
+      if (response.language !== undefined) {
+        details["language"] = response.language;
+      }
+
+      if (response.durationSeconds !== undefined) {
+        details["durationSeconds"] = response.durationSeconds;
+      }
+
+      if (response.segments !== undefined) {
+        details["segmentCount"] = response.segments.length;
+      }
+    }
+
+    if (response.type === "embedding") {
+      details["embeddingDimensions"] = response.dimensions;
+
+      details["embeddingCount"] = response.embeddings.length;
+    }
+
+    return Object.freeze({
+      provider: this.name,
+
+      model,
+
+      requestId,
+
+      latencyMs,
+
+      ...(finishReason !== undefined
+        ? {
+            finishReason,
+          }
+        : {}),
+
+      ...(usage !== undefined
+        ? {
+            usage,
+          }
+        : {}),
+
+      details: Object.freeze(details),
+    });
+  }
+
+  // ==========================================================================
+  // EMBEDDING NORMALIZATION
+  // ==========================================================================
+
+  private normalizeEmbeddings(
+    value: readonly (readonly number[])[],
+  ): number[][] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const embeddings: number[][] = [];
+
+    for (const embedding of value) {
+      if (!Array.isArray(embedding)) {
+        return [];
+      }
+
+      const normalized: number[] = [];
+
+      for (const value of embedding) {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          return [];
+        }
+
+        normalized.push(value);
+      }
+
+      embeddings.push(normalized);
+    }
+
+    return embeddings;
+  }
+
+  // ==========================================================================
+  // INVALID RESPONSE ERROR
+  // ==========================================================================
+
+  private createInvalidResponseError(
+    message: string,
+    model?: string,
+    requestId?: string,
+  ): AIError {
+    return new AIError(`${this.name}: ${message}`, "INVALID_RESPONSE", {
+      retryable: false,
+
+      details: {
         provider: this.name,
 
         model,
 
-        requestId,
+        runtime: "cloud",
 
-        latencyMs,
+        /**
+         * AIErrorDetails does not expose requestId as a top-level field.
+         *
+         * Keep cloud-specific request correlation information inside the
+         * generic nested details record.
+         */
+        details: {
+          providerId: this.providerId,
 
-        ...(finishReason !== undefined
-          ? {
-              finishReason,
-            }
-          : {}),
-
-        ...(usage !== undefined
-          ? {
-              usage,
-            }
-          : {}),
-
-        details,
+          ...(requestId !== undefined
+            ? {
+                requestId,
+              }
+            : {}),
+        },
       },
-    };
+    });
   }
 
   // ==========================================================================
@@ -572,7 +820,9 @@ export class CloudAIProvider implements AIProvider {
   // USAGE MAPPING
   // ==========================================================================
 
-  private mapUsage(value: unknown):
+  private mapUsage(
+    value: unknown,
+  ):
     | {
         inputTokens?: number;
         outputTokens?: number;
@@ -744,26 +994,9 @@ export class CloudAIProvider implements AIProvider {
 
   private cloudErrorToAIError(error: CloudError, model?: string): AIError {
     /**
-     * CloudError and AIError now use the exact same canonical ErrorCode type.
+     * CloudError and AIError use the same canonical error code.
      *
-     * Therefore there is NO semantic remapping here.
-     *
-     * Example:
-     *
-     *   CloudError("RATE_LIMIT")
-     *          |
-     *          v
-     *   AIError("RATE_LIMIT")
-     *
-     * Likewise:
-     *
-     *   CloudError("QUOTA_EXCEEDED")
-     *          |
-     *          v
-     *   AIError("QUOTA_EXCEEDED")
-     *
-     * This prevents the adapter from accidentally changing the meaning of
-     * an error while crossing the cloud -> AI boundary.
+     * No semantic error-code remapping is performed here.
      */
     const code: AIErrorCode = error.code;
 
@@ -783,6 +1016,14 @@ export class CloudAIProvider implements AIProvider {
 
         cause: error.cause,
 
+        /**
+         * IMPORTANT:
+         *
+         * `providerId` is cloud-specific metadata and therefore belongs
+         * inside the nested generic details record.
+         *
+         * It must NOT be placed directly on AIErrorDetails.
+         */
         details: {
           providerId: error.providerId,
 
@@ -836,6 +1077,12 @@ export class CloudAIProvider implements AIProvider {
 
     return typeof value === "string" && value.trim().length > 0
       ? value
+      : undefined;
+  }
+
+  private normalizeString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+      ? value.trim()
       : undefined;
   }
 

@@ -13,7 +13,7 @@ import type { AIMessage, AIRequest } from "./AIRequest";
 
 import type { AIProvider, AIProviderHealth } from "./AIProvider";
 
-import type { AIResponse, AIStreamChunk } from "./AIResponse";
+import type { AIResponse, AIStreamChunk, AITextResponse } from "./AIResponse";
 
 import { AIError } from "./AIError";
 
@@ -231,6 +231,8 @@ export class LocalModelProvider implements AIProvider {
       }
 
       return Object.freeze({
+        type: request.vision ? "vision" : "text_generation",
+
         text: result.text,
 
         metadata: Object.freeze({
