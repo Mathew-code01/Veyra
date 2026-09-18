@@ -1,7 +1,7 @@
 // ============================================================================
 // FILE: core/cloud/providers/Mistral/MistralProvider.ts
 // PURPOSE:
-// Mistral AI cloud provider adapter.
+// Production Mistral AI cloud provider adapter.
 //
 // SUPPORTED:
 // - text generation
@@ -10,16 +10,16 @@
 // - tool calling
 // - JSON structured output
 //
-// Vision/document capabilities are intentionally disabled until a registered
-// Veyra model explicitly advertises them.
+// NOTE:
+// The registry base URL is:
+//   https://api.mistral.ai/v1
+//
+// Therefore endpoint paths in this provider MUST NOT add another /v1.
 // ============================================================================
 
 import type { CloudProvider } from "../../CloudProvider";
-
 import type { CloudProviderConfig } from "../../CloudProviderConfig";
-
 import type { CloudCapabilities } from "../../CloudCapabilities";
-
 import type { CloudModel } from "../../CloudModel";
 
 import { MISTRAL_MODELS } from "./MistralModels";
@@ -37,11 +37,9 @@ import type {
 } from "../../contracts/CloudResponse";
 
 import type { CloudStream } from "../../contracts/CloudStream";
-
 import type { CloudHealth } from "../../contracts/CloudHealth";
 
 import { CloudError } from "../../contracts/CloudError";
-
 import { CloudHttpClient } from "../../CloudHttpClient";
 
 import {
@@ -125,9 +123,9 @@ export class MistralProvider implements CloudProvider {
     this.credentialResolver = dependencies.credentialResolver;
   }
 
-  // ========================================================================
+  // ==========================================================================
   // EXECUTE
-  // ========================================================================
+  // ==========================================================================
 
   public async execute(
     request: CloudRequest,
@@ -162,9 +160,9 @@ export class MistralProvider implements CloudProvider {
     }
   }
 
-  // ========================================================================
+  // ==========================================================================
   // TEXT GENERATION
-  // ========================================================================
+  // ==========================================================================
 
   private async generate(
     request: MistralTextRequest,
@@ -184,7 +182,7 @@ export class MistralProvider implements CloudProvider {
     );
 
     const response = await this.http.json<MistralChatResponse>({
-      url: `${this.baseUrl()}/v1/chat/completions`,
+      url: `${this.baseUrl()}/chat/completions`,
 
       method: "POST",
 
@@ -210,8 +208,6 @@ export class MistralProvider implements CloudProvider {
       );
     }
 
-    const text = this.extractText(choice.message?.content);
-
     return {
       type: "text_generation",
 
@@ -219,9 +215,9 @@ export class MistralProvider implements CloudProvider {
 
       model: model.modelId,
 
-      text,
+      text: this.extractText(choice.message?.content),
 
-      finishReason: choice.finish_reason,
+      finishReason: choice.finish_reason ?? undefined,
 
       usage: response.usage
         ? {
@@ -239,9 +235,9 @@ export class MistralProvider implements CloudProvider {
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // EMBEDDINGS
-  // ========================================================================
+  // ==========================================================================
 
   private async embed(
     request: MistralEmbeddingRequest,
@@ -266,7 +262,7 @@ export class MistralProvider implements CloudProvider {
         : Array.from(request.input);
 
     const response = await this.http.json<MistralEmbeddingResponse>({
-      url: `${this.baseUrl()}/v1/embeddings`,
+      url: `${this.baseUrl()}/embeddings`,
 
       method: "POST",
 
@@ -274,7 +270,6 @@ export class MistralProvider implements CloudProvider {
 
       body: {
         model: model.modelId,
-
         input: inputs,
       },
 
@@ -283,12 +278,6 @@ export class MistralProvider implements CloudProvider {
       timeoutMs: options.timeoutMs ?? this.config.timeoutMs,
     });
 
-    /**
-     * response.data is readonly.
-     *
-     * Array.from() creates a mutable array before sorting,
-     * which is the correct fix rather than casting away readonly.
-     */
     const orderedData = Array.from(response.data ?? []).sort(
       (a: MistralEmbeddingItem, b: MistralEmbeddingItem) => a.index - b.index,
     );
@@ -346,9 +335,9 @@ export class MistralProvider implements CloudProvider {
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // STREAMING
-  // ========================================================================
+  // ==========================================================================
 
   public stream(
     request: CloudRequest,
@@ -385,7 +374,7 @@ export class MistralProvider implements CloudProvider {
         );
 
         return this.http.raw({
-          url: `${this.baseUrl()}/v1/chat/completions`,
+          url: `${this.baseUrl()}/chat/completions`,
 
           method: "POST",
 
@@ -430,7 +419,7 @@ export class MistralProvider implements CloudProvider {
         }
 
         return {
-          type: "metadata",
+          type: choice?.finish_reason === "stop" ? "done" : "metadata",
 
           data,
 
@@ -447,9 +436,9 @@ export class MistralProvider implements CloudProvider {
     );
   }
 
-  // ========================================================================
+  // ==========================================================================
   // HEALTH
-  // ========================================================================
+  // ==========================================================================
 
   public async healthCheck(signal?: AbortSignal): Promise<CloudHealth> {
     const startedAt = Date.now();
@@ -461,7 +450,7 @@ export class MistralProvider implements CloudProvider {
       );
 
       const response = await this.http.raw({
-        url: `${this.baseUrl()}/v1/models`,
+        url: `${this.baseUrl()}/models`,
 
         method: "GET",
 
@@ -501,9 +490,9 @@ export class MistralProvider implements CloudProvider {
     }
   }
 
-  // ========================================================================
+  // ==========================================================================
   // REQUEST BUILDING
-  // ========================================================================
+  // ==========================================================================
 
   private createChatBody(
     request: MistralTextRequest,
@@ -517,15 +506,31 @@ export class MistralProvider implements CloudProvider {
 
       messages: this.toMessages(request.messages),
 
-      temperature: options?.temperature,
-
-      top_p: options?.topP,
-
-      max_tokens: options?.maxOutputTokens,
-
-      stop: options?.stopSequences,
-
       stream,
+
+      ...(options?.temperature !== undefined
+        ? {
+            temperature: options.temperature,
+          }
+        : {}),
+
+      ...(options?.topP !== undefined
+        ? {
+            top_p: options.topP,
+          }
+        : {}),
+
+      ...(options?.maxOutputTokens !== undefined
+        ? {
+            max_tokens: options.maxOutputTokens,
+          }
+        : {}),
+
+      ...(options?.stopSequences?.length
+        ? {
+            stop: options.stopSequences,
+          }
+        : {}),
     };
 
     if (options?.tools?.length) {
@@ -551,9 +556,9 @@ export class MistralProvider implements CloudProvider {
     return body;
   }
 
-  // ========================================================================
+  // ==========================================================================
   // MESSAGE CONVERSION
-  // ========================================================================
+  // ==========================================================================
 
   private toMessages(
     messages: readonly CloudMessage[],
@@ -565,9 +570,9 @@ export class MistralProvider implements CloudProvider {
     }));
   }
 
-  // ========================================================================
+  // ==========================================================================
   // CONTENT EXTRACTION
-  // ========================================================================
+  // ==========================================================================
 
   private extractText(
     content: string | readonly unknown[] | null | undefined,
@@ -597,12 +602,14 @@ export class MistralProvider implements CloudProvider {
       .join("");
   }
 
-  // ========================================================================
+  // ==========================================================================
   // BASE URL
-  // ========================================================================
+  // ==========================================================================
 
   private baseUrl(): string {
-    return this.config.baseUrl.replace(/\/+$/, "") || "https://api.mistral.ai";
+    return (
+      this.config.baseUrl.replace(/\/+$/, "") || "https://api.mistral.ai/v1"
+    );
   }
 }
 
@@ -618,7 +625,7 @@ interface MistralChatResponse {
       readonly content?: string | readonly unknown[] | null;
     };
 
-    readonly finish_reason?: string;
+    readonly finish_reason?: string | null;
   }[];
 
   readonly usage?: {
