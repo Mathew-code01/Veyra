@@ -1,3 +1,4 @@
+
 // ============================================================================
 // FILE: scripts/test-cloud-model.ts
 // PURPOSE:
@@ -39,6 +40,7 @@ import "dotenv/config";
 
 import { CloudAIProvider } from "../core/ai/CloudAIProvider";
 import type { AIRequest } from "../core/ai/AIRequest";
+import { isAITextResponse } from "../core/ai/AIResponse";
 
 import type { CloudCapabilities } from "../core/cloud/CloudCapabilities";
 import type { CloudProvider } from "../core/cloud/CloudProvider";
@@ -1039,6 +1041,23 @@ async function testTextGenerationModel({
         configuration.timeoutMs,
       );
 
+      /**
+       * AIResponse is a discriminated union:
+       *
+       *   AITextResponse
+       *   AIEmbeddingResponse
+       *
+       * A text-generation request must produce an AITextResponse.
+       *
+       * Use the canonical type guard instead of accessing `.text`
+       * directly on the union.
+       */
+      if (!isAITextResponse(response)) {
+        throw new Error(
+          `Cloud provider returned response type "${response.type}" for a text-generation request.`,
+        );
+      }
+
       const text = normalizeText(response.text);
 
       if (!text) {
@@ -1145,11 +1164,17 @@ async function testTextGenerationModel({
 
       let receivedDone = false;
 
+      let finishReason: string | undefined;
+
       for await (const chunk of stream) {
         chunkCount += 1;
 
         if (typeof chunk.text === "string") {
           combinedText += chunk.text;
+        }
+
+        if (chunk.finishReason) {
+          finishReason = chunk.finishReason;
         }
 
         if (chunk.done) {
@@ -1163,11 +1188,35 @@ async function testTextGenerationModel({
         throw new Error("Streaming completed without receiving text.");
       }
 
+      /**
+       * A successful stream must have a terminal completion event.
+       *
+       * Previously the test accepted:
+       *
+       *   text received + done=false
+       *
+       * as successful.
+       *
+       * That hid the Gemini streaming protocol bug.
+       *
+       * The stream is only considered complete when the provider emits
+       * the canonical Veyra `done` event.
+       */
+      if (!receivedDone) {
+        throw new Error(
+          "Streaming returned text but never emitted the required terminal done event.",
+        );
+      }
+
       printSuccess("Cloud streaming succeeded.");
 
       printInfo(`Chunks received: ${chunkCount}`);
 
       printInfo(`Completed: ${receivedDone}`);
+
+      if (finishReason) {
+        printInfo(`Finish reason: ${finishReason}`);
+      }
 
       printInfo(`Response: ${normalized}`);
 
