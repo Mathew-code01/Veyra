@@ -3,98 +3,135 @@
 // PURPOSE:
 // Production-oriented integration test for Veyra cloud AI.
 //
-// TEST PATH:
+// DEFAULT BEHAVIOR:
+// - Tests ALL registered providers.
+// - Tests ALL catalog models.
+// - Executes every model task that this harness can safely exercise.
+// - Skips providers without credentials unless CLOUD_TEST_REQUIRE_ALL=true.
+// - Uses Veyra's real CloudAIProvider execution path.
+// - Never calls provider APIs directly from this test.
 //
-//   Environment
-//       |
-//       v
+// EXECUTION PATH:
+//
+//   .env
+//     |
+//     v
 //   Default Cloud Provider Registry
-//       |
-//       v
+//     |
+//     v
 //   Cloud Provider
-//       |
-//       v
-//   Cloud Gateway
-//       |
-//       v
+//     |
+//     v
 //   CloudAIProvider
-//       |
-//       v
-//   Real Cloud API
-//
-// This verifies the complete cloud execution path.
+//     |
+//     v
+//   Provider implementation
+//     |
+//     v
+//   CloudHttpClient
+//     |
+//     v
+//   Real cloud API
 //
 // ============================================================================
 
 import "dotenv/config";
 
 import { CloudAIProvider } from "../core/ai/CloudAIProvider";
-
-import {
-  createDefaultCloudProviderRegistry,
-} from "../core/cloud/registry/defaultCloudProviders";
-
 import type { AIRequest } from "../core/ai/AIRequest";
+
+import type { CloudCapabilities } from "../core/cloud/CloudCapabilities";
+import type { CloudProvider } from "../core/cloud/CloudProvider";
+
+import { createDefaultCloudProviderRegistry } from "../core/cloud/registry/defaultCloudProviders";
 
 // ============================================================================
 // TYPES
 // ============================================================================
 
+type TestStatus = "passed" | "failed" | "skipped";
+
+type ModelTask =
+  | "text_generation"
+  | "vision"
+  | "speech_to_text"
+  | "text_to_speech"
+  | "embedding"
+  | "document_analysis";
+
 interface TestResult {
   readonly name: string;
-  readonly passed: boolean;
+  readonly status: TestStatus;
   readonly durationMs: number;
   readonly details?: string;
 }
 
 interface TestConfiguration {
-  readonly providerId: string;
+  /**
+   * Optional provider filter.
+   *
+   * When omitted, every registered provider is tested.
+   */
+  readonly providerId?: string;
+
+  /**
+   * Optional model filter.
+   *
+   * When omitted, every applicable catalog model is tested.
+   */
   readonly model?: string;
+
+  /**
+   * Per-operation timeout.
+   */
   readonly timeoutMs: number;
+
+  /**
+   * Skip provider health checks.
+   */
   readonly skipHealth: boolean;
+
+  /**
+   * Skip streaming tests.
+   */
   readonly skipStreaming: boolean;
+
+  /**
+   * Missing credentials become failures instead of skips.
+   */
+  readonly requireAllCredentials: boolean;
+
+  /**
+   * Only execute text-generation models.
+   */
+  readonly textOnly: boolean;
 }
 
 // ============================================================================
 // CONSTANTS
 // ============================================================================
 
-const DEFAULT_TIMEOUT_MS =
-  45_000;
+const DEFAULT_TIMEOUT_MS = 45_000;
 
-/**
- * GPT-OSS reasoning tokens are part of the completion budget.
- *
- * 32 tokens is too small for a reliable reasoning-model smoke test.
- *
- * 512 gives the model enough room for reasoning while still keeping
- * this test extremely small.
- */
-const TEST_MAX_OUTPUT_TOKENS =
-  512;
+const TEST_MAX_OUTPUT_TOKENS = 512;
 
-const DEFAULT_TEST_PROMPT =
-  [
-    "This is an automated Veyra integration test.",
-    "Do not explain anything.",
-    "Return exactly:",
-    "Veyra cloud integration test successful.",
-  ].join(" ");
+const DEFAULT_TEST_PROMPT = [
+  "This is an automated Veyra integration test.",
+  "Do not explain anything.",
+  "Return exactly:",
+  "Veyra cloud integration test successful.",
+].join(" ");
+
+const EXPECTED_TEST_TEXT = "Veyra cloud integration test successful.";
 
 // ============================================================================
 // ENVIRONMENT
 // ============================================================================
 
-function getEnvironmentValue(
-  name: string,
-): string | undefined {
-  const value =
-    process.env[name];
+function getEnvironmentValue(name: string): string | undefined {
+  const value = process.env[name];
 
-  if (
-    typeof value !== "string" ||
-    value.trim().length === 0
-  ) {
+  if (typeof value !== "string" || value.trim().length === 0) {
     return undefined;
   }
 
@@ -105,36 +142,25 @@ function getEnvironmentValue(
 // CONFIGURATION
 // ============================================================================
 
-function getConfiguration():
-  TestConfiguration {
+function getConfiguration(): TestConfiguration {
   return {
-    providerId:
-      getEnvironmentValue(
-        "CLOUD_TEST_PROVIDER",
-      ) ?? "gemini",
+    providerId: getEnvironmentValue("CLOUD_TEST_PROVIDER"),
 
-    model:
-      getEnvironmentValue(
-        "CLOUD_TEST_MODEL",
-      ),
+    model: getEnvironmentValue("CLOUD_TEST_MODEL"),
 
-    timeoutMs:
-      parsePositiveInteger(
-        getEnvironmentValue(
-          "CLOUD_TEST_TIMEOUT_MS",
-        ),
-        DEFAULT_TIMEOUT_MS,
-      ),
+    timeoutMs: parsePositiveInteger(
+      getEnvironmentValue("CLOUD_TEST_TIMEOUT_MS"),
+      DEFAULT_TIMEOUT_MS,
+    ),
 
-    skipHealth:
-      getEnvironmentValue(
-        "CLOUD_TEST_SKIP_HEALTH",
-      ) === "true",
+    skipHealth: getEnvironmentValue("CLOUD_TEST_SKIP_HEALTH") === "true",
 
-    skipStreaming:
-      getEnvironmentValue(
-        "CLOUD_TEST_SKIP_STREAMING",
-      ) === "true",
+    skipStreaming: getEnvironmentValue("CLOUD_TEST_SKIP_STREAMING") === "true",
+
+    requireAllCredentials:
+      getEnvironmentValue("CLOUD_TEST_REQUIRE_ALL") === "true",
+
+    textOnly: getEnvironmentValue("CLOUD_TEST_TEXT_ONLY") === "true",
   };
 }
 
@@ -150,13 +176,9 @@ function parsePositiveInteger(
     return fallback;
   }
 
-  const parsed =
-    Number(value);
+  const parsed = Number(value);
 
-  if (
-    !Number.isInteger(parsed) ||
-    parsed <= 0
-  ) {
+  if (!Number.isInteger(parsed) || parsed <= 0) {
     return fallback;
   }
 
@@ -169,54 +191,55 @@ function parsePositiveInteger(
 
 function printHeader(): void {
   console.log("");
-
   console.log(
-    "============================================================",
+    "======================================================================",
   );
-
+  console.log(" Veyra Cloud AI Integration Test");
+  console.log(" Provider × Model Integration Matrix");
   console.log(
-    " Veyra Cloud AI Integration Test",
+    "======================================================================",
   );
-
-  console.log(
-    "============================================================",
-  );
-
   console.log("");
 }
 
-function printSection(
-  title: string,
-): void {
+function printSection(title: string): void {
   console.log("");
+  console.log(`--- ${title} ---`);
+}
 
+function printProvider(providerId: string, providerName: string): void {
+  console.log("");
   console.log(
-    `--- ${title} ---`,
+    "######################################################################",
+  );
+  console.log(` PROVIDER: ${providerName} (${providerId})`);
+  console.log(
+    "######################################################################",
   );
 }
 
-function printSuccess(
-  message: string,
-): void {
+function printModel(modelId: string): void {
+  console.log("");
+  console.log(`  MODEL: ${modelId}`);
   console.log(
-    `  ✓ ${message}`,
+    "  ------------------------------------------------------------------",
   );
 }
 
-function printFailure(
-  message: string,
-): void {
-  console.error(
-    `  ✗ ${message}`,
-  );
+function printSuccess(message: string): void {
+  console.log(`    ✓ ${message}`);
 }
 
-function printInfo(
-  message: string,
-): void {
-  console.log(
-    `  • ${message}`,
-  );
+function printFailure(message: string): void {
+  console.error(`    ✗ ${message}`);
+}
+
+function printSkip(message: string): void {
+  console.log(`    ○ ${message}`);
+}
+
+function printInfo(message: string): void {
+  console.log(`    • ${message}`);
 }
 
 // ============================================================================
@@ -226,17 +249,13 @@ function printInfo(
 function createResult(
   name: string,
   startedAt: number,
-  passed: boolean,
+  status: TestStatus,
   details?: string,
 ): TestResult {
   return {
     name,
-
-    passed,
-
-    durationMs:
-      Date.now() - startedAt,
-
+    status,
+    durationMs: Date.now() - startedAt,
     ...(details
       ? {
           details,
@@ -246,78 +265,55 @@ function createResult(
 }
 
 // ============================================================================
-// REQUEST
+// REQUESTS
 // ============================================================================
 
-function createTestRequest(
-  model: string | undefined,
-): AIRequest {
-  const request = {
+function createTestRequest(model: string): AIRequest {
+  return {
     type: "text_generation",
-
-    ...(model
-      ? {
-          model,
-        }
-      : {}),
-
-    /**
-     * GPT-OSS works well with the actual instruction
-     * in the user message.
-     *
-     * This also keeps the integration test independent
-     * from provider-specific system-prompt behavior.
-     */
+    model,
     messages: [
       {
         role: "user",
-
-        content:
-          DEFAULT_TEST_PROMPT,
+        content: DEFAULT_TEST_PROMPT,
       },
     ],
-
     options: {
-      /**
-       * Deterministic integration test.
-       */
       temperature: 0,
-
-      /**
-       * IMPORTANT:
-       *
-       * GPT-OSS is a reasoning model.
-       * Its reasoning consumes completion tokens.
-       *
-       * 32 was too small.
-       */
-      maxOutputTokens:
-        TEST_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: TEST_MAX_OUTPUT_TOKENS,
     },
-  };
+  } as AIRequest;
+}
 
-  return request as unknown as AIRequest;
+/**
+ * Embedding requests are kept separate from text generation.
+ *
+ * This prevents an embedding model from accidentally being sent to
+ * a /chat/completions endpoint.
+ */
+function createEmbeddingTestRequest(model: string): AIRequest {
+  return {
+    type: "embedding",
+    model,
+    input: "Veyra cloud integration test embedding.",
+  } as AIRequest;
 }
 
 // ============================================================================
-// RESPONSE TEXT
+// RESPONSE HELPERS
 // ============================================================================
 
-function normalizeText(
-  text: string,
-): string {
-  return text
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 // ============================================================================
-// PROVIDER DISCOVERY
+// CREDENTIAL DISCOVERY
 // ============================================================================
 
 function getCredentialEnvironmentVariable(
   providerId: string,
-): string {
+): string | undefined {
   switch (providerId) {
     case "gemini":
       return "GEMINI_API_KEY";
@@ -338,233 +334,267 @@ function getCredentialEnvironmentVariable(
       return "HF_TOKEN";
 
     default:
-      return "UNKNOWN";
+      return undefined;
   }
 }
 
 // ============================================================================
-// MAIN TEST
+// MODEL TASK DISCOVERY
+// ============================================================================
+
+function getModelTasks(
+  model: unknown,
+  capabilities: CloudCapabilities,
+): readonly ModelTask[] {
+  const candidate = model as {
+    readonly tasks?: readonly unknown[];
+    readonly task?: unknown;
+    readonly type?: unknown;
+  };
+
+  const tasks: ModelTask[] = [];
+
+  if (Array.isArray(candidate.tasks)) {
+    for (const task of candidate.tasks) {
+      if (isModelTask(task)) {
+        tasks.push(task);
+      }
+    }
+  }
+
+  if (typeof candidate.task === "string" && isModelTask(candidate.task)) {
+    tasks.push(candidate.task);
+  }
+
+  if (typeof candidate.type === "string" && isModelTask(candidate.type)) {
+    tasks.push(candidate.type);
+  }
+
+  if (tasks.length > 0) {
+    return uniqueTasks(tasks);
+  }
+
+  /**
+   * Catalog fallback.
+   *
+   * Some Veyra catalogs may expose capability information only at the
+   * provider level.
+   */
+  const fallback: ModelTask[] = [];
+
+  if (capabilities.textGeneration) {
+    fallback.push("text_generation");
+  }
+
+  if (capabilities.vision) {
+    fallback.push("vision");
+  }
+
+  if (capabilities.speechToText) {
+    fallback.push("speech_to_text");
+  }
+
+  if (capabilities.textToSpeech) {
+    fallback.push("text_to_speech");
+  }
+
+  if (capabilities.embeddings) {
+    fallback.push("embedding");
+  }
+
+  if (capabilities.documentAnalysis) {
+    fallback.push("document_analysis");
+  }
+
+  return uniqueTasks(fallback);
+}
+
+function isModelTask(value: unknown): value is ModelTask {
+  return (
+    value === "text_generation" ||
+    value === "vision" ||
+    value === "speech_to_text" ||
+    value === "text_to_speech" ||
+    value === "embedding" ||
+    value === "document_analysis"
+  );
+}
+
+function uniqueTasks(tasks: readonly ModelTask[]): readonly ModelTask[] {
+  return Array.from(new Set(tasks));
+}
+
+// ============================================================================
+// MODEL ID
+// ============================================================================
+
+function getModelId(model: unknown): string {
+  const candidate = model as {
+    readonly modelId?: unknown;
+    readonly id?: unknown;
+    readonly name?: unknown;
+  };
+
+  if (typeof candidate.modelId === "string" && candidate.modelId.trim()) {
+    return candidate.modelId.trim();
+  }
+
+  if (typeof candidate.id === "string" && candidate.id.trim()) {
+    return candidate.id.trim();
+  }
+
+  if (typeof candidate.name === "string" && candidate.name.trim()) {
+    return candidate.name.trim();
+  }
+
+  throw new Error("Cloud model does not expose a valid modelId, id, or name.");
+}
+
+// ============================================================================
+// TASK EXECUTION
+// ============================================================================
+
+function getApplicableTasks(
+  tasks: readonly ModelTask[],
+  textOnly: boolean,
+): readonly ModelTask[] {
+  if (textOnly) {
+    return tasks.includes("text_generation") ? ["text_generation"] : [];
+  }
+
+  /**
+   * These tasks can currently be exercised without external binary
+   * fixtures.
+   *
+   * Vision requires an image.
+   * STT requires audio.
+   * TTS requires audio-output validation.
+   * Document analysis requires a document.
+   */
+  return tasks.filter(
+    (task) => task === "text_generation" || task === "embedding",
+  );
+}
+
+function getUnsupportedTaskReason(task: ModelTask): string {
+  switch (task) {
+    case "vision":
+      return "Vision requires an image fixture; " + "none is configured.";
+
+    case "speech_to_text":
+      return (
+        "Speech-to-text requires an audio fixture; " + "none is configured."
+      );
+
+    case "text_to_speech":
+      return (
+        "Text-to-speech requires output-audio validation; " +
+        "no TTS fixture is configured."
+      );
+
+    case "document_analysis":
+      return (
+        "Document analysis requires a document fixture; " +
+        "none is configured."
+      );
+
+    default:
+      return `Task "${task}" is not executable by this harness.`;
+  }
+}
+
+// ============================================================================
+// PROVIDER CAPABILITY VALIDATION
+// ============================================================================
+
+function getProviderCapabilities(provider: CloudProvider): CloudCapabilities {
+  return provider.capabilities;
+}
+
+// ============================================================================
+// MAIN
 // ============================================================================
 
 async function main(): Promise<void> {
   printHeader();
 
-  const configuration =
-    getConfiguration();
+  const configuration = getConfiguration();
 
-  const results: TestResult[] =
-    [];
+  const results: TestResult[] = [];
 
-  printSection(
-    "Configuration",
+  // ========================================================================
+  // CONFIGURATION
+  // ========================================================================
+
+  printSection("Configuration");
+
+  printInfo(`Provider filter: ${configuration.providerId ?? "ALL PROVIDERS"}`);
+
+  printInfo(`Model filter: ${configuration.model ?? "ALL MODELS"}`);
+
+  printInfo(`Timeout: ${configuration.timeoutMs}ms`);
+
+  printInfo(`Test max completion tokens: ${TEST_MAX_OUTPUT_TOKENS}`);
+
+  printInfo(
+    `Health checks: ${configuration.skipHealth ? "skipped" : "enabled"}`,
   );
 
   printInfo(
-    `Provider: ${configuration.providerId}`,
+    `Streaming tests: ${configuration.skipStreaming ? "skipped" : "enabled"}`,
   );
 
   printInfo(
-    `Model: ${
-      configuration.model ??
-      "provider default"
+    `Require all credentials: ${
+      configuration.requireAllCredentials ? "yes" : "no"
     }`,
   );
 
-  printInfo(
-    `Timeout: ${configuration.timeoutMs}ms`,
-  );
-
-  printInfo(
-    `Test max completion tokens: ${TEST_MAX_OUTPUT_TOKENS}`,
-  );
-
-  printInfo(
-    `Health check: ${
-      configuration.skipHealth
-        ? "skipped"
-        : "enabled"
-    }`,
-  );
-
-  printInfo(
-    `Streaming: ${
-      configuration.skipStreaming
-        ? "skipped"
-        : "enabled"
-    }`,
-  );
+  printInfo(`Text-only mode: ${configuration.textOnly ? "yes" : "no"}`);
 
   printInfo(
     `Groq wire debug: ${
-      getEnvironmentValue(
-        "GROQ_DEBUG_WIRE",
-      ) === "true"
-        ? "enabled"
-        : "disabled"
+      getEnvironmentValue("GROQ_DEBUG_WIRE") === "true" ? "enabled" : "disabled"
     }`,
   );
-
-  // ========================================================================
-  // CREDENTIAL CHECK
-  // ========================================================================
-
-  {
-    const startedAt =
-      Date.now();
-
-    const environmentVariable =
-      getCredentialEnvironmentVariable(
-        configuration.providerId,
-      );
-
-    if (
-      environmentVariable ===
-      "UNKNOWN"
-    ) {
-      printInfo(
-        "Credential variable could not be determined for this provider.",
-      );
-    } else if (
-      getEnvironmentValue(
-        environmentVariable,
-      )
-    ) {
-      printSuccess(
-        `Credential detected: ${environmentVariable}`,
-      );
-    } else {
-      printFailure(
-        `Missing credential: ${environmentVariable}`,
-      );
-
-      results.push(
-        createResult(
-          "Credential availability",
-          startedAt,
-          false,
-          `Set ${environmentVariable} before running the test.`,
-        ),
-      );
-
-      printSummary(
-        results,
-      );
-
-      process.exitCode = 1;
-
-      return;
-    }
-
-    results.push(
-      createResult(
-        "Credential availability",
-        startedAt,
-        true,
-      ),
-    );
-  }
 
   // ========================================================================
   // REGISTRY
   // ========================================================================
 
-  printSection(
-    "Provider Registry",
-  );
+  printSection("Provider Registry");
 
-  let registry:
-    ReturnType<
-      typeof createDefaultCloudProviderRegistry
-    >;
+  let registry: ReturnType<typeof createDefaultCloudProviderRegistry>;
 
   try {
-    registry =
-      createDefaultCloudProviderRegistry(
-        {
-          allowUnconfigured:
-            true,
+    registry = createDefaultCloudProviderRegistry({
+      allowUnconfigured: true,
 
-          timeoutMs:
-            configuration.timeoutMs,
+      timeoutMs: configuration.timeoutMs,
 
-          maxRetries:
-            2,
+      maxRetries: 2,
 
-          applicationName:
-            "Veyra Cloud Integration Test",
-        },
-      );
+      applicationName: "Veyra Cloud Integration Test",
 
-    const provider =
-      registry.tryGet(
-        configuration.providerId,
-      );
+      applicationUrl: "https://mthw-dev.vercel.app",
+    });
 
-    if (!provider) {
-      throw new Error(
-        `Provider "${configuration.providerId}" is not registered.`,
-      );
-    }
-
-    printSuccess(
-      `Provider "${configuration.providerId}" is registered.`,
-    );
-
-    printInfo(
-      `Provider name: ${provider.name}`,
-    );
-
-    printInfo(
-      `Streaming: ${provider.capabilities.streaming}`,
-    );
-
-    printInfo(
-      `Vision: ${provider.capabilities.vision}`,
-    );
-
-    printInfo(
-      `Structured output: ${provider.capabilities.structuredOutput}`,
-    );
-
-    if (
-      configuration.providerId ===
-      "groq"
-    ) {
-      printInfo(
-        `Groq test model: ${
-          configuration.model ??
-          "openai/gpt-oss-120b"
-        }`,
-      );
-    }
-
-    results.push(
-      createResult(
-        "Provider registration",
-        Date.now(),
-        true,
-      ),
-    );
+    printSuccess("Default cloud provider registry initialized.");
   } catch (error) {
-    const message =
-      getErrorMessage(error);
+    const message = getErrorMessage(error);
 
-    printFailure(
-      `Provider registry failed: ${message}`,
-    );
+    printFailure(`Provider registry failed: ${message}`);
 
     results.push(
       createResult(
-        "Provider registration",
+        "Provider registry initialization",
         Date.now(),
-        false,
+        "failed",
         message,
       ),
     );
 
-    printSummary(
-      results,
-    );
+    printSummary(results);
 
     process.exitCode = 1;
 
@@ -572,193 +602,487 @@ async function main(): Promise<void> {
   }
 
   // ========================================================================
-  // CLOUD AI PROVIDER
+  // PROVIDER DISCOVERY
   // ========================================================================
 
-  const cloudProvider =
-    new CloudAIProvider({
-      providerId:
-        configuration.providerId,
+  let providers: readonly CloudProvider[];
 
-      registry,
+  try {
+    providers = registry.list();
+  } catch (error) {
+    const message = getErrorMessage(error);
 
-      name:
-        `test:cloud:${configuration.providerId}`,
-    });
+    printFailure(`Provider discovery failed: ${message}`);
 
-  // ========================================================================
-  // HEALTH
-  // ========================================================================
-
-  if (
-    !configuration.skipHealth
-  ) {
-    printSection(
-      "Health Check",
+    results.push(
+      createResult("Provider discovery", Date.now(), "failed", message),
     );
 
-    const startedAt =
-      Date.now();
+    printSummary(results);
 
-    try {
-      const health =
-        await cloudProvider.healthCheck();
+    process.exitCode = 1;
 
-      printInfo(
-        `Status: ${health.status}`,
-      );
+    return;
+  }
 
-      printInfo(
-        `Latency: ${health.latencyMs}ms`,
-      );
+  if (providers.length === 0) {
+    printFailure("No cloud providers are registered.");
 
-      if (health.error) {
-        printInfo(
-          `Health error: ${health.error}`,
-        );
-      }
+    results.push(
+      createResult(
+        "Provider discovery",
+        Date.now(),
+        "failed",
+        "Registry returned zero providers.",
+      ),
+    );
 
-      if (
-        health.status ===
-          "healthy" ||
-        health.status ===
-          "degraded"
-      ) {
-        printSuccess(
-          `Cloud provider health check completed with status "${health.status}".`,
-        );
+    printSummary(results);
+
+    process.exitCode = 1;
+
+    return;
+  }
+
+  printSuccess(`Discovered ${providers.length} registered cloud provider(s).`);
+
+  results.push(
+    createResult(
+      "Provider discovery",
+      Date.now(),
+      "passed",
+      `${providers.length} provider(s)`,
+    ),
+  );
+
+  // ========================================================================
+  // PROVIDER LOOP
+  // ========================================================================
+
+  for (const provider of providers) {
+    if (configuration.providerId && provider.id !== configuration.providerId) {
+      continue;
+    }
+
+    printProvider(provider.id, provider.name);
+
+    // ======================================================================
+    // CREDENTIAL
+    // ======================================================================
+
+    const credentialEnvironmentVariable = getCredentialEnvironmentVariable(
+      provider.id,
+    );
+
+    if (credentialEnvironmentVariable) {
+      const credential = getEnvironmentValue(credentialEnvironmentVariable);
+
+      if (credential) {
+        printSuccess(`Credential detected: ${credentialEnvironmentVariable}`);
 
         results.push(
           createResult(
-            "Cloud health check",
-            startedAt,
-            true,
-            health.status,
+            `${provider.id} credential availability`,
+            Date.now(),
+            "passed",
           ),
         );
       } else {
-        printFailure(
-          "Cloud provider is unavailable.",
-        );
+        const reason = `Missing ${credentialEnvironmentVariable}.`;
 
-        results.push(
-          createResult(
-            "Cloud health check",
-            startedAt,
-            false,
-            health.error ??
-              health.status,
-          ),
-        );
+        if (configuration.requireAllCredentials) {
+          printFailure(`${reason} CLOUD_TEST_REQUIRE_ALL=true.`);
+
+          results.push(
+            createResult(
+              `${provider.id} credential availability`,
+              Date.now(),
+              "failed",
+              reason,
+            ),
+          );
+        } else {
+          printSkip(`${reason} Provider will not execute.`);
+
+          results.push(
+            createResult(
+              `${provider.id} credential availability`,
+              Date.now(),
+              "skipped",
+              reason,
+            ),
+          );
+        }
+
+        continue;
       }
-    } catch (error) {
-      const message =
-        getErrorMessage(error);
+    }
 
-      printFailure(
-        `Health check failed: ${message}`,
-      );
+    // ======================================================================
+    // CAPABILITIES
+    // ======================================================================
+
+    const capabilities = getProviderCapabilities(provider);
+
+    printSection(`${provider.name} Capabilities`);
+
+    printInfo(`Provider ID: ${provider.id}`);
+
+    printInfo(`Text generation: ${capabilities.textGeneration}`);
+
+    printInfo(`Streaming: ${capabilities.streaming}`);
+
+    printInfo(`Vision: ${capabilities.vision}`);
+
+    printInfo(`Speech-to-text: ${capabilities.speechToText}`);
+
+    printInfo(`Text-to-speech: ${capabilities.textToSpeech}`);
+
+    printInfo(`Embeddings: ${capabilities.embeddings}`);
+
+    printInfo(`Document analysis: ${capabilities.documentAnalysis}`);
+
+    printInfo(`Structured output: ${capabilities.structuredOutput}`);
+
+    printInfo(`Tool calling: ${capabilities.toolCalling}`);
+
+    // ======================================================================
+    // CLOUD AI PROVIDER
+    // ======================================================================
+
+    let cloudProvider: CloudAIProvider;
+
+    try {
+      cloudProvider = new CloudAIProvider({
+        providerId: provider.id,
+
+        registry,
+
+        name: `test:cloud:${provider.id}`,
+      });
+    } catch (error) {
+      const message = getErrorMessage(error);
+
+      printFailure(`CloudAIProvider initialization failed: ${message}`);
 
       results.push(
         createResult(
-          "Cloud health check",
-          startedAt,
-          false,
+          `${provider.id} CloudAIProvider initialization`,
+          Date.now(),
+          "failed",
           message,
         ),
       );
+
+      continue;
+    }
+
+    printSuccess("CloudAIProvider initialized.");
+
+    // ======================================================================
+    // HEALTH
+    // ======================================================================
+
+    if (!configuration.skipHealth) {
+      printSection(`${provider.name} Health Check`);
+
+      const startedAt = Date.now();
+
+      try {
+        const health = await withTimeout(
+          cloudProvider.healthCheck(),
+          configuration.timeoutMs,
+        );
+
+        printInfo(`Status: ${health.status}`);
+
+        printInfo(`Latency: ${health.latencyMs}ms`);
+
+        if (health.error) {
+          printInfo(`Health error: ${health.error}`);
+        }
+
+        if (health.status === "healthy" || health.status === "degraded") {
+          printSuccess(
+            `Health check completed with status "${health.status}".`,
+          );
+
+          results.push(
+            createResult(
+              `${provider.id} health check`,
+              startedAt,
+              "passed",
+              health.status,
+            ),
+          );
+        } else {
+          printFailure("Cloud provider is unavailable.");
+
+          results.push(
+            createResult(
+              `${provider.id} health check`,
+              startedAt,
+              "failed",
+              health.error ?? health.status,
+            ),
+          );
+        }
+      } catch (error) {
+        const message = getErrorMessage(error);
+
+        printFailure(`Health check failed: ${message}`);
+
+        results.push(
+          createResult(
+            `${provider.id} health check`,
+            startedAt,
+            "failed",
+            message,
+          ),
+        );
+      }
+    } else {
+      printSkip("Health check skipped by configuration.");
+
+      results.push(
+        createResult(
+          `${provider.id} health check`,
+          Date.now(),
+          "skipped",
+          "CLOUD_TEST_SKIP_HEALTH=true",
+        ),
+      );
+    }
+
+    // ======================================================================
+    // MODEL CATALOG
+    // ======================================================================
+
+    const models = Array.from(provider.models);
+
+    if (models.length === 0) {
+      printSkip("Provider exposes no models in its Veyra model catalog.");
+
+      results.push(
+        createResult(
+          `${provider.id} model discovery`,
+          Date.now(),
+          "skipped",
+          "No catalog models.",
+        ),
+      );
+
+      continue;
+    }
+
+    printSection(`${provider.name} Model Catalog`);
+
+    printInfo(`Catalog models: ${models.length}`);
+
+    // ======================================================================
+    // MODEL LOOP
+    // ======================================================================
+
+    for (const rawModel of models) {
+      let modelId: string;
+
+      try {
+        modelId = getModelId(rawModel);
+      } catch (error) {
+        const message = getErrorMessage(error);
+
+        printFailure(`Invalid model catalog entry: ${message}`);
+
+        results.push(
+          createResult(
+            `${provider.id} invalid model catalog entry`,
+            Date.now(),
+            "failed",
+            message,
+          ),
+        );
+
+        continue;
+      }
+
+      if (configuration.model && modelId !== configuration.model) {
+        continue;
+      }
+
+      printModel(modelId);
+
+      const tasks = getModelTasks(rawModel, capabilities);
+
+      printInfo(
+        `Catalog tasks: ${tasks.length > 0 ? tasks.join(", ") : "none"}`,
+      );
+
+      const applicableTasks = getApplicableTasks(tasks, configuration.textOnly);
+
+      // ====================================================================
+      // UNSUPPORTED MODALITIES
+      // ====================================================================
+
+      for (const task of tasks) {
+        if (!applicableTasks.includes(task)) {
+          const reason = getUnsupportedTaskReason(task);
+
+          printSkip(`${task}: ${reason}`);
+
+          results.push(
+            createResult(
+              `${provider.id}/${modelId} ${task}`,
+              Date.now(),
+              "skipped",
+              reason,
+            ),
+          );
+        }
+      }
+
+      // ====================================================================
+      // NO EXECUTABLE TASK
+      // ====================================================================
+
+      if (applicableTasks.length === 0) {
+        if (tasks.length === 0) {
+          printSkip("Model has no executable task metadata.");
+
+          results.push(
+            createResult(
+              `${provider.id}/${modelId} model execution`,
+              Date.now(),
+              "skipped",
+              "No executable task metadata.",
+            ),
+          );
+        }
+
+        continue;
+      }
+
+      // ====================================================================
+      // TASK LOOP
+      // ====================================================================
+
+      for (const task of applicableTasks) {
+        switch (task) {
+          case "text_generation":
+            await testTextGenerationModel({
+              provider,
+              cloudProvider,
+              modelId,
+              configuration,
+              results,
+            });
+            break;
+
+          case "embedding":
+            await testEmbeddingModel({
+              provider,
+              cloudProvider,
+              modelId,
+              configuration,
+              results,
+            });
+            break;
+
+          default:
+            break;
+        }
+      }
     }
   }
 
   // ========================================================================
-  // GENERATION
+  // SUMMARY
   // ========================================================================
 
-  printSection(
-    "Non-Streaming Generation",
-  );
+  printSummary(results);
+
+  const failed = results.filter((result) => result.status === "failed");
+
+  process.exitCode = failed.length > 0 ? 1 : 0;
+}
+
+// ============================================================================
+// TEXT GENERATION TEST
+// ============================================================================
+
+async function testTextGenerationModel({
+  provider,
+  cloudProvider,
+  modelId,
+  configuration,
+  results,
+}: {
+  readonly provider: CloudProvider;
+  readonly cloudProvider: CloudAIProvider;
+  readonly modelId: string;
+  readonly configuration: TestConfiguration;
+  readonly results: TestResult[];
+}): Promise<void> {
+  // ========================================================================
+  // NON-STREAMING
+  // ========================================================================
+
+  printSection(`${provider.id}/${modelId} — Non-Streaming Generation`);
 
   {
-    const startedAt =
-      Date.now();
+    const startedAt = Date.now();
 
     try {
-      const request =
-        createTestRequest(
-          configuration.model,
-        );
+      const request = createTestRequest(modelId);
 
-      const response =
-        await withTimeout(
-          cloudProvider.generate(
-            request,
-          ),
-          configuration.timeoutMs,
-        );
+      const response = await withTimeout(
+        cloudProvider.generate(request),
+        configuration.timeoutMs,
+      );
 
-      const text =
-        normalizeText(
-          response.text,
-        );
+      const text = normalizeText(response.text);
 
       if (!text) {
-        throw new Error(
-          "Cloud provider returned an empty response.",
-        );
+        throw new Error("Cloud provider returned an empty response.");
       }
 
-      printSuccess(
-        "Cloud generation succeeded.",
-      );
+      printSuccess("Cloud generation succeeded.");
 
-      printInfo(
-        `Response: ${text}`,
-      );
+      printInfo(`Response: ${text}`);
 
-      printInfo(
-        `Model: ${response.metadata.model}`,
-      );
+      printInfo(`Model: ${response.metadata.model}`);
 
-      printInfo(
-        `Request ID: ${response.metadata.requestId}`,
-      );
+      printInfo(`Request ID: ${response.metadata.requestId}`);
 
-      printInfo(
-        `Latency: ${response.metadata.latencyMs}ms`,
-      );
+      printInfo(`Latency: ${response.metadata.latencyMs}ms`);
 
-      const usage =
-        response.metadata.usage;
+      if (response.metadata.usage) {
+        printInfo(`Usage: ${JSON.stringify(response.metadata.usage)}`);
+      }
 
-      if (usage) {
+      if (!text.toLowerCase().includes(EXPECTED_TEST_TEXT.toLowerCase())) {
         printInfo(
-          `Usage: ${JSON.stringify(
-            usage,
-          )}`,
+          "Provider returned valid non-empty output, but did not reproduce the exact smoke-test sentence.",
         );
       }
 
       results.push(
         createResult(
-          "Cloud text generation",
+          `${provider.id}/${modelId} text generation`,
           startedAt,
-          true,
+          "passed",
           `model=${response.metadata.model}`,
         ),
       );
     } catch (error) {
-      const message =
-        getErrorMessage(error);
+      const message = getErrorMessage(error);
 
-      printFailure(
-        `Cloud generation failed: ${message}`,
-      );
+      printFailure(`Cloud generation failed: ${message}`);
 
       results.push(
         createResult(
-          "Cloud text generation",
+          `${provider.id}/${modelId} text generation`,
           startedAt,
-          false,
+          "failed",
           message,
         ),
       );
@@ -769,153 +1093,207 @@ async function main(): Promise<void> {
   // STREAMING
   // ========================================================================
 
-  if (
-    !configuration.skipStreaming
-  ) {
-    printSection(
-      "Streaming Generation",
+  if (configuration.skipStreaming) {
+    printSkip("Streaming test skipped by configuration.");
+
+    results.push(
+      createResult(
+        `${provider.id}/${modelId} streaming`,
+        Date.now(),
+        "skipped",
+        "CLOUD_TEST_SKIP_STREAMING=true",
+      ),
     );
 
-    const startedAt =
-      Date.now();
+    return;
+  }
+
+  if (!provider.capabilities.streaming) {
+    printSkip("Provider does not advertise streaming support.");
+
+    results.push(
+      createResult(
+        `${provider.id}/${modelId} streaming`,
+        Date.now(),
+        "skipped",
+        "Provider capability streaming=false.",
+      ),
+    );
+
+    return;
+  }
+
+  printSection(`${provider.id}/${modelId} — Streaming Generation`);
+
+  {
+    const startedAt = Date.now();
 
     try {
-      const provider =
-        registry.tryGet(
-          configuration.providerId,
-        );
+      const request = createTestRequest(modelId);
 
-      if (!provider) {
-        throw new Error(
-          `Provider "${configuration.providerId}" is not registered.`,
-        );
-      }
+      /**
+       * stream() is intentionally synchronous.
+       *
+       * The provider implementation is responsible for lazy HTTP
+       * initialization.
+       */
+      const stream = cloudProvider.stream(request);
 
-      if (
-        !provider.capabilities
-          .streaming
-      ) {
-        printInfo(
-          "Provider does not advertise streaming support. Skipping streaming test.",
-        );
+      let combinedText = "";
 
-        results.push(
-          createResult(
-            "Cloud streaming",
-            startedAt,
-            true,
-            "Provider does not support streaming.",
-          ),
-        );
-      } else {
-        const request =
-          createTestRequest(
-            configuration.model,
-          );
+      let chunkCount = 0;
 
-        const stream =
-          cloudProvider.stream(
-            request,
-          );
+      let receivedDone = false;
 
-        let combinedText =
-          "";
+      for await (const chunk of stream) {
+        chunkCount += 1;
 
-        let chunkCount =
-          0;
-
-        let receivedDone =
-          false;
-
-        for await (
-          const chunk of stream
-        ) {
-          chunkCount += 1;
-
-          if (chunk.text) {
-            combinedText +=
-              chunk.text;
-          }
-
-          if (chunk.done) {
-            receivedDone =
-              true;
-          }
+        if (typeof chunk.text === "string") {
+          combinedText += chunk.text;
         }
 
-        const normalized =
-          normalizeText(
-            combinedText,
-          );
-
-        if (!normalized) {
-          throw new Error(
-            "Streaming completed without receiving text.",
-          );
+        if (chunk.done) {
+          receivedDone = true;
         }
-
-        printSuccess(
-          "Cloud streaming succeeded.",
-        );
-
-        printInfo(
-          `Chunks received: ${chunkCount}`,
-        );
-
-        printInfo(
-          `Completed: ${receivedDone}`,
-        );
-
-        printInfo(
-          `Response: ${normalized}`,
-        );
-
-        results.push(
-          createResult(
-            "Cloud streaming",
-            startedAt,
-            true,
-            `${chunkCount} chunks`,
-          ),
-        );
       }
-    } catch (error) {
-      const message =
-        getErrorMessage(error);
 
-      printFailure(
-        `Cloud streaming failed: ${message}`,
-      );
+      const normalized = normalizeText(combinedText);
+
+      if (!normalized) {
+        throw new Error("Streaming completed without receiving text.");
+      }
+
+      printSuccess("Cloud streaming succeeded.");
+
+      printInfo(`Chunks received: ${chunkCount}`);
+
+      printInfo(`Completed: ${receivedDone}`);
+
+      printInfo(`Response: ${normalized}`);
 
       results.push(
         createResult(
-          "Cloud streaming",
+          `${provider.id}/${modelId} streaming`,
           startedAt,
-          false,
+          "passed",
+          `${chunkCount} chunks`,
+        ),
+      );
+    } catch (error) {
+      const message = getErrorMessage(error);
+
+      printFailure(`Cloud streaming failed: ${message}`);
+
+      results.push(
+        createResult(
+          `${provider.id}/${modelId} streaming`,
+          startedAt,
+          "failed",
           message,
         ),
       );
     }
   }
+}
 
-  // ========================================================================
-  // SUMMARY
-  // ========================================================================
+// ============================================================================
+// EMBEDDING MODEL TEST
+// ============================================================================
 
-  printSummary(
-    results,
-  );
+async function testEmbeddingModel({
+  provider,
+  cloudProvider,
+  modelId,
+  configuration,
+  results,
+}: {
+  readonly provider: CloudProvider;
+  readonly cloudProvider: CloudAIProvider;
+  readonly modelId: string;
+  readonly configuration: TestConfiguration;
+  readonly results: TestResult[];
+}): Promise<void> {
+  printSection(`${provider.id}/${modelId} — Embedding`);
 
-  const failed =
-    results.filter(
-      (result) =>
-        !result.passed,
+  if (!provider.capabilities.embeddings) {
+    printSkip("Provider does not advertise embedding support.");
+
+    results.push(
+      createResult(
+        `${provider.id}/${modelId} embedding`,
+        Date.now(),
+        "skipped",
+        "Provider capability embeddings=false.",
+      ),
     );
 
-  process.exitCode =
-    failed.length > 0
-      ? 1
-      : 0;
+    return;
+  }
+
+  const startedAt = Date.now();
+
+  try {
+    const request = createEmbeddingTestRequest(modelId);
+
+    /**
+     * Use the Veyra CloudAIProvider execution path.
+     *
+     * No direct Mistral/OpenAI-compatible fetch is performed here.
+     */
+    const response = await withTimeout(
+      cloudProvider.generate(request),
+      configuration.timeoutMs,
+    );
+
+    if (response === undefined || response === null) {
+      throw new Error("Embedding provider returned no response.");
+    }
+
+    const candidate = response as unknown as {
+      readonly embeddings?: unknown;
+      readonly data?: unknown;
+      readonly metadata?: {
+        readonly model?: string;
+      };
+    };
+
+    const hasEmbeddingPayload =
+      Array.isArray(candidate.embeddings) || Array.isArray(candidate.data);
+
+    if (!hasEmbeddingPayload) {
+      throw new Error(
+        "Embedding provider returned a response without an embeddings/data array.",
+      );
+    }
+
+    printSuccess("Embedding request succeeded.");
+
+    if (candidate.metadata?.model) {
+      printInfo(`Model: ${candidate.metadata.model}`);
+    }
+
+    results.push(
+      createResult(
+        `${provider.id}/${modelId} embedding`,
+        startedAt,
+        "passed",
+        `model=${modelId}`,
+      ),
+    );
+  } catch (error) {
+    const message = getErrorMessage(error);
+
+    printFailure(`Embedding test failed: ${message}`);
+
+    results.push(
+      createResult(
+        `${provider.id}/${modelId} embedding`,
+        startedAt,
+        "failed",
+        message,
+      ),
+    );
+  }
 }
 
 // ============================================================================
@@ -926,36 +1304,21 @@ async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
 ): Promise<T> {
-  let timeoutHandle:
-    ReturnType<
-      typeof setTimeout
-    > | undefined;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
   try {
     return await Promise.race([
       promise,
 
-      new Promise<T>(
-        (_, reject) => {
-          timeoutHandle =
-            setTimeout(
-              () => {
-                reject(
-                  new Error(
-                    `Operation timed out after ${timeoutMs}ms.`,
-                  ),
-                );
-              },
-              timeoutMs,
-            );
-        },
-      ),
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(`Operation timed out after ${timeoutMs}ms.`));
+        }, timeoutMs);
+      }),
     ]);
   } finally {
     if (timeoutHandle) {
-      clearTimeout(
-        timeoutHandle,
-      );
+      clearTimeout(timeoutHandle);
     }
   }
 }
@@ -964,25 +1327,17 @@ async function withTimeout<T>(
 // ERROR NORMALIZATION
 // ============================================================================
 
-function getErrorMessage(
-  error: unknown,
-): string {
-  if (
-    error instanceof Error
-  ) {
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
     return error.message;
   }
 
-  if (
-    typeof error === "string"
-  ) {
+  if (typeof error === "string") {
     return error;
   }
 
   try {
-    return JSON.stringify(
-      error,
-    );
+    return JSON.stringify(error);
   } catch {
     return String(error);
   }
@@ -992,82 +1347,67 @@ function getErrorMessage(
 // SUMMARY
 // ============================================================================
 
-function printSummary(
-  results: readonly TestResult[],
-): void {
-  printSection(
-    "Test Summary",
-  );
+function printSummary(results: readonly TestResult[]): void {
+  printSection("Test Summary");
 
-  for (
-    const result of results
-  ) {
+  if (results.length === 0) {
+    console.log("  No tests were executed.");
+
+    console.log("");
+
+    return;
+  }
+
+  for (const result of results) {
     const symbol =
-      result.passed
-        ? "✓"
-        : "✗";
+      result.status === "passed" ? "✓" : result.status === "failed" ? "✗" : "○";
 
-    const duration =
-      `${result.durationMs}ms`;
-
-    console.log(
-      `  ${symbol} ${result.name} (${duration})`,
-    );
+    console.log(`  ${symbol} ${result.name} (${result.durationMs}ms)`);
 
     if (result.details) {
-      console.log(
-        `      ${result.details}`,
-      );
+      console.log(`      ${result.details}`);
     }
   }
 
-  const passed =
-    results.filter(
-      (result) =>
-        result.passed,
-    ).length;
+  const passed = results.filter((result) => result.status === "passed").length;
 
-  const failed =
-    results.filter(
-      (result) =>
-        !result.passed,
-    ).length;
+  const failed = results.filter((result) => result.status === "failed").length;
+
+  const skipped = results.filter(
+    (result) => result.status === "skipped",
+  ).length;
 
   console.log("");
 
-  console.log(
-    `  Passed: ${passed}`,
-  );
+  console.log(`  Passed:  ${passed}`);
 
-  console.log(
-    `  Failed: ${failed}`,
-  );
+  console.log(`  Failed:  ${failed}`);
+
+  console.log(`  Skipped: ${skipped}`);
+
+  console.log(`  Total:   ${results.length}`);
 
   console.log("");
 
   if (failed === 0) {
     console.log(
-      "============================================================",
+      "======================================================================",
     );
 
-    console.log(
-      " CLOUD INTEGRATION TEST PASSED",
-    );
+    console.log(" CLOUD INTEGRATION TEST PASSED");
 
     console.log(
-      "============================================================",
+      "======================================================================",
     );
   } else {
     console.log(
-      "============================================================",
+      "======================================================================",
     );
 
-    console.log(
-      " CLOUD INTEGRATION TEST FAILED",
-    );
+    console.log(" CLOUD INTEGRATION TEST FAILED");
 
     console.log(
-      "============================================================",
+      "======================================================================",
     );
   }
 
@@ -1078,20 +1418,14 @@ function printSummary(
 // PROCESS ENTRYPOINT
 // ============================================================================
 
-main().catch(
-  (error: unknown) => {
-    console.error("");
+main().catch((error: unknown) => {
+  console.error("");
 
-    console.error(
-      "Fatal cloud integration test error:",
-    );
+  console.error("Fatal cloud integration test error:");
 
-    console.error(
-      getErrorMessage(error),
-    );
+  console.error(getErrorMessage(error));
 
-    console.error("");
+  console.error("");
 
-    process.exitCode = 1;
-  },
-);
+  process.exitCode = 1;
+});
