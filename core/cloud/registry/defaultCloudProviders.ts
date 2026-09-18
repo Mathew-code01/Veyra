@@ -1,4 +1,3 @@
-
 // ============================================================================
 // FILE: core/cloud/registry/defaultCloudProviders.ts
 // PURPOSE:
@@ -13,13 +12,12 @@
 // - Hugging Face
 //
 // IMPORTANT:
-// This file does not perform routing.
-// It only creates provider instances and registers them.
+// This file creates provider instances only.
+// Routing/execution remains inside the provider/gateway architecture.
 //
 // SECURITY:
-// - API keys are NEVER stored directly in CloudProviderConfig.
-// - CloudProviderConfig stores credential references only.
-// - Secrets are resolved at runtime through CloudCredentialResolver.
+// API keys are never stored directly in CloudProviderConfig.
+// Only credential references are stored.
 // ============================================================================
 
 import type { CloudProvider } from "../CloudProvider";
@@ -47,29 +45,12 @@ import { HuggingFaceProvider } from "../providers/HuggingFace/HuggingFaceProvide
 // ============================================================================
 
 export interface DefaultCloudProviderOptions {
-  /**
-   * If true, providers whose credentials are not configured may still be
-   * registered.
-   *
-   * This is useful for Veyra because users may configure only one or two
-   * providers while the remaining providers remain available for later
-   * configuration.
-   */
   readonly allowUnconfigured?: boolean;
 
-  /**
-   * Optional HTTP timeout passed to every cloud provider.
-   */
   readonly timeoutMs?: number;
 
-  /**
-   * Maximum number of automatic transport retries.
-   */
   readonly maxRetries?: number;
 
-  /**
-   * Optional application metadata used by providers such as OpenRouter.
-   */
   readonly applicationName?: string;
 
   readonly applicationUrl?: string;
@@ -97,30 +78,8 @@ function hasEnvironmentVariable(name: string): boolean {
 // CREDENTIAL RESOLVER
 // ============================================================================
 
-/**
- * Resolves credential references from the current Veyra process environment.
- *
- * IMPORTANT:
- * This resolver returns the secret only at execution time.
- *
- * CloudCredential itself contains only:
- *
- *   GEMINI_API_KEY
- *
- * and never:
- *
- *   actual-secret-value
- *
- * This keeps the cloud configuration layer free from hard-coded credentials.
- *
- * The abstraction can later be replaced by an OS keychain, encrypted
- * credential store, enterprise secret manager, or another secure backend
- * without changing the cloud providers themselves.
- */
 const environmentCredentialResolver: CloudCredentialResolver = {
-  async resolve(
-    credential: CloudCredential,
-  ): Promise<string | undefined> {
+  async resolve(credential: CloudCredential): Promise<string | undefined> {
     if (!credential.enabled) {
       return undefined;
     }
@@ -142,16 +101,9 @@ const environmentCredentialResolver: CloudCredentialResolver = {
 
         const normalized = value.trim();
 
-        return normalized.length > 0
-          ? normalized
-          : undefined;
+        return normalized.length > 0 ? normalized : undefined;
       }
 
-      /**
-       * Runtime credentials are deliberately not inferred from arbitrary
-       * metadata. A runtime credential should be resolved by an application
-       * supplied resolver instead of this default bootstrap resolver.
-       */
       case "runtime":
       case "secret_manager":
       case "os_keychain":
@@ -182,10 +134,15 @@ function createEnvironmentCredential(
 ): CloudCredential {
   return {
     id: `${providerId}-environment`,
+
     providerId,
+
     kind: "api_key",
+
     source: "environment",
+
     reference,
+
     enabled: true,
   };
 }
@@ -194,46 +151,59 @@ function createEnvironmentCredential(
 // CONFIG FACTORY
 // ============================================================================
 
-function createProviderConfig(
-  options: {
-    id: string;
-    name: string;
-    baseUrl: string;
-    credentialReference: string;
-    timeoutMs: number;
-    maxRetries: number;
-    defaultModels?: Readonly<
-      Partial<
-        Record<
-          | "text_generation"
-          | "vision"
-          | "speech_to_text"
-          | "text_to_speech"
-          | "embedding"
-          | "document_analysis",
-          string
-        >
+function createProviderConfig(options: {
+  id: string;
+
+  name: string;
+
+  baseUrl: string;
+
+  credentialReference: string;
+
+  timeoutMs: number;
+
+  maxRetries: number;
+
+  defaultModels?: Readonly<
+    Partial<
+      Record<
+        | "text_generation"
+        | "vision"
+        | "speech_to_text"
+        | "text_to_speech"
+        | "embedding"
+        | "document_analysis",
+        string
       >
-    >;
-    metadata?: Readonly<Record<string, unknown>>;
-  },
-): CloudProviderConfig {
+    >
+  >;
+
+  metadata?: Readonly<Record<string, unknown>>;
+}): CloudProviderConfig {
   return {
     id: options.id,
+
     name: options.name,
+
     baseUrl: options.baseUrl,
+
     enabled: true,
+
     timeoutMs: options.timeoutMs,
+
     maxRetries: options.maxRetries,
+
     credential: createEnvironmentCredential(
       options.id,
       options.credentialReference,
     ),
+
     ...(options.defaultModels
       ? {
           defaultModels: options.defaultModels,
         }
       : {}),
+
     ...(options.metadata
       ? {
           metadata: options.metadata,
@@ -251,14 +221,11 @@ export function createDefaultCloudProviders(
 ): readonly CloudProvider[] {
   const allowUnconfigured = options.allowUnconfigured ?? true;
 
-  const timeoutMs =
-    options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const maxRetries =
-    options.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
 
-  const dependencies =
-    createDefaultProviderDependencies();
+  const dependencies = createDefaultProviderDependencies();
 
   const providers: CloudProvider[] = [];
 
@@ -266,186 +233,178 @@ export function createDefaultCloudProviders(
   // GEMINI
   // ==========================================================================
 
-  if (
-    allowUnconfigured ||
-    hasEnvironmentVariable("GEMINI_API_KEY")
-  ) {
+  if (allowUnconfigured || hasEnvironmentVariable("GEMINI_API_KEY")) {
     const config = createProviderConfig({
       id: "gemini",
+
       name: "Google Gemini",
+
       baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+
       credentialReference: "GEMINI_API_KEY",
+
       timeoutMs,
+
       maxRetries,
+
       defaultModels: {
         text_generation: "gemini-2.5-flash",
+
         vision: "gemini-2.5-flash",
+
         document_analysis: "gemini-2.5-flash",
       },
     });
 
-    providers.push(
-      new GeminiProvider(
-        config,
-        dependencies,
-      ),
-    );
+    providers.push(new GeminiProvider(config, dependencies));
   }
 
   // ==========================================================================
   // GROQ
   // ==========================================================================
 
-  if (
-    allowUnconfigured ||
-    hasEnvironmentVariable("GROQ_API_KEY")
-  ) {
+  if (allowUnconfigured || hasEnvironmentVariable("GROQ_API_KEY")) {
     const config = createProviderConfig({
       id: "groq",
+
       name: "Groq",
+
       baseUrl: "https://api.groq.com/openai/v1",
+
       credentialReference: "GROQ_API_KEY",
+
       timeoutMs,
+
       maxRetries,
+
       defaultModels: {
         text_generation: "openai/gpt-oss-120b",
+
         speech_to_text: "whisper-large-v3",
       },
     });
 
-    providers.push(
-      new GroqProvider(
-        config,
-        dependencies,
-      ),
-    );
+    providers.push(new GroqProvider(config, dependencies));
   }
 
   // ==========================================================================
   // CEREBRAS
   // ==========================================================================
 
-  if (
-    allowUnconfigured ||
-    hasEnvironmentVariable("CEREBRAS_API_KEY")
-  ) {
+  if (allowUnconfigured || hasEnvironmentVariable("CEREBRAS_API_KEY")) {
     const config = createProviderConfig({
       id: "cerebras",
+
       name: "Cerebras",
+
       baseUrl: "https://api.cerebras.ai/v1",
+
       credentialReference: "CEREBRAS_API_KEY",
+
       timeoutMs,
+
       maxRetries,
+
       defaultModels: {
-        text_generation: "llama-3.3-70b",
+        text_generation: "gpt-oss-120b",
       },
     });
 
-    providers.push(
-      new CerebrasProvider(
-        config,
-        dependencies,
-      ),
-    );
+    providers.push(new CerebrasProvider(config, dependencies));
   }
 
   // ==========================================================================
   // MISTRAL
   // ==========================================================================
 
-  if (
-    allowUnconfigured ||
-    hasEnvironmentVariable("MISTRAL_API_KEY")
-  ) {
+  if (allowUnconfigured || hasEnvironmentVariable("MISTRAL_API_KEY")) {
     const config = createProviderConfig({
       id: "mistral",
+
       name: "Mistral AI",
+
       baseUrl: "https://api.mistral.ai/v1",
+
       credentialReference: "MISTRAL_API_KEY",
+
       timeoutMs,
+
       maxRetries,
+
       defaultModels: {
         text_generation: "mistral-large-latest",
+
         embedding: "mistral-embed",
       },
     });
 
-    providers.push(
-      new MistralProvider(
-        config,
-        dependencies,
-      ),
-    );
+    providers.push(new MistralProvider(config, dependencies));
   }
 
   // ==========================================================================
   // OPENROUTER
   // ==========================================================================
 
-  if (
-    allowUnconfigured ||
-    hasEnvironmentVariable("OPENROUTER_API_KEY")
-  ) {
+  if (allowUnconfigured || hasEnvironmentVariable("OPENROUTER_API_KEY")) {
     const config = createProviderConfig({
       id: "openrouter",
+
       name: "OpenRouter",
+
       baseUrl: "https://openrouter.ai/api/v1",
+
       credentialReference: "OPENROUTER_API_KEY",
+
       timeoutMs,
+
       maxRetries,
+
       defaultModels: {
-        text_generation: "openai/gpt-4o-mini",
+        text_generation: "openai/gpt-oss-120b",
+
         vision: "google/gemini-2.5-flash",
       },
+
       metadata: {
-        applicationName:
-          options.applicationName ?? "Veyra",
+        applicationName: options.applicationName ?? "Veyra",
+
         ...(options.applicationUrl
           ? {
-              applicationUrl:
-                options.applicationUrl,
+              applicationUrl: options.applicationUrl,
             }
           : {}),
       },
     });
 
-    providers.push(
-      new OpenRouterProvider(
-        config,
-        dependencies,
-      ),
-    );
+    providers.push(new OpenRouterProvider(config, dependencies));
   }
 
   // ==========================================================================
   // HUGGING FACE
   // ==========================================================================
 
-  if (
-    allowUnconfigured ||
-    hasEnvironmentVariable("HF_TOKEN")
-  ) {
+  if (allowUnconfigured || hasEnvironmentVariable("HF_TOKEN")) {
     const config = createProviderConfig({
       id: "huggingface",
+
       name: "Hugging Face",
-      baseUrl: "https://api-inference.huggingface.co",
+
+      baseUrl: "https://router.huggingface.co/v1",
+
       credentialReference: "HF_TOKEN",
+
       timeoutMs,
+
       maxRetries,
+
       defaultModels: {
-        text_generation:
-          "meta-llama/Llama-3.1-8B-Instruct",
-        vision:
-          "Qwen/Qwen2.5-VL-7B-Instruct",
+        text_generation: "meta-llama/Llama-3.1-8B-Instruct",
+
+        speech_to_text: "openai/whisper-large-v3",
       },
     });
 
-    providers.push(
-      new HuggingFaceProvider(
-        config,
-        dependencies,
-      ),
-    );
+    providers.push(new HuggingFaceProvider(config, dependencies));
   }
 
   return Object.freeze(providers);
@@ -459,8 +418,7 @@ export function registerDefaultCloudProviders(
   registry: CloudProviderRegistry,
   options: DefaultCloudProviderOptions = {},
 ): readonly CloudProvider[] {
-  const providers =
-    createDefaultCloudProviders(options);
+  const providers = createDefaultCloudProviders(options);
 
   for (const provider of providers) {
     if (registry.has(provider.id)) {
@@ -480,13 +438,9 @@ export function registerDefaultCloudProviders(
 export function createDefaultCloudProviderRegistry(
   options: DefaultCloudProviderOptions = {},
 ): CloudProviderRegistry {
-  const registry =
-    new CloudProviderRegistry();
+  const registry = new CloudProviderRegistry();
 
-  registerDefaultCloudProviders(
-    registry,
-    options,
-  );
+  registerDefaultCloudProviders(registry, options);
 
   return registry;
 }

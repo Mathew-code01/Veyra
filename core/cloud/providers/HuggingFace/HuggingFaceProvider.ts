@@ -1,22 +1,24 @@
 // ============================================================================
 // FILE: core/cloud/providers/HuggingFace/HuggingFaceProvider.ts
 // PURPOSE:
-// Hugging Face Inference Providers adapter.
+// Production Hugging Face Inference Providers adapter.
 //
 // SUPPORTED:
 // - chat/text generation
 // - streaming chat
 // - speech-to-text
 //
-// Hugging Face is treated as an aggregation/routing layer.
+// Hugging Face chat uses the current OpenAI-compatible router:
+//   https://router.huggingface.co/v1
+//
+// IMPORTANT:
+// The provider config already contains /v1, so endpoint paths must not
+// append another /v1.
 // ============================================================================
 
 import type { CloudProvider } from "../../CloudProvider";
-
 import type { CloudProviderConfig } from "../../CloudProviderConfig";
-
 import type { CloudCapabilities } from "../../CloudCapabilities";
-
 import type { CloudModel } from "../../CloudModel";
 
 import { HUGGINGFACE_MODELS } from "./HuggingFaceModels";
@@ -34,11 +36,9 @@ import type {
 } from "../../contracts/CloudResponse";
 
 import type { CloudStream } from "../../contracts/CloudStream";
-
 import type { CloudHealth } from "../../contracts/CloudHealth";
 
 import { CloudError } from "../../contracts/CloudError";
-
 import { CloudHttpClient } from "../../CloudHttpClient";
 
 import {
@@ -64,12 +64,6 @@ export class HuggingFaceProvider implements CloudProvider {
 
   public readonly config: CloudProviderConfig;
 
-  /**
-   * These capabilities match the currently registered catalogue.
-   *
-   * Do not advertise vision/embeddings/document analysis until
-   * the catalogue contains models explicitly supporting them.
-   */
   public readonly capabilities: CloudCapabilities = Object.freeze({
     textGeneration: true,
     streaming: true,
@@ -121,9 +115,9 @@ export class HuggingFaceProvider implements CloudProvider {
     this.credentialResolver = dependencies.credentialResolver;
   }
 
-  // ========================================================================
+  // ==========================================================================
   // EXECUTE
-  // ========================================================================
+  // ==========================================================================
 
   public async execute(
     request: CloudRequest,
@@ -134,8 +128,6 @@ export class HuggingFaceProvider implements CloudProvider {
         return this.generate(request, options);
 
       case "vision":
-        assertCapability(this.capabilities, "vision", this.id);
-
         throw new CloudError(
           "Hugging Face vision is not enabled by the current Veyra model catalogue.",
           "UNSUPPORTED",
@@ -160,9 +152,9 @@ export class HuggingFaceProvider implements CloudProvider {
     }
   }
 
-  // ========================================================================
+  // ==========================================================================
   // CHAT
-  // ========================================================================
+  // ==========================================================================
 
   private async generate(
     request: HuggingFaceTextRequest,
@@ -182,7 +174,7 @@ export class HuggingFaceProvider implements CloudProvider {
     );
 
     const response = await this.http.json<HuggingFaceChatResponse>({
-      url: `${this.baseUrl()}/v1/chat/completions`,
+      url: `${this.baseUrl()}/chat/completions`,
 
       method: "POST",
 
@@ -217,7 +209,7 @@ export class HuggingFaceProvider implements CloudProvider {
 
       text: this.extractText(choice.message?.content),
 
-      finishReason: choice.finish_reason,
+      finishReason: choice.finish_reason ?? undefined,
 
       usage: response.usage
         ? {
@@ -235,9 +227,9 @@ export class HuggingFaceProvider implements CloudProvider {
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // STREAMING
-  // ========================================================================
+  // ==========================================================================
 
   public stream(
     request: CloudRequest,
@@ -274,7 +266,7 @@ export class HuggingFaceProvider implements CloudProvider {
         );
 
         return this.http.raw({
-          url: `${this.baseUrl()}/v1/chat/completions`,
+          url: `${this.baseUrl()}/chat/completions`,
 
           method: "POST",
 
@@ -296,7 +288,9 @@ export class HuggingFaceProvider implements CloudProvider {
       (payload, sequence) => {
         const data = payload as HuggingFaceStreamChunk;
 
-        const delta = data.choices?.[0]?.delta?.content;
+        const choice = data.choices?.[0];
+
+        const delta = this.extractText(choice?.delta?.content);
 
         if (delta) {
           return {
@@ -317,7 +311,7 @@ export class HuggingFaceProvider implements CloudProvider {
         }
 
         return {
-          type: "metadata",
+          type: choice?.finish_reason === "stop" ? "done" : "metadata",
 
           data,
 
@@ -334,9 +328,9 @@ export class HuggingFaceProvider implements CloudProvider {
     );
   }
 
-  // ========================================================================
+  // ==========================================================================
   // SPEECH TO TEXT
-  // ========================================================================
+  // ==========================================================================
 
   private async transcribe(
     request: Extract<
@@ -361,27 +355,30 @@ export class HuggingFaceProvider implements CloudProvider {
     );
 
     /**
-     * Hugging Face's task API is separate from its OpenAI-compatible
-     * chat endpoint.
+     * Hugging Face task endpoints are separate from the
+     * OpenAI-compatible chat router.
      *
-     * Current HF Inference documentation exposes HF Inference through:
-     * router.huggingface.co/hf-inference/models/<model>
+     * The configured base URL is the router host, therefore
+     * the task endpoint is built explicitly here.
      */
     const url =
-      `${this.baseUrl()}/hf-inference/models/` +
+      `https://router.huggingface.co/` +
+      `hf-inference/models/` +
       `${this.encodeModelPath(model.modelId)}`;
 
-    /**
-     * Node/TypeScript's newer Uint8Array generic type can be
-     * incompatible with BodyInit's DOM declaration.
-     *
-     * A Blob is a proper fetch body and preserves the exact bytes.
-     */
     const audioBytes = request.audio.slice();
 
-    const audioBody = new Blob([audioBytes.buffer as ArrayBuffer], {
-      type: request.mimeType,
-    });
+    const audioBody = new Blob(
+      [
+        audioBytes.buffer.slice(
+          audioBytes.byteOffset,
+          audioBytes.byteOffset + audioBytes.byteLength,
+        ) as ArrayBuffer,
+      ],
+      {
+        type: request.mimeType,
+      },
+    );
 
     const response = await this.http.raw({
       url,
@@ -431,8 +428,6 @@ export class HuggingFaceProvider implements CloudProvider {
       );
     }
 
-    const text = this.extractTranscription(data);
-
     return {
       type: "speech_to_text",
 
@@ -440,41 +435,59 @@ export class HuggingFaceProvider implements CloudProvider {
 
       model: model.modelId,
 
-      text,
+      text: this.extractTranscription(data),
 
       raw: data,
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // REQUEST BODY
-  // ========================================================================
+  // ==========================================================================
 
   private createChatBody(
     request: HuggingFaceTextRequest,
     modelId: string,
     stream: boolean,
   ): Record<string, unknown> {
+    const options = request.options;
+
     return {
       model: modelId,
 
       messages: this.toMessages(request.messages),
 
-      temperature: request.options?.temperature,
+      ...(options?.temperature !== undefined
+        ? {
+            temperature: options.temperature,
+          }
+        : {}),
 
-      top_p: request.options?.topP,
+      ...(options?.topP !== undefined
+        ? {
+            top_p: options.topP,
+          }
+        : {}),
 
-      max_tokens: request.options?.maxOutputTokens,
+      ...(options?.maxOutputTokens !== undefined
+        ? {
+            max_tokens: options.maxOutputTokens,
+          }
+        : {}),
 
-      stop: request.options?.stopSequences,
+      ...(options?.stopSequences?.length
+        ? {
+            stop: options.stopSequences,
+          }
+        : {}),
 
       stream,
     };
   }
 
-  // ========================================================================
+  // ==========================================================================
   // MESSAGES
-  // ========================================================================
+  // ==========================================================================
 
   private toMessages(
     messages: readonly CloudMessage[],
@@ -486,9 +499,9 @@ export class HuggingFaceProvider implements CloudProvider {
     }));
   }
 
-  // ========================================================================
+  // ==========================================================================
   // TEXT EXTRACTION
-  // ========================================================================
+  // ==========================================================================
 
   private extractText(
     content: string | readonly unknown[] | null | undefined,
@@ -518,9 +531,9 @@ export class HuggingFaceProvider implements CloudProvider {
       .join("");
   }
 
-  // ========================================================================
+  // ==========================================================================
   // TRANSCRIPTION EXTRACTION
-  // ========================================================================
+  // ==========================================================================
 
   private extractTranscription(data: unknown): string {
     if (typeof data === "string") {
@@ -540,9 +553,9 @@ export class HuggingFaceProvider implements CloudProvider {
     return "";
   }
 
-  // ========================================================================
+  // ==========================================================================
   // MODEL PATH
-  // ========================================================================
+  // ==========================================================================
 
   private encodeModelPath(modelId: string): string {
     return modelId
@@ -551,19 +564,20 @@ export class HuggingFaceProvider implements CloudProvider {
       .join("/");
   }
 
-  // ========================================================================
+  // ==========================================================================
   // BASE URL
-  // ========================================================================
+  // ==========================================================================
 
   private baseUrl(): string {
     return (
-      this.config.baseUrl.replace(/\/+$/, "") || "https://router.huggingface.co"
+      this.config.baseUrl.replace(/\/+$/, "") ||
+      "https://router.huggingface.co/v1"
     );
   }
 
-  // ========================================================================
+  // ==========================================================================
   // HEALTH
-  // ========================================================================
+  // ==========================================================================
 
   public async healthCheck(signal?: AbortSignal): Promise<CloudHealth> {
     const startedAt = Date.now();
@@ -575,7 +589,7 @@ export class HuggingFaceProvider implements CloudProvider {
       );
 
       const response = await this.http.raw({
-        url: `${this.baseUrl()}/v1/models`,
+        url: `${this.baseUrl()}/models`,
 
         method: "GET",
 
@@ -628,7 +642,7 @@ interface HuggingFaceChatResponse {
       readonly content?: string | readonly unknown[] | null;
     };
 
-    readonly finish_reason?: string;
+    readonly finish_reason?: string | null;
   }[];
 
   readonly usage?: {

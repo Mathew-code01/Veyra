@@ -1,24 +1,25 @@
 // ============================================================================
 // FILE: core/cloud/providers/OpenRouter/OpenRouterProvider.ts
 // PURPOSE:
-// OpenRouter aggregation provider.
+// Production OpenRouter aggregation provider.
 //
 // SUPPORTED:
 // - text generation
 // - streaming
 // - vision when selected model supports it
-// - structured output/tool metadata
+// - structured output metadata
+// - tool calling metadata
 //
-// OpenRouter model IDs are dynamic. The static model catalogue therefore
-// contains only stable defaults; dynamic discovery can be added later.
+// OpenRouter uses:
+//   https://openrouter.ai/api/v1
+//
+// The registry already contains /api/v1, therefore provider endpoint paths
+// must not duplicate it.
 // ============================================================================
 
 import type { CloudProvider } from "../../CloudProvider";
-
 import type { CloudProviderConfig } from "../../CloudProviderConfig";
-
 import type { CloudCapabilities } from "../../CloudCapabilities";
-
 import type { CloudModel } from "../../CloudModel";
 
 import { OPENROUTER_MODELS } from "./OpenRouterModels";
@@ -35,20 +36,26 @@ import type {
 } from "../../contracts/CloudResponse";
 
 import type { CloudStream } from "../../contracts/CloudStream";
-
 import type { CloudHealth } from "../../contracts/CloudHealth";
 
 import { CloudError } from "../../contracts/CloudError";
-
 import { CloudHttpClient } from "../../CloudHttpClient";
 
 import {
   resolveCredential,
   resolveModel,
+  assertCapability,
   createAuthorizationHeaders,
   createStream,
   type CloudProviderDependencies,
 } from "../../CloudProviderSupport";
+
+type OpenRouterGenerationRequest = Extract<
+  CloudRequest,
+  {
+    type: "text_generation" | "vision";
+  }
+>;
 
 export class OpenRouterProvider implements CloudProvider {
   public readonly id = "openrouter";
@@ -86,7 +93,7 @@ export class OpenRouterProvider implements CloudProvider {
         `OpenRouterProvider requires provider ID "openrouter", received "${config.id}".`,
         "CONFIGURATION",
         {
-          providerId: "openrouter",
+          providerId: this.id,
         },
       );
     }
@@ -108,6 +115,10 @@ export class OpenRouterProvider implements CloudProvider {
     this.credentialResolver = dependencies.credentialResolver;
   }
 
+  // ==========================================================================
+  // EXECUTE
+  // ==========================================================================
+
   public async execute(
     request: CloudRequest,
     options: CloudExecutionOptions = {},
@@ -122,25 +133,31 @@ export class OpenRouterProvider implements CloudProvider {
           `OpenRouter does not support "${request.type}" through the current adapter.`,
           "UNSUPPORTED",
           {
+            retryable: false,
             providerId: this.id,
           },
         );
     }
   }
 
+  // ==========================================================================
+  // GENERATION
+  // ==========================================================================
+
   private async generate(
-    request: Extract<
-      CloudRequest,
-      {
-        type: "text_generation" | "vision";
-      }
-    >,
+    request: OpenRouterGenerationRequest,
     options: CloudExecutionOptions,
   ): Promise<CloudTextResponse> {
+    if (request.type === "vision") {
+      assertCapability(this.capabilities, "vision", this.id);
+    } else {
+      assertCapability(this.capabilities, "textGeneration", this.id);
+    }
+
     const model = resolveModel(
       this.models,
       request.model,
-      this.config.defaultModels?.text_generation ?? "openrouter/auto",
+      this.config.defaultModels?.text_generation ?? "openai/gpt-oss-120b",
     );
 
     const apiKey = await resolveCredential(
@@ -149,33 +166,13 @@ export class OpenRouterProvider implements CloudProvider {
     );
 
     const response = await this.http.json<OpenRouterResponse>({
-      url: `${this.baseUrl()}/api/v1/chat/completions`,
+      url: `${this.baseUrl()}/chat/completions`,
 
       method: "POST",
 
-      headers: createAuthorizationHeaders(apiKey, {
-        ...this.config.headers,
+      headers: this.createHeaders(apiKey),
 
-        "HTTP-Referer": "https://mthw-dev.vercel.app",
-
-        "X-Title": "Veyra",
-      }),
-
-      body: {
-        model: model.modelId,
-
-        messages: this.toMessages(request.messages),
-
-        temperature: request.options?.temperature,
-
-        top_p: request.options?.topP,
-
-        max_tokens: request.options?.maxOutputTokens,
-
-        stop: request.options?.stopSequences,
-
-        stream: false,
-      },
+      body: this.createRequestBody(request, model.modelId, false),
 
       signal: options.signal,
 
@@ -189,6 +186,7 @@ export class OpenRouterProvider implements CloudProvider {
         "OpenRouter returned no completion choice.",
         "INVALID_RESPONSE",
         {
+          retryable: false,
           providerId: this.id,
         },
       );
@@ -203,7 +201,7 @@ export class OpenRouterProvider implements CloudProvider {
 
       text: this.extractText(choice.message?.content),
 
-      finishReason: choice.finish_reason,
+      finishReason: choice.finish_reason ?? undefined,
 
       usage: response.usage
         ? {
@@ -221,6 +219,10 @@ export class OpenRouterProvider implements CloudProvider {
     };
   }
 
+  // ==========================================================================
+  // STREAMING
+  // ==========================================================================
+
   public stream(
     request: CloudRequest,
     options: CloudExecutionOptions = {},
@@ -230,88 +232,82 @@ export class OpenRouterProvider implements CloudProvider {
         `OpenRouter streaming does not support "${request.type}".`,
         "UNSUPPORTED",
         {
+          retryable: false,
           providerId: this.id,
         },
       );
     }
 
+    if (request.type === "vision") {
+      assertCapability(this.capabilities, "vision", this.id);
+    } else {
+      assertCapability(this.capabilities, "textGeneration", this.id);
+    }
+
     const model = resolveModel(
       this.models,
       request.model,
-      this.config.defaultModels?.text_generation ?? "openrouter/auto",
+      this.config.defaultModels?.text_generation ?? "openai/gpt-oss-120b",
     );
 
-    return this.createStream(
-      request,
+    const requestBody = this.createRequestBody(request, model.modelId, true);
+
+    return createStream(
+      this.id,
       model.modelId,
-      options,
-    ) as unknown as CloudStream;
-  }
+      async (signal) => {
+        const apiKey = await resolveCredential(
+          this.config,
+          this.credentialResolver,
+        );
 
-  private async createStream(
-    request: Extract<
-      CloudRequest,
-      {
-        type: "text_generation" | "vision";
-      }
-    >,
-    modelId: string,
-    options: CloudExecutionOptions,
-  ): Promise<CloudStream> {
-    const apiKey = await resolveCredential(
-      this.config,
-      this.credentialResolver,
-    );
+        return this.http.raw({
+          url: `${this.baseUrl()}/chat/completions`,
 
-    const response = await this.http.raw({
-      url: `${this.baseUrl()}/api/v1/chat/completions`,
+          method: "POST",
 
-      method: "POST",
+          headers: {
+            ...this.createHeaders(apiKey),
 
-      headers: {
-        ...createAuthorizationHeaders(apiKey, {
-          ...this.config.headers,
+            Accept: "text/event-stream",
 
-          "HTTP-Referer": "https://mthw-dev.vercel.app",
+            "Content-Type": "application/json",
+          },
 
-          "X-Title": "Veyra",
-        }),
+          body: JSON.stringify(requestBody),
 
-        Accept: "text/event-stream",
+          signal,
 
-        "Content-Type": "application/json",
+          timeoutMs: options.timeoutMs ?? this.config.timeoutMs,
+        });
       },
+      (payload, sequence) => {
+        const data = payload as OpenRouterStreamChunk;
 
-      body: JSON.stringify({
-        model: modelId,
+        const choice = data.choices?.[0];
 
-        messages: this.toMessages(request.messages),
+        const delta = this.extractText(choice?.delta?.content);
 
-        temperature: request.options?.temperature,
+        if (delta) {
+          return {
+            type: "text_delta",
 
-        top_p: request.options?.topP,
+            data: {
+              text: delta,
+            },
 
-        max_tokens: request.options?.maxOutputTokens,
+            sequence,
 
-        stop: request.options?.stopSequences,
+            providerId: this.id,
 
-        stream: true,
-      }),
+            model: model.modelId,
 
-      signal: options.signal,
+            timestamp: Date.now(),
+          };
+        }
 
-      timeoutMs: options.timeoutMs ?? this.config.timeoutMs,
-    });
-
-    return createStream(this.id, modelId, response, (payload, sequence) => {
-      const data = payload as OpenRouterStreamChunk;
-
-      const delta = data.choices?.[0]?.delta?.content;
-
-      if (!delta) {
         return {
-          type:
-            data.choices?.[0]?.finish_reason === "stop" ? "done" : "metadata",
+          type: choice?.finish_reason === "stop" ? "done" : "metadata",
 
           data,
 
@@ -319,29 +315,18 @@ export class OpenRouterProvider implements CloudProvider {
 
           providerId: this.id,
 
-          model: modelId,
+          model: model.modelId,
 
           timestamp: Date.now(),
         };
-      }
-
-      return {
-        type: "text_delta",
-
-        data: {
-          text: delta,
-        },
-
-        sequence,
-
-        providerId: this.id,
-
-        model: modelId,
-
-        timestamp: Date.now(),
-      };
-    });
+      },
+      options.signal,
+    );
   }
+
+  // ==========================================================================
+  // HEALTH
+  // ==========================================================================
 
   public async healthCheck(signal?: AbortSignal): Promise<CloudHealth> {
     const startedAt = Date.now();
@@ -353,7 +338,7 @@ export class OpenRouterProvider implements CloudProvider {
       );
 
       const response = await this.http.raw({
-        url: `${this.baseUrl()}/api/v1/models`,
+        url: `${this.baseUrl()}/models`,
 
         method: "GET",
 
@@ -393,9 +378,105 @@ export class OpenRouterProvider implements CloudProvider {
     }
   }
 
-  private baseUrl(): string {
-    return this.config.baseUrl.replace(/\/+$/, "") || "https://openrouter.ai";
+  // ==========================================================================
+  // HEADERS
+  // ==========================================================================
+
+  private createHeaders(apiKey: string): Record<string, string> {
+    const metadata = this.config.metadata ?? {};
+
+    const applicationUrl =
+      typeof metadata.applicationUrl === "string"
+        ? metadata.applicationUrl
+        : undefined;
+
+    const applicationName =
+      typeof metadata.applicationName === "string"
+        ? metadata.applicationName
+        : "Veyra";
+
+    return createAuthorizationHeaders(apiKey, {
+      ...this.config.headers,
+
+      ...(applicationUrl
+        ? {
+            "HTTP-Referer": applicationUrl,
+          }
+        : {}),
+
+      "X-Title": applicationName,
+    });
   }
+
+  // ==========================================================================
+  // REQUEST BODY
+  // ==========================================================================
+
+  private createRequestBody(
+    request: OpenRouterGenerationRequest,
+    modelId: string,
+    stream: boolean,
+  ): Record<string, unknown> {
+    const options = request.options;
+
+    const body: Record<string, unknown> = {
+      model: modelId,
+
+      messages: this.toMessages(request.messages),
+
+      stream,
+
+      ...(options?.temperature !== undefined
+        ? {
+            temperature: options.temperature,
+          }
+        : {}),
+
+      ...(options?.topP !== undefined
+        ? {
+            top_p: options.topP,
+          }
+        : {}),
+
+      ...(options?.maxOutputTokens !== undefined
+        ? {
+            max_tokens: options.maxOutputTokens,
+          }
+        : {}),
+
+      ...(options?.stopSequences?.length
+        ? {
+            stop: options.stopSequences,
+          }
+        : {}),
+    };
+
+    if (options?.tools?.length) {
+      body.tools = options.tools.map((tool) => ({
+        type: "function",
+
+        function: {
+          name: tool.name,
+
+          description: tool.description,
+
+          parameters: tool.parameters,
+        },
+      }));
+    }
+
+    if (options?.responseFormat === "json") {
+      body.response_format = {
+        type: "json_object",
+      };
+    }
+
+    return body;
+  }
+
+  // ==========================================================================
+  // MESSAGES
+  // ==========================================================================
 
   private toMessages(
     messages: readonly CloudMessage[],
@@ -406,6 +487,10 @@ export class OpenRouterProvider implements CloudProvider {
       content: message.content,
     }));
   }
+
+  // ==========================================================================
+  // CONTENT
+  // ==========================================================================
 
   private extractText(
     content: string | readonly unknown[] | null | undefined,
@@ -434,7 +519,21 @@ export class OpenRouterProvider implements CloudProvider {
       })
       .join("");
   }
+
+  // ==========================================================================
+  // BASE URL
+  // ==========================================================================
+
+  private baseUrl(): string {
+    return (
+      this.config.baseUrl.replace(/\/+$/, "") || "https://openrouter.ai/api/v1"
+    );
+  }
 }
+
+// ============================================================================
+// WIRE TYPES
+// ============================================================================
 
 interface OpenRouterResponse {
   readonly id?: string;
@@ -444,12 +543,14 @@ interface OpenRouterResponse {
       readonly content?: string | readonly unknown[] | null;
     };
 
-    readonly finish_reason?: string;
+    readonly finish_reason?: string | null;
   }[];
 
   readonly usage?: {
     readonly prompt_tokens?: number;
+
     readonly completion_tokens?: number;
+
     readonly total_tokens?: number;
   };
 }
