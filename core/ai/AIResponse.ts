@@ -1,3 +1,4 @@
+
 // ============================================================================
 // FILE: core/ai/AIResponse.ts
 // PURPOSE:
@@ -136,7 +137,10 @@ export interface AITextResponse {
    * Discriminator used to safely distinguish this response from embeddings.
    */
   readonly type:
-    "text_generation" | "vision" | "speech_to_text" | "document_analysis";
+    | "text_generation"
+    | "vision"
+    | "speech_to_text"
+    | "document_analysis";
 
   /**
    * Generated/transcribed/analyzed text.
@@ -176,8 +180,16 @@ export interface AIEmbeddingResponse {
 
   /**
    * One embedding vector for each input item.
+   *
+   * IMPORTANT:
+   *
+   * Both the outer collection and every individual vector are readonly.
+   *
+   * This accurately represents the immutable response produced by
+   * CloudAIProvider and remains compatible with future local embedding
+   * providers.
    */
-  readonly embeddings: readonly number[][];
+  readonly embeddings: readonly (readonly number[])[];
 
   /**
    * Number of dimensions in each embedding vector.
