@@ -8,7 +8,8 @@
 //   core/errors/ErrorCode.ts
 //
 // AIErrorDetails contains structured diagnostic metadata used by AIManager,
-// LocalModelProvider, CloudAIProvider, and other AI-layer components.
+// LocalModelProvider, CloudAIProvider, AIRouter, AIExecutionPlan,
+// AIExecutionStrategy, and other AI-layer components.
 // ============================================================================
 
 import { defaultErrorRetryable, type ErrorCode } from "../errors/ErrorCode";
@@ -66,12 +67,8 @@ export interface AIErrorDetails {
   /**
    * Runtime that the caller expected.
    *
-   * This is diagnostic metadata used by AIManager when a registered
-   * provider is not the expected Veyra provider implementation.
-   *
-   * Examples:
-   *   "local"
-   *   "cloud"
+   * Diagnostic metadata used by AIManager when a registered provider
+   * is not the expected Veyra provider implementation.
    */
   readonly expectedRuntime?: "local" | "cloud";
 
@@ -82,11 +79,15 @@ export interface AIErrorDetails {
 
   /**
    * Original underlying error.
+   *
+   * Kept in structured diagnostics for application-level inspection.
    */
   readonly cause?: unknown;
 
   /**
    * Additional structured diagnostic information.
+   *
+   * Nested execution/routing diagnostics belong here.
    */
   readonly details?: Readonly<Record<string, unknown>>;
 }
@@ -99,17 +100,17 @@ export class AIError extends Error {
   /**
    * Canonical Veyra error code.
    */
-  readonly code: AIErrorCode;
+  public readonly code: AIErrorCode;
 
   /**
    * Whether the operation may reasonably be retried.
    */
-  readonly retryable: boolean;
+  public readonly retryable: boolean;
 
   /**
    * Structured diagnostic information.
    */
-  readonly details: AIErrorDetails;
+  public readonly details: AIErrorDetails;
 
   public constructor(
     message: string,
@@ -120,22 +121,37 @@ export class AIError extends Error {
       readonly cause?: unknown;
     } = {},
   ) {
-    super(message);
+    /**
+     * Preserve the native Error.cause property where the runtime supports
+     * the standard ErrorOptions constructor.
+     *
+     * We intentionally avoid relying on it for application diagnostics;
+     * `details.cause` remains available as the Veyra-specific representation.
+     */
+    super(
+      message,
+      options.cause !== undefined ? { cause: options.cause } : undefined,
+    );
 
     this.name = "AIError";
+
     this.code = code;
 
-    /**
-     * Use the shared canonical retryability rules unless the caller
-     * explicitly provides a retryable value.
-     */
     this.retryable = options.retryable ?? defaultErrorRetryable(code);
 
-    this.details = {
-      ...options.details,
-      cause: options.cause ?? options.details?.cause,
-    };
+    this.details = Object.freeze({
+      ...(options.details ?? {}),
+      ...(options.cause !== undefined
+        ? {
+            cause: options.cause,
+          }
+        : {}),
+    });
 
+    /**
+     * Required for reliable instanceof AIError behaviour when targeting
+     * environments/transpilation modes where Error subclassing needs it.
+     */
     Object.setPrototypeOf(this, new.target.prototype);
   }
 
@@ -143,9 +159,27 @@ export class AIError extends Error {
   // UNKNOWN ERROR NORMALIZATION
   // ==========================================================================
 
+  /**
+   * Normalize arbitrary thrown values into the canonical AIError type.
+   */
   public static fromUnknown(error: unknown, details?: AIErrorDetails): AIError {
     if (error instanceof AIError) {
-      return error;
+      if (!details) {
+        return error;
+      }
+
+      return new AIError(error.message, error.code, {
+        retryable: error.retryable,
+        details: {
+          ...error.details,
+          ...details,
+          details: {
+            ...(error.details.details ?? {}),
+            ...(details.details ?? {}),
+          },
+        },
+        cause: error.details.cause ?? error.cause,
+      });
     }
 
     if (
@@ -160,12 +194,24 @@ export class AIError extends Error {
       });
     }
 
-    if (error instanceof Error) {
-      return new AIError(error.message, "UNKNOWN", {
+    if (error instanceof Error && error.name === "AbortError") {
+      return new AIError("AI request was aborted.", "ABORTED", {
         retryable: false,
         details,
         cause: error,
       });
+    }
+
+    if (error instanceof Error) {
+      return new AIError(
+        error.message || "Unknown AI provider error.",
+        "UNKNOWN",
+        {
+          retryable: false,
+          details,
+          cause: error,
+        },
+      );
     }
 
     return new AIError("Unknown AI provider error.", "UNKNOWN", {
@@ -186,6 +232,7 @@ export class AIError extends Error {
       {
         details: {
           model,
+          runtime: "local",
         },
       },
     );
@@ -198,6 +245,7 @@ export class AIError extends Error {
       {
         details: {
           model,
+          runtime: "local",
         },
       },
     );
@@ -210,6 +258,7 @@ export class AIError extends Error {
       {
         details: {
           model,
+          runtime: "local",
         },
       },
     );
@@ -222,6 +271,7 @@ export class AIError extends Error {
       {
         details: {
           model,
+          runtime: "local",
         },
       },
     );
