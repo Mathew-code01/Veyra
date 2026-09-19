@@ -1,5 +1,4 @@
-﻿
-// ============================================================================
+﻿// ============================================================================
 // FILE: core/ai/AIRoutingPolicy.ts
 // PURPOSE:
 // Defines the constraints and preferences used by AIRouter when selecting
@@ -55,39 +54,26 @@ export type AIRuntimeKind = "local" | "cloud";
 /**
  * Provider health states relevant to routing.
  */
-export type AIRoutingHealthStatus =
-  | "healthy"
-  | "degraded"
-  | "unknown";
+export type AIRoutingHealthStatus = "healthy" | "degraded" | "unknown";
 
 /**
  * User/configuration-facing provider preference.
- *
- * `priority` is optional at the input boundary.
- *
- * Lower values mean higher preference.
- *
- * Example:
- *
- * {
- *   provider: "cloud:gemini",
- *   priority: 0,
- * }
  */
 export interface AIRoutingProviderPreference {
   readonly provider: string;
+
+  /**
+   * Lower values mean higher preference.
+   */
   readonly priority?: number;
 }
 
 /**
  * Normalized provider preference.
- *
- * This is deliberately separate from AIRoutingProviderPreference so the
- * routing engine never has to deal with an optional priority after policy
- * creation.
  */
 export interface NormalizedAIRoutingProviderPreference {
   readonly provider: string;
+
   readonly priority: number;
 }
 
@@ -95,34 +81,16 @@ export interface NormalizedAIRoutingProviderPreference {
  * Requirements imposed on eligible providers.
  */
 export interface AIRoutingRequirements {
-  /**
-   * Provider must support streaming.
-   */
   readonly streaming?: boolean;
 
-  /**
-   * Provider must support vision.
-   */
   readonly vision?: boolean;
 
-  /**
-   * Provider must support structured output.
-   */
   readonly structuredOutput?: boolean;
 
-  /**
-   * Restrict execution to local or cloud providers.
-   */
   readonly runtime?: AIRuntimeKind;
 
-  /**
-   * Only explicitly named providers may be selected.
-   */
   readonly allowedProviders?: readonly string[];
 
-  /**
-   * Explicitly excluded providers.
-   */
   readonly excludedProviders?: readonly string[];
 }
 
@@ -130,54 +98,18 @@ export interface AIRoutingRequirements {
  * Execution constraints consumed by AIExecutionStrategy.
  */
 export interface AIRoutingExecutionOptions {
-  /**
-   * Whether degraded providers may be selected.
-   *
-   * Default: true.
-   */
   readonly allowDegraded?: boolean;
 
-  /**
-   * Whether providers whose supplied health state is unknown may be selected.
-   *
-   * Default: false.
-   */
   readonly allowUnknownHealth?: boolean;
 
-  /**
-   * Whether execution may continue to another candidate after a provider
-   * failure.
-   *
-   * Default: true.
-   */
   readonly allowFallback?: boolean;
 
-  /**
-   * Maximum number of eligible candidates placed into the plan.
-   *
-   * Default: Number.MAX_SAFE_INTEGER.
-   */
   readonly maxCandidates?: number;
 
-  /**
-   * Maximum attempts for one provider candidate.
-   *
-   * Default: 1.
-   */
   readonly maxAttemptsPerCandidate?: number;
 
-  /**
-   * Base exponential retry delay in milliseconds.
-   *
-   * Default: 250.
-   */
   readonly retryBaseDelayMs?: number;
 
-  /**
-   * Maximum exponential retry delay in milliseconds.
-   *
-   * Default: 5000.
-   */
   readonly retryMaxDelayMs?: number;
 }
 
@@ -188,8 +120,7 @@ export interface AIRoutingPolicyOptions {
   readonly requirements?: AIRoutingRequirements;
 
   readonly preferredProviders?: readonly (
-    | string
-    | AIRoutingProviderPreference
+    string | AIRoutingProviderPreference
   )[];
 
   readonly execution?: AIRoutingExecutionOptions;
@@ -197,14 +128,11 @@ export interface AIRoutingPolicyOptions {
 
 /**
  * Fully normalized immutable routing policy.
- *
- * The execution object is intentionally fully required after normalization.
  */
 export interface AIRoutingPolicy {
   readonly requirements: Readonly<AIRoutingRequirements>;
 
-  readonly preferredProviders:
-    readonly NormalizedAIRoutingProviderPreference[];
+  readonly preferredProviders: readonly NormalizedAIRoutingProviderPreference[];
 
   readonly execution: Readonly<{
     readonly allowDegraded: boolean;
@@ -223,11 +151,17 @@ export interface AIRoutingPolicy {
 
 const DEFAULT_EXECUTION_OPTIONS = Object.freeze({
   allowDegraded: true,
+
   allowUnknownHealth: false,
+
   allowFallback: true,
+
   maxCandidates: Number.MAX_SAFE_INTEGER,
+
   maxAttemptsPerCandidate: 1,
+
   retryBaseDelayMs: 250,
+
   retryMaxDelayMs: 5_000,
 });
 
@@ -236,29 +170,48 @@ const DEFAULT_EXECUTION_OPTIONS = Object.freeze({
 // ============================================================================
 
 function normalizeProviderName(provider: string): string {
+  if (typeof provider !== "string") {
+    throw new Error("Routing provider name must be a string.");
+  }
+
   const normalized = provider.trim();
 
   if (!normalized) {
-    throw new Error(
-      "Routing provider name cannot be empty.",
-    );
+    throw new Error("Routing provider name cannot be empty.");
   }
 
   return normalized;
 }
 
+function normalizeBoolean(
+  value: boolean | undefined,
+  fallback: boolean,
+  name: string,
+): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new Error(`Routing policy "${name}" must be a boolean.`);
+  }
+
+  return value;
+}
+
 function normalizePositiveInteger(
   value: number | undefined,
   fallback: number,
+  name: string,
 ): number {
   if (value === undefined) {
     return fallback;
   }
 
-  if (!Number.isInteger(value) || value < 1) {
+  if (!Number.isSafeInteger(value) || value < 1) {
     throw new Error(
       [
-        "Routing policy value must be a positive integer.",
+        `Routing policy "${name}" must be a positive safe integer.`,
         `Received: ${String(value)}.`,
       ].join(" "),
     );
@@ -270,6 +223,7 @@ function normalizePositiveInteger(
 function normalizeDelay(
   value: number | undefined,
   fallback: number,
+  name: string,
 ): number {
   if (value === undefined) {
     return fallback;
@@ -278,7 +232,7 @@ function normalizeDelay(
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(
       [
-        "Routing delay must be a finite non-negative number.",
+        `Routing policy "${name}" must be a finite non-negative number.`,
         `Received: ${String(value)}.`,
       ].join(" "),
     );
@@ -288,9 +242,7 @@ function normalizeDelay(
 }
 
 function normalizePreferences(
-  preferences:
-    | AIRoutingPolicyOptions["preferredProviders"]
-    | undefined,
+  preferences: AIRoutingPolicyOptions["preferredProviders"] | undefined,
 ): readonly NormalizedAIRoutingProviderPreference[] {
   if (!preferences || preferences.length === 0) {
     return Object.freeze([]);
@@ -301,13 +253,9 @@ function normalizePreferences(
   const seen = new Set<string>();
 
   preferences.forEach((entry, index) => {
-    const provider =
-      typeof entry === "string"
-        ? entry
-        : entry.provider;
+    const provider = typeof entry === "string" ? entry : entry?.provider;
 
-    const normalizedProvider =
-      normalizeProviderName(provider);
+    const normalizedProvider = normalizeProviderName(provider);
 
     if (seen.has(normalizedProvider)) {
       return;
@@ -316,21 +264,15 @@ function normalizePreferences(
     seen.add(normalizedProvider);
 
     const configuredPriority =
-      typeof entry === "string"
-        ? undefined
-        : entry.priority;
+      typeof entry === "string" ? undefined : entry.priority;
 
-    const priority =
-      configuredPriority ?? index;
+    const priority = configuredPriority ?? index;
 
-    if (
-      !Number.isInteger(priority) ||
-      priority < 0
-    ) {
+    if (!Number.isSafeInteger(priority) || priority < 0) {
       throw new Error(
         [
           "Routing provider priority must be a",
-          "non-negative integer.",
+          "non-negative safe integer.",
           `Received: ${String(priority)}.`,
         ].join(" "),
       );
@@ -345,35 +287,32 @@ function normalizePreferences(
   });
 
   result.sort(
-    (a, b) =>
-      a.priority - b.priority ||
-      a.provider.localeCompare(b.provider),
+    (a, b) => a.priority - b.priority || a.provider.localeCompare(b.provider),
   );
 
   return Object.freeze(result);
 }
 
 function normalizeProviderList(
-  providers:
-    | readonly string[]
-    | undefined,
+  providers: readonly string[] | undefined,
 ): readonly string[] | undefined {
   if (providers === undefined) {
     return undefined;
   }
 
   const seen = new Set<string>();
+
   const result: string[] = [];
 
   for (const provider of providers) {
-    const normalized =
-      normalizeProviderName(provider);
+    const normalized = normalizeProviderName(provider);
 
     if (seen.has(normalized)) {
       continue;
     }
 
     seen.add(normalized);
+
     result.push(normalized);
   }
 
@@ -390,8 +329,7 @@ function normalizeProviderList(
 export function createAIRoutingPolicy(
   options: AIRoutingPolicyOptions = {},
 ): AIRoutingPolicy {
-  const inputRequirements =
-    options.requirements ?? {};
+  const inputRequirements = options.requirements ?? {};
 
   if (
     inputRequirements.runtime !== undefined &&
@@ -399,52 +337,68 @@ export function createAIRoutingPolicy(
     inputRequirements.runtime !== "cloud"
   ) {
     throw new Error(
-      `Unsupported routing runtime: ${String(
-        inputRequirements.runtime,
-      )}.`,
+      `Unsupported routing runtime: ${String(inputRequirements.runtime)}.`,
     );
   }
 
-  const allowedProviders =
-    normalizeProviderList(
-      inputRequirements.allowedProviders,
-    );
-
-  const excludedProviders =
-    normalizeProviderList(
-      inputRequirements.excludedProviders,
-    );
-
-  const executionInput =
-    options.execution ?? {};
-
-  const maxCandidates =
-    normalizePositiveInteger(
-      executionInput.maxCandidates,
-      DEFAULT_EXECUTION_OPTIONS.maxCandidates,
-    );
-
-  const maxAttemptsPerCandidate =
-    normalizePositiveInteger(
-      executionInput.maxAttemptsPerCandidate,
-      DEFAULT_EXECUTION_OPTIONS.maxAttemptsPerCandidate,
-    );
-
-  const retryBaseDelayMs =
-    normalizeDelay(
-      executionInput.retryBaseDelayMs,
-      DEFAULT_EXECUTION_OPTIONS.retryBaseDelayMs,
-    );
-
-  const retryMaxDelayMs =
-    normalizeDelay(
-      executionInput.retryMaxDelayMs,
-      DEFAULT_EXECUTION_OPTIONS.retryMaxDelayMs,
-    );
+  if (
+    inputRequirements.streaming !== undefined &&
+    typeof inputRequirements.streaming !== "boolean"
+  ) {
+    throw new Error('Routing requirement "streaming" must be a boolean.');
+  }
 
   if (
-    retryMaxDelayMs < retryBaseDelayMs
+    inputRequirements.vision !== undefined &&
+    typeof inputRequirements.vision !== "boolean"
   ) {
+    throw new Error('Routing requirement "vision" must be a boolean.');
+  }
+
+  if (
+    inputRequirements.structuredOutput !== undefined &&
+    typeof inputRequirements.structuredOutput !== "boolean"
+  ) {
+    throw new Error(
+      'Routing requirement "structuredOutput" must be a boolean.',
+    );
+  }
+
+  const allowedProviders = normalizeProviderList(
+    inputRequirements.allowedProviders,
+  );
+
+  const excludedProviders = normalizeProviderList(
+    inputRequirements.excludedProviders,
+  );
+
+  const executionInput = options.execution ?? {};
+
+  const maxCandidates = normalizePositiveInteger(
+    executionInput.maxCandidates,
+    DEFAULT_EXECUTION_OPTIONS.maxCandidates,
+    "maxCandidates",
+  );
+
+  const maxAttemptsPerCandidate = normalizePositiveInteger(
+    executionInput.maxAttemptsPerCandidate,
+    DEFAULT_EXECUTION_OPTIONS.maxAttemptsPerCandidate,
+    "maxAttemptsPerCandidate",
+  );
+
+  const retryBaseDelayMs = normalizeDelay(
+    executionInput.retryBaseDelayMs,
+    DEFAULT_EXECUTION_OPTIONS.retryBaseDelayMs,
+    "retryBaseDelayMs",
+  );
+
+  const retryMaxDelayMs = normalizeDelay(
+    executionInput.retryMaxDelayMs,
+    DEFAULT_EXECUTION_OPTIONS.retryMaxDelayMs,
+    "retryMaxDelayMs",
+  );
+
+  if (retryMaxDelayMs < retryBaseDelayMs) {
     throw new Error(
       [
         "Routing retryMaxDelayMs cannot be",
@@ -453,69 +407,67 @@ export function createAIRoutingPolicy(
     );
   }
 
-  const requirements: AIRoutingRequirements =
-    Object.freeze({
-      ...(inputRequirements.streaming !== undefined
-        ? {
-            streaming:
-              inputRequirements.streaming,
-          }
-        : {}),
+  const requirements: AIRoutingRequirements = Object.freeze({
+    ...(inputRequirements.streaming !== undefined
+      ? {
+          streaming: inputRequirements.streaming,
+        }
+      : {}),
 
-      ...(inputRequirements.vision !== undefined
-        ? {
-            vision:
-              inputRequirements.vision,
-          }
-        : {}),
+    ...(inputRequirements.vision !== undefined
+      ? {
+          vision: inputRequirements.vision,
+        }
+      : {}),
 
-      ...(inputRequirements.structuredOutput !== undefined
-        ? {
-            structuredOutput:
-              inputRequirements.structuredOutput,
-          }
-        : {}),
+    ...(inputRequirements.structuredOutput !== undefined
+      ? {
+          structuredOutput: inputRequirements.structuredOutput,
+        }
+      : {}),
 
-      ...(inputRequirements.runtime !== undefined
-        ? {
-            runtime:
-              inputRequirements.runtime,
-          }
-        : {}),
+    ...(inputRequirements.runtime !== undefined
+      ? {
+          runtime: inputRequirements.runtime,
+        }
+      : {}),
 
-      ...(allowedProviders !== undefined
-        ? {
-            allowedProviders,
-          }
-        : {}),
+    ...(allowedProviders !== undefined
+      ? {
+          allowedProviders,
+        }
+      : {}),
 
-      ...(excludedProviders !== undefined
-        ? {
-            excludedProviders,
-          }
-        : {}),
-    });
+    ...(excludedProviders !== undefined
+      ? {
+          excludedProviders,
+        }
+      : {}),
+  });
 
   return Object.freeze({
     requirements,
 
-    preferredProviders:
-      normalizePreferences(
-        options.preferredProviders,
-      ),
+    preferredProviders: normalizePreferences(options.preferredProviders),
 
     execution: Object.freeze({
-      allowDegraded:
-        executionInput.allowDegraded ??
+      allowDegraded: normalizeBoolean(
+        executionInput.allowDegraded,
         DEFAULT_EXECUTION_OPTIONS.allowDegraded,
+        "allowDegraded",
+      ),
 
-      allowUnknownHealth:
-        executionInput.allowUnknownHealth ??
+      allowUnknownHealth: normalizeBoolean(
+        executionInput.allowUnknownHealth,
         DEFAULT_EXECUTION_OPTIONS.allowUnknownHealth,
+        "allowUnknownHealth",
+      ),
 
-      allowFallback:
-        executionInput.allowFallback ??
+      allowFallback: normalizeBoolean(
+        executionInput.allowFallback,
         DEFAULT_EXECUTION_OPTIONS.allowFallback,
+        "allowFallback",
+      ),
 
       maxCandidates,
 
@@ -528,31 +480,32 @@ export function createAIRoutingPolicy(
   });
 }
 
+// ============================================================================
+// POLICY FROM REQUEST
+// ============================================================================
+
 /**
  * Derive deterministic routing requirements from an AI request.
  *
  * Important:
- * This function does not force streaming because the same request can be
- * executed through either generate() or stream(). The caller should enable
- * streaming explicitly for streaming execution.
+ * This function does not automatically require streaming because the same
+ * request can be executed through either generate() or stream().
  */
 export function createAIRoutingPolicyFromRequest(
   request: AIRequest,
-  options: Omit<
-    AIRoutingPolicyOptions,
-    "requirements"
-  > = {},
+  options: Omit<AIRoutingPolicyOptions, "requirements"> = {},
 ): AIRoutingPolicy {
+  if (!request) {
+    throw new Error("Cannot create a routing policy without an AI request.");
+  }
+
   return createAIRoutingPolicy({
     ...options,
 
     requirements: {
-      vision:
-        request.vision !== undefined,
+      vision: request.vision !== undefined,
 
-      structuredOutput:
-        request.options?.responseFormat ===
-        "json",
+      structuredOutput: request.options?.responseFormat === "json",
     },
   });
 }
@@ -570,11 +523,9 @@ export function isProviderAllowedByPolicy(
   providerName: string,
   policy: AIRoutingPolicy,
 ): boolean {
-  const normalized =
-    normalizeProviderName(providerName);
+  const normalized = normalizeProviderName(providerName);
 
-  const allowed =
-    policy.requirements.allowedProviders;
+  const allowed = policy.requirements.allowedProviders;
 
   if (
     allowed !== undefined &&
@@ -584,13 +535,9 @@ export function isProviderAllowedByPolicy(
     return false;
   }
 
-  const excluded =
-    policy.requirements.excludedProviders;
+  const excluded = policy.requirements.excludedProviders;
 
-  if (
-    excluded !== undefined &&
-    excluded.includes(normalized)
-  ) {
+  if (excluded !== undefined && excluded.includes(normalized)) {
     return false;
   }
 
@@ -607,17 +554,13 @@ export function getProviderPreferencePriority(
   providerName: string,
   policy: AIRoutingPolicy,
 ): number {
-  const normalized =
-    normalizeProviderName(providerName);
+  const normalized = normalizeProviderName(providerName);
 
-  const preference =
-    policy.preferredProviders.find(
-      (candidate) =>
-        candidate.provider === normalized,
-    );
+  const preference = policy.preferredProviders.find(
+    (candidate) => candidate.provider === normalized,
+  );
 
-  return preference?.priority ??
-    Number.MAX_SAFE_INTEGER;
+  return preference?.priority ?? Number.MAX_SAFE_INTEGER;
 }
 
 /**
@@ -627,11 +570,9 @@ export function isProviderPreferred(
   providerName: string,
   policy: AIRoutingPolicy,
 ): boolean {
-  const normalized =
-    normalizeProviderName(providerName);
+  const normalized = normalizeProviderName(providerName);
 
   return policy.preferredProviders.some(
-    (candidate) =>
-      candidate.provider === normalized,
+    (candidate) => candidate.provider === normalized,
   );
 }
