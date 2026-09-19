@@ -40,8 +40,11 @@
 // ============================================================================
 
 import type { AIProvider } from "./AIProvider";
+
 import type { AIRequest } from "./AIRequest";
+
 import type { AIResponse, AIStreamChunk } from "./AIResponse";
+
 import { AIError } from "./AIError";
 
 import type { ModelManager } from "../models/ModelManager";
@@ -57,6 +60,7 @@ import {
 } from "./CloudAIProvider";
 
 import { CloudGateway } from "../cloud/CloudGateway";
+
 import type { CloudProviderRegistry } from "../cloud/CloudProviderRegistry";
 
 // ============================================================================
@@ -82,16 +86,6 @@ export interface AIManagerCloudProviderOptions
 export class AIManager {
   /**
    * All providers are stored behind the common AIProvider abstraction.
-   *
-   * This means AIManager does not need to know whether a provider is:
-   *
-   * - local
-   * - cloud
-   * - remote
-   * - backed by llama.cpp
-   * - backed by Gemini
-   * - backed by Groq
-   * - etc.
    */
   private readonly providers = new Map<string, AIProvider>();
 
@@ -102,17 +96,84 @@ export class AIManager {
   /**
    * Register any Veyra AI provider.
    *
-   * This is the lowest-level registration method and should remain the
-   * canonical registration path for all providers.
+   * This is the canonical registration path for all providers.
    */
   public register(
     provider: AIProvider,
     options: AIManagerRegisterOptions = {},
   ): void {
-    const name = provider.name.trim();
+    if (!provider) {
+      throw new AIError(
+        "Cannot register an undefined AI provider.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+        },
+      );
+    }
+
+    const name = typeof provider.name === "string" ? provider.name.trim() : "";
 
     if (!name) {
-      throw new AIError("AI provider name cannot be empty.", "INVALID_REQUEST");
+      throw new AIError(
+        "AI provider name cannot be empty.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+        },
+      );
+    }
+
+    if (!provider.capabilities || typeof provider.capabilities !== "object") {
+      throw new AIError(
+        `AI provider "${name}" has invalid capabilities.`,
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+          details: {
+            provider: name,
+          },
+        },
+      );
+    }
+
+    if (typeof provider.generate !== "function") {
+      throw new AIError(
+        `AI provider "${name}" does not implement generate().`,
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+          details: {
+            provider: name,
+          },
+        },
+      );
+    }
+
+    if (typeof provider.stream !== "function") {
+      throw new AIError(
+        `AI provider "${name}" does not implement stream().`,
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+          details: {
+            provider: name,
+          },
+        },
+      );
+    }
+
+    if (typeof provider.healthCheck !== "function") {
+      throw new AIError(
+        `AI provider "${name}" does not implement healthCheck().`,
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+          details: {
+            provider: name,
+          },
+        },
+      );
     }
 
     const existing = this.providers.get(name);
@@ -122,6 +183,7 @@ export class AIManager {
         `AI provider "${name}" is already registered.`,
         "PROVIDER",
         {
+          retryable: false,
           details: {
             provider: name,
           },
@@ -165,7 +227,13 @@ export class AIManager {
     const name = providerName.trim();
 
     if (!name) {
-      throw new AIError("AI provider name cannot be empty.", "INVALID_REQUEST");
+      throw new AIError(
+        "AI provider name cannot be empty.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+        },
+      );
     }
 
     const provider = this.providers.get(name);
@@ -175,6 +243,7 @@ export class AIManager {
         `AI provider "${name}" is not registered.`,
         "UNAVAILABLE",
         {
+          retryable: false,
           details: {
             provider: name,
           },
@@ -196,21 +265,20 @@ export class AIManager {
   // LOCAL MODEL CONNECTION
   // ==========================================================================
 
-  /**
-   * Connect Veyra's local model subsystem to the AI provider layer.
-   *
-   * Architecture:
-   *
-   * AIManager
-   *    ↓
-   * LocalModelProvider
-   *    ↓
-   * ModelManager
-   */
   public registerLocalModelProvider(
     modelManager: ModelManager,
     options: LocalModelProviderOptions = {},
   ): LocalModelProvider {
+    if (!modelManager) {
+      throw new AIError(
+        "A ModelManager is required to register the local AI provider.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+        },
+      );
+    }
+
     const provider = new LocalModelProvider(modelManager, options);
 
     this.register(provider);
@@ -218,16 +286,10 @@ export class AIManager {
     return provider;
   }
 
-  /**
-   * Remove the local model provider.
-   */
   public unregisterLocalModelProvider(providerName = "local"): void {
     this.unregister(providerName);
   }
 
-  /**
-   * Get the local model provider.
-   */
   public getLocalModelProvider(providerName = "local"): LocalModelProvider {
     const provider = this.get(providerName);
 
@@ -236,6 +298,7 @@ export class AIManager {
         `Provider "${providerName}" is registered but is not a Veyra LocalModelProvider.`,
         "PROVIDER",
         {
+          retryable: false,
           details: {
             provider: providerName,
             expectedRuntime: "local",
@@ -251,30 +314,19 @@ export class AIManager {
   // CLOUD PROVIDER CONNECTION
   // ==========================================================================
 
-  /**
-   * Register a CloudAIProvider with AIManager.
-   *
-   * This is the official cloud bridge:
-   *
-   * AIManager
-   *    ↓
-   * CloudAIProvider
-   *    ↓
-   * CloudGateway
-   *    ↓
-   * CloudProviderRegistry
-   *    ↓
-   * Concrete cloud provider
-   *
-   * AIManager does not communicate directly with Gemini, Groq, Mistral,
-   * Cerebras, OpenRouter, etc.
-   *
-   * CloudAIProvider remains responsible for translating the cloud layer
-   * into Veyra's generic AIProvider contract.
-   */
   public registerCloudAIProvider(
     options: AIManagerCloudProviderOptions,
   ): CloudAIProvider {
+    if (!options) {
+      throw new AIError(
+        "Cloud AI provider options are required.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+        },
+      );
+    }
+
     const { replaceExisting = true, ...providerOptions } = options;
 
     const provider = new CloudAIProvider(providerOptions);
@@ -286,76 +338,50 @@ export class AIManager {
     return provider;
   }
 
-  /**
-   * Register a CloudAIProvider using an existing CloudProviderRegistry.
-   *
-   * This is useful when the application bootstrap already owns the registry.
-   *
-   * Example:
-   *
-   * const cloudProvider = aiManager.registerCloudAIProviderFromRegistry(
-   *   cloudRegistry,
-   *   {
-   *     providerId: "gemini",
-   *   },
-   * );
-   */
   public registerCloudAIProviderFromRegistry(
     registry: CloudProviderRegistry,
     options: Omit<AIManagerCloudProviderOptions, "registry">,
   ): CloudAIProvider {
+    if (!registry) {
+      throw new AIError(
+        "A CloudProviderRegistry is required to register a cloud AI provider.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+        },
+      );
+    }
+
     return this.registerCloudAIProvider({
       ...options,
       registry,
     });
   }
 
-  /**
-   * Register a CloudAIProvider using an existing CloudGateway.
-   *
-   * This is the preferred method when the application's cloud subsystem
-   * already owns a configured gateway.
-   *
-   * Example:
-   *
-   * const cloudProvider = aiManager.registerCloudAIProviderFromGateway(
-   *   cloudGateway,
-   *   {
-   *     providerId: "gemini",
-   *   },
-   * );
-   */
   public registerCloudAIProviderFromGateway(
     gateway: CloudGateway,
     options: Omit<AIManagerCloudProviderOptions, "gateway">,
   ): CloudAIProvider {
+    if (!gateway) {
+      throw new AIError(
+        "A CloudGateway is required to register a cloud AI provider.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+        },
+      );
+    }
+
     return this.registerCloudAIProvider({
       ...options,
       gateway,
     });
   }
 
-  /**
-   * Remove a cloud AI provider.
-   *
-   * By default this expects the CloudAIProvider naming convention:
-   *
-   * cloud:<providerId>
-   *
-   * Example:
-   *
-   * unregisterCloudAIProvider("cloud:gemini")
-   */
   public unregisterCloudAIProvider(providerName: string): void {
     this.unregister(providerName);
   }
 
-  /**
-   * Retrieve a registered CloudAIProvider.
-   *
-   * This protects the rest of the application from accidentally treating
-   * another AIProvider implementation as a cloud provider.
-   */
   public getCloudAIProvider(providerName: string): CloudAIProvider {
     const provider = this.get(providerName);
 
@@ -364,6 +390,7 @@ export class AIManager {
         `Provider "${providerName}" is registered but is not a Veyra CloudAIProvider.`,
         "PROVIDER",
         {
+          retryable: false,
           details: {
             provider: providerName,
             expectedRuntime: "cloud",
@@ -380,16 +407,20 @@ export class AIManager {
   // ==========================================================================
 
   /**
-   * Execute a non-streaming request through the selected provider.
+   * Execute a non-streaming request through an explicitly selected provider.
    *
-   * Provider selection is explicit.
-   *
-   * AIManager does not decide which provider should be used.
+   * Routing belongs to AIRouter.
    */
   public async generate(
     providerName: string,
     request: AIRequest,
   ): Promise<AIResponse> {
+    if (!request) {
+      throw new AIError("AI request is required.", "INVALID_REQUEST", {
+        retryable: false,
+      });
+    }
+
     return this.get(providerName).generate(request);
   }
 
@@ -398,14 +429,20 @@ export class AIManager {
   // ==========================================================================
 
   /**
-   * Stream a request through the selected provider.
+   * Stream a request through an explicitly selected provider.
    *
-   * Provider selection remains explicit.
+   * Routing belongs to AIRouter.
    */
   public stream(
     providerName: string,
     request: AIRequest,
   ): AsyncIterable<AIStreamChunk> {
+    if (!request) {
+      throw new AIError("AI request is required.", "INVALID_REQUEST", {
+        retryable: false,
+      });
+    }
+
     return this.get(providerName).stream(request);
   }
 
@@ -416,14 +453,16 @@ export class AIManager {
   /**
    * Run health checks for every registered provider.
    *
-   * A failed health check for one provider must not prevent health checks
-   * from completing for the remaining providers.
+   * A failed health check for one provider does not prevent the remaining
+   * providers from being checked.
    */
   public async healthCheck(): Promise<
     Awaited<ReturnType<AIProvider["healthCheck"]>>[]
   > {
+    const providers = this.list();
+
     return Promise.all(
-      this.list().map(async (provider) => {
+      providers.map(async (provider) => {
         try {
           return await provider.healthCheck();
         } catch (error) {

@@ -1,5 +1,4 @@
-﻿
-// ============================================================================
+﻿// ============================================================================
 // FILE: core/ai/AIExecutionPlan.ts
 // PURPOSE:
 // Represents an immutable execution plan produced by AIRouter.
@@ -19,21 +18,13 @@
 // - Hardware inspection
 // ============================================================================
 
-import type {
-  AIRequest,
-} from "./AIRequest";
+import type { AIRequest } from "./AIRequest";
 
-import {
-  AIError,
-} from "./AIError";
+import { AIError } from "./AIError";
 
-import type {
-  AIRoutingCandidate,
-} from "./AIRoutingCandidate";
+import type { AIRoutingCandidate } from "./AIRoutingCandidate";
 
-import type {
-  AIRoutingPolicy,
-} from "./AIRoutingPolicy";
+import type { AIRoutingPolicy } from "./AIRoutingPolicy";
 
 // ============================================================================
 // TYPES
@@ -62,26 +53,66 @@ export interface AIExecutionPlanOptions {
 // ============================================================================
 
 function createPlanId(): string {
-  return `ai-plan-${crypto.randomUUID()}`;
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return `ai-plan-${crypto.randomUUID()}`;
+  }
+
+  /**
+   * Fallback for environments where Web Crypto is not globally exposed.
+   *
+   * This is only an identifier and is not used as a security token.
+   */
+  return [
+    "ai-plan",
+    Date.now().toString(36),
+    Math.random().toString(36).slice(2),
+  ].join("-");
 }
 
-function normalizeCreatedAt(
-  value: number | undefined,
-): number {
+function normalizeCreatedAt(value: number | undefined): number {
   if (value === undefined) {
     return Date.now();
   }
 
-  if (
-    !Number.isFinite(value) ||
-    value < 0
-  ) {
-    throw new Error(
+  if (!Number.isFinite(value) || value < 0) {
+    throw new AIError(
       "AI execution plan createdAt must be a finite non-negative number.",
+      "INVALID_REQUEST",
+      {
+        retryable: false,
+        details: {
+          details: {
+            createdAt: value,
+          },
+        },
+      },
     );
   }
 
   return value;
+}
+
+function normalizePlanId(value: string | undefined): string {
+  if (value === undefined) {
+    return createPlanId();
+  }
+
+  const normalized = value.trim();
+
+  if (!normalized) {
+    throw new AIError(
+      "AI execution plan planId cannot be empty.",
+      "INVALID_REQUEST",
+      {
+        retryable: false,
+      },
+    );
+  }
+
+  return normalized;
 }
 
 // ============================================================================
@@ -95,13 +126,11 @@ export class AIExecutionPlan {
 
   public readonly policy: AIRoutingPolicy;
 
-  public readonly candidates:
-    readonly AIRoutingCandidate[];
+  public readonly candidates: readonly AIRoutingCandidate[];
 
   public readonly createdAt: number;
 
-  public readonly metadata:
-    AIExecutionPlanMetadata;
+  public readonly metadata: AIExecutionPlanMetadata;
 
   private constructor(
     request: AIRequest,
@@ -113,47 +142,32 @@ export class AIExecutionPlan {
 
     this.policy = policy;
 
-    this.candidates =
-      Object.freeze([
-        ...candidates,
-      ]);
+    this.candidates = Object.freeze([...candidates]);
 
-    this.planId =
-      options.planId ??
-      createPlanId();
+    this.planId = normalizePlanId(options.planId);
 
-    this.createdAt =
-      normalizeCreatedAt(
-        options.createdAt,
-      );
+    this.createdAt = normalizeCreatedAt(options.createdAt);
 
-    this.metadata =
-      Object.freeze({
-        planId:
-          this.planId,
+    this.metadata = Object.freeze({
+      planId: this.planId,
 
-        requestId:
-          request.requestId,
+      requestId: request.requestId,
 
-        createdAt:
-          this.createdAt,
+      createdAt: this.createdAt,
 
-        candidateCount:
-          this.candidates.length,
+      candidateCount: this.candidates.length,
 
-        eligibleCandidateCount:
-          this.candidates.filter(
-            (candidate) =>
-              candidate.eligible,
-          ).length,
-      });
+      eligibleCandidateCount: this.candidates.filter(
+        (candidate) => candidate.eligible,
+      ).length,
+    });
 
     Object.freeze(this);
   }
 
-  // ========================================================================
+  // ==========================================================================
   // FACTORY
-  // ========================================================================
+  // ==========================================================================
 
   public static create(
     request: AIRequest,
@@ -161,21 +175,57 @@ export class AIExecutionPlan {
     candidates: readonly AIRoutingCandidate[],
     options: AIExecutionPlanOptions = {},
   ): AIExecutionPlan {
-    if (
-      !request.requestId ||
-      !request.requestId.trim()
-    ) {
+    if (!request) {
+      throw new AIError(
+        "Cannot create an AI execution plan without an AI request.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+        },
+      );
+    }
+
+    if (typeof request.requestId !== "string" || !request.requestId.trim()) {
       throw new AIError(
         "Cannot create an AI execution plan without a requestId.",
         "INVALID_REQUEST",
         {
           retryable: false,
-
-          details: Object.freeze({
-            details: Object.freeze({
+          details: {
+            details: {
               requestId: request.requestId,
-            }),
-          }),
+            },
+          },
+        },
+      );
+    }
+
+    if (!policy) {
+      throw new AIError(
+        "Cannot create an AI execution plan without a routing policy.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+          details: {
+            details: {
+              requestId: request.requestId,
+            },
+          },
+        },
+      );
+    }
+
+    if (!Array.isArray(candidates)) {
+      throw new AIError(
+        "AI execution plan candidates must be an array.",
+        "INVALID_REQUEST",
+        {
+          retryable: false,
+          details: {
+            details: {
+              requestId: request.requestId,
+            },
+          },
         },
       );
     }
@@ -186,86 +236,55 @@ export class AIExecutionPlan {
         "UNAVAILABLE",
         {
           retryable: false,
-
-          details: Object.freeze({
-            details: Object.freeze({
+          details: {
+            details: {
               requestId: request.requestId,
-            }),
-
-            candidateCount: 0,
-
-            eligibleCandidateCount: 0,
-          }),
+              candidateCount: 0,
+              eligibleCandidateCount: 0,
+            },
+          },
         },
       );
     }
 
-    const eligibleCandidates =
-      candidates.filter(
-        (candidate) =>
-          candidate.eligible,
-      );
+    const eligibleCandidates = candidates.filter(
+      (candidate) => candidate.eligible,
+    );
 
-    if (
-      eligibleCandidates.length ===
-      0
-    ) {
-      /**
-       * Build diagnostic information as a generic record.
-       *
-       * AIErrorDetails intentionally has a stable top-level schema.
-       * Provider/candidate diagnostics therefore belong inside `details`.
-       */
-      const candidateDetails:
-        readonly Readonly<Record<string, unknown>>[] =
+    if (eligibleCandidates.length === 0) {
+      const candidateDetails: readonly Readonly<Record<string, unknown>>[] =
         Object.freeze(
-          candidates.map(
-            (candidate) =>
-              Object.freeze({
-                provider:
-                  candidate.providerName,
+          candidates.map((candidate) =>
+            Object.freeze({
+              provider: candidate.providerName,
 
-                runtime:
-                  candidate.runtime,
+              runtime: candidate.runtime,
 
-                eligible:
-                  candidate.eligible,
+              eligible: candidate.eligible,
 
-                score:
-                  candidate.score,
+              score: candidate.score,
 
-                reasons:
-                  Object.freeze([
-                    ...candidate.reasons,
-                  ]),
-              }),
+              reasons: Object.freeze([...candidate.reasons]),
+            }),
           ),
         );
-
-      const errorDetails:
-        Readonly<Record<string, unknown>> =
-        Object.freeze({
-          requestId:
-            request.requestId,
-
-          candidateCount:
-            candidates.length,
-
-          eligibleCandidateCount:
-            0,
-
-          candidates:
-            candidateDetails,
-        });
 
       throw new AIError(
         "No AI provider satisfies the routing policy.",
         "UNAVAILABLE",
         {
           retryable: false,
+          details: {
+            details: {
+              requestId: request.requestId,
 
-          details:
-            errorDetails,
+              candidateCount: candidates.length,
+
+              eligibleCandidateCount: 0,
+
+              candidates: candidateDetails,
+            },
+          },
         },
       );
     }
@@ -275,27 +294,18 @@ export class AIExecutionPlan {
      *
      * Registration order and provider name are deterministic tie-breakers.
      */
-    const ordered =
-      [...eligibleCandidates].sort(
-        (a, b) =>
-          b.score - a.score ||
-          a.registrationOrder -
-            b.registrationOrder ||
-          a.providerName.localeCompare(
-            b.providerName,
-          ),
-      );
+    const ordered = [...eligibleCandidates].sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.registrationOrder - b.registrationOrder ||
+        a.providerName.localeCompare(b.providerName),
+    );
 
-    const maxCandidates =
-      policy.execution.maxCandidates;
+    const maxCandidates = policy.execution.maxCandidates;
 
-    const limited =
-      Number.isFinite(maxCandidates)
-        ? ordered.slice(
-            0,
-            maxCandidates,
-          )
-        : ordered;
+    const limited = Number.isFinite(maxCandidates)
+      ? ordered.slice(0, maxCandidates)
+      : ordered;
 
     if (limited.length === 0) {
       throw new AIError(
@@ -303,37 +313,30 @@ export class AIExecutionPlan {
         "UNAVAILABLE",
         {
           retryable: false,
-
-          details: Object.freeze({
-            details: Object.freeze({
+          details: {
+            details: {
               requestId: request.requestId,
-            }),
-            candidateCount: candidates.length,
 
-            eligibleCandidateCount: eligibleCandidates.length,
+              candidateCount: candidates.length,
 
-            maxCandidates,
-          }),
+              eligibleCandidateCount: eligibleCandidates.length,
+
+              maxCandidates,
+            },
+          },
         },
       );
     }
 
-    return new AIExecutionPlan(
-      request,
-      policy,
-      limited,
-      options,
-    );
+    return new AIExecutionPlan(request, policy, limited, options);
   }
 
-  // ========================================================================
+  // ==========================================================================
   // ACCESSORS
-  // ========================================================================
+  // ==========================================================================
 
-  public getPrimaryCandidate():
-    AIRoutingCandidate {
-    const candidate =
-      this.candidates[0];
+  public getPrimaryCandidate(): AIRoutingCandidate {
+    const candidate = this.candidates[0];
 
     if (!candidate) {
       throw new AIError(
@@ -341,16 +344,13 @@ export class AIExecutionPlan {
         "UNAVAILABLE",
         {
           retryable: false,
+          details: {
+            details: {
+              planId: this.planId,
 
-          details: Object.freeze({
-  details: Object.freeze({
-              planId:
-                this.planId,
-
-              requestId:
-                this.request.requestId,
-            }),
-        })
+              requestId: this.request.requestId,
+            },
+          },
         },
       );
     }
@@ -358,21 +358,19 @@ export class AIExecutionPlan {
     return candidate;
   }
 
-  public getFallbackCandidates():
-    readonly AIRoutingCandidate[] {
-    return Object.freeze([
-      ...this.candidates.slice(1),
-    ]);
+  public getFallbackCandidates(): readonly AIRoutingCandidate[] {
+    return Object.freeze([...this.candidates.slice(1)]);
   }
 
-  public getCandidate(
-    providerName: string,
-  ):
-    AIRoutingCandidate | undefined {
+  public getCandidate(providerName: string): AIRoutingCandidate | undefined {
+    const normalized = providerName.trim();
+
+    if (!normalized) {
+      return undefined;
+    }
+
     return this.candidates.find(
-      (candidate) =>
-        candidate.providerName ===
-        providerName,
+      (candidate) => candidate.providerName === normalized,
     );
   }
 
@@ -385,9 +383,6 @@ export class AIExecutionPlan {
   }
 
   public getFallbackCount(): number {
-    return Math.max(
-      0,
-      this.candidates.length - 1,
-    );
+    return Math.max(0, this.candidates.length - 1);
   }
 }

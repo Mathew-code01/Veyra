@@ -1,5 +1,4 @@
-﻿
-// ============================================================================
+﻿// ============================================================================
 // FILE: core/ai/AIExecutionStrategy.ts
 // PURPOSE:
 // Executes an AIExecutionPlan.
@@ -26,36 +25,15 @@
 // IMPORTANT STREAMING RULE:
 //
 // Once user-visible text has been emitted, automatic fallback is disabled.
-//
-// Provider A:
-//   "The answer is..."
-//   failure
-//
-// Provider B:
-//   "The answer is..."
-//
-// would produce duplicated/corrupted output.
-//
-// Therefore streaming fallback is only allowed before any non-empty text
-// chunk has been emitted.
 // ============================================================================
 
-import type {
-  AIResponse,
-  AIStreamChunk,
-} from "./AIResponse";
+import type { AIResponse, AIStreamChunk } from "./AIResponse";
 
-import {
-  AIError,
-} from "./AIError";
+import { AIError } from "./AIError";
 
-import type {
-  AIExecutionPlan,
-} from "./AIExecutionPlan";
+import type { AIExecutionPlan } from "./AIExecutionPlan";
 
-import type {
-  AIRoutingCandidate,
-} from "./AIRoutingCandidate";
+import type { AIRoutingCandidate } from "./AIRoutingCandidate";
 
 // ============================================================================
 // TYPES
@@ -66,9 +44,7 @@ export interface AIExecutionResult<T> {
 
   readonly provider: string;
 
-  readonly runtime:
-    | "local"
-    | "cloud";
+  readonly runtime: "local" | "cloud";
 
   readonly attempts: number;
 
@@ -80,9 +56,7 @@ export interface AIExecutionResult<T> {
 export interface AIExecutionFailure {
   readonly provider: string;
 
-  readonly runtime:
-    | "local"
-    | "cloud";
+  readonly runtime: "local" | "cloud";
 
   readonly attempts: number;
 
@@ -90,8 +64,7 @@ export interface AIExecutionFailure {
 }
 
 export interface AIExecutionDiagnostics {
-  readonly failures:
-    readonly AIExecutionFailure[];
+  readonly failures: readonly AIExecutionFailure[];
 
   readonly totalAttempts: number;
 
@@ -108,10 +81,7 @@ export interface AIExecutionStrategyOptions {
    *
    * This callback must never alter execution behavior.
    */
-  readonly onAttempt?: (
-    candidate: AIRoutingCandidate,
-    attempt: number,
-  ) => void;
+  readonly onAttempt?: (candidate: AIRoutingCandidate, attempt: number) => void;
 
   /**
    * Observe provider fallback.
@@ -136,53 +106,50 @@ export interface AIExecutionStrategyOptions {
 // HELPERS
 // ============================================================================
 
-function throwIfAborted(
-  signal: AbortSignal | undefined,
-): void {
+function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) {
     return;
   }
 
-  throw new AIError(
-    "AI execution was aborted.",
-    "ABORTED",
-    {
-      retryable: false,
-    },
-  );
+  throw new AIError("AI execution was aborted.", "ABORTED", {
+    retryable: false,
+  });
 }
 
-function isAbortError(
-  error: unknown,
-): boolean {
+function isAbortError(error: unknown): boolean {
   if (
-    typeof DOMException !==
-    "undefined" &&
-    error instanceof DOMException
-  ) {
-    return (
-      error.name ===
-      "AbortError"
-    );
-  }
-
-  if (
-    error instanceof Error &&
-    error.name ===
-      "AbortError"
+    typeof DOMException !== "undefined" &&
+    error instanceof DOMException &&
+    error.name === "AbortError"
   ) {
     return true;
   }
 
-  return false;
+  return error instanceof Error && error.name === "AbortError";
 }
 
-function toAIError(
-  error: unknown,
-  candidate: AIRoutingCandidate,
-): AIError {
+function toAIError(error: unknown, candidate: AIRoutingCandidate): AIError {
   if (error instanceof AIError) {
-    return error;
+    /**
+     * Preserve the provider identity if the provider returned an AIError
+     * without provider metadata.
+     */
+    if (
+      error.details.provider === candidate.providerName &&
+      error.details.runtime === candidate.runtime
+    ) {
+      return error;
+    }
+
+    return new AIError(error.message, error.code, {
+      retryable: error.retryable,
+      details: {
+        ...error.details,
+        provider: error.details.provider ?? candidate.providerName,
+        runtime: error.details.runtime ?? candidate.runtime,
+      },
+      cause: error.details.cause ?? error.cause,
+    });
   }
 
   if (isAbortError(error)) {
@@ -194,15 +161,10 @@ function toAIError(
       "ABORTED",
       {
         retryable: false,
-
         details: {
-          provider:
-            candidate.providerName,
-
-          runtime:
-            candidate.runtime,
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
         },
-
         cause: error,
       },
     );
@@ -217,15 +179,10 @@ function toAIError(
       "PROVIDER",
       {
         retryable: false,
-
         details: {
-          provider:
-            candidate.providerName,
-
-          runtime:
-            candidate.runtime,
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
         },
-
         cause: error,
       },
     );
@@ -239,15 +196,10 @@ function toAIError(
     "PROVIDER",
     {
       retryable: false,
-
       details: {
-        provider:
-          candidate.providerName,
-
-        runtime:
-          candidate.runtime,
+        provider: candidate.providerName,
+        runtime: candidate.runtime,
       },
-
       cause: error,
     },
   );
@@ -262,26 +214,11 @@ function calculateRetryDelay(
     return 0;
   }
 
-  const exponent =
-    Math.max(
-      0,
-      nextAttempt - 2,
-    );
+  const exponent = Math.max(0, nextAttempt - 2);
 
-  const delayMs =
-    baseDelayMs *
-    Math.pow(
-      2,
-      exponent,
-    );
+  const delayMs = baseDelayMs * Math.pow(2, exponent);
 
-  return Math.min(
-    Math.max(
-      0,
-      delayMs,
-    ),
-    maxDelayMs,
-  );
+  return Math.min(Math.max(0, delayMs), maxDelayMs);
 }
 
 async function delay(
@@ -295,59 +232,41 @@ async function delay(
 
   throwIfAborted(signal);
 
-  await new Promise<void>(
-    (resolve, reject) => {
-      let timer:
-        | ReturnType<typeof setTimeout>
-        | undefined;
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-      const cleanup =
-        (): void => {
-          if (
-            timer !== undefined
-          ) {
-            clearTimeout(timer);
-            timer = undefined;
-          }
+    const cleanup = (): void => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
 
-          signal?.removeEventListener(
-            "abort",
-            onAbort,
-          );
-        };
+      signal?.removeEventListener("abort", onAbort);
+    };
 
-      const onAbort =
-        (): void => {
-          cleanup();
+    const onAbort = (): void => {
+      cleanup();
 
-          reject(
-            new AIError(
-              "AI execution was aborted while waiting for retry.",
-              "ABORTED",
-              {
-                retryable: false,
-              },
-            ),
-          );
-        };
-
-      timer = setTimeout(
-        () => {
-          cleanup();
-          resolve();
-        },
-        milliseconds,
+      reject(
+        new AIError(
+          "AI execution was aborted while waiting for retry.",
+          "ABORTED",
+          {
+            retryable: false,
+          },
+        ),
       );
+    };
 
-      signal?.addEventListener(
-        "abort",
-        onAbort,
-        {
-          once: true,
-        },
-      );
-    },
-  );
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, milliseconds);
+
+    signal?.addEventListener("abort", onAbort, {
+      once: true,
+    });
+  });
 }
 
 // ============================================================================
@@ -359,10 +278,7 @@ function validateResponse(
   plan: AIExecutionPlan,
   candidate: AIRoutingCandidate,
 ): AIResponse {
-  if (
-    response === undefined ||
-    response === null
-  ) {
+  if (response === undefined || response === null) {
     throw new AIError(
       [
         `AI provider "${candidate.providerName}"`,
@@ -371,27 +287,38 @@ function validateResponse(
       "INVALID_RESPONSE",
       {
         retryable: false,
-
         details: {
-          provider:
-            candidate.providerName,
-
-          runtime:
-            candidate.runtime,
-
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
           details: {
-            requestId:
-              plan.request.requestId,
+            requestId: plan.request.requestId,
           },
         },
       },
     );
   }
 
-  if (
-    response.metadata.requestId !==
-    plan.request.requestId
-  ) {
+  if (!response.metadata || typeof response.metadata !== "object") {
+    throw new AIError(
+      [
+        `AI provider "${candidate.providerName}"`,
+        "returned a response without valid metadata.",
+      ].join(" "),
+      "INVALID_RESPONSE",
+      {
+        retryable: false,
+        details: {
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
+          details: {
+            requestId: plan.request.requestId,
+          },
+        },
+      },
+    );
+  }
+
+  if (response.metadata.requestId !== plan.request.requestId) {
     throw new AIError(
       [
         `AI provider "${candidate.providerName}"`,
@@ -400,30 +327,19 @@ function validateResponse(
       "INVALID_RESPONSE",
       {
         retryable: false,
-
         details: {
-          provider:
-            candidate.providerName,
-
-          runtime:
-            candidate.runtime,
-
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
           details: {
-            expectedRequestId:
-              plan.request.requestId,
-
-            receivedRequestId:
-              response.metadata.requestId,
+            expectedRequestId: plan.request.requestId,
+            receivedRequestId: response.metadata.requestId,
           },
         },
       },
     );
   }
 
-  if (
-    response.metadata.provider !==
-    candidate.providerName
-  ) {
+  if (response.metadata.provider !== candidate.providerName) {
     throw new AIError(
       [
         `AI provider "${candidate.providerName}"`,
@@ -432,23 +348,13 @@ function validateResponse(
       "INVALID_RESPONSE",
       {
         retryable: false,
-
         details: {
-          provider:
-            candidate.providerName,
-
-          runtime:
-            candidate.runtime,
-
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
           details: {
-            expectedProvider:
-              candidate.providerName,
-
-            receivedProvider:
-              response.metadata.provider,
-
-            requestId:
-              plan.request.requestId,
+            expectedProvider: candidate.providerName,
+            receivedProvider: response.metadata.provider,
+            requestId: plan.request.requestId,
           },
         },
       },
@@ -467,10 +373,44 @@ function validateStreamChunk(
   plan: AIExecutionPlan,
   candidate: AIRoutingCandidate,
 ): void {
-  if (
-    chunk.requestId !==
-    plan.request.requestId
-  ) {
+  if (chunk === undefined || chunk === null || typeof chunk !== "object") {
+    throw new AIError(
+      [
+        `AI provider "${candidate.providerName}"`,
+        "returned an invalid stream chunk.",
+      ].join(" "),
+      "INVALID_RESPONSE",
+      {
+        retryable: false,
+        details: {
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
+          details: {
+            requestId: plan.request.requestId,
+          },
+        },
+      },
+    );
+  }
+
+  if (typeof chunk.requestId !== "string") {
+    throw new AIError(
+      [
+        `AI provider "${candidate.providerName}"`,
+        "returned a stream chunk without a valid requestId.",
+      ].join(" "),
+      "INVALID_RESPONSE",
+      {
+        retryable: false,
+        details: {
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
+        },
+      },
+    );
+  }
+
+  if (chunk.requestId !== plan.request.requestId) {
     throw new AIError(
       [
         `AI provider "${candidate.providerName}"`,
@@ -479,30 +419,36 @@ function validateStreamChunk(
       "INVALID_RESPONSE",
       {
         retryable: false,
-
         details: {
-          provider:
-            candidate.providerName,
-
-          runtime:
-            candidate.runtime,
-
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
           details: {
-            expectedRequestId:
-              plan.request.requestId,
-
-            receivedRequestId:
-              chunk.requestId,
+            expectedRequestId: plan.request.requestId,
+            receivedRequestId: chunk.requestId,
           },
         },
       },
     );
   }
 
-  if (
-    chunk.provider !==
-    candidate.providerName
-  ) {
+  if (typeof chunk.provider !== "string") {
+    throw new AIError(
+      [
+        `AI provider "${candidate.providerName}"`,
+        "returned a stream chunk without a valid provider identity.",
+      ].join(" "),
+      "INVALID_RESPONSE",
+      {
+        retryable: false,
+        details: {
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
+        },
+      },
+    );
+  }
+
+  if (chunk.provider !== candidate.providerName) {
     throw new AIError(
       [
         `AI provider "${candidate.providerName}"`,
@@ -511,23 +457,53 @@ function validateStreamChunk(
       "INVALID_RESPONSE",
       {
         retryable: false,
-
         details: {
-          provider:
-            candidate.providerName,
-
-          runtime:
-            candidate.runtime,
-
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
           details: {
-            expectedProvider:
-              candidate.providerName,
+            expectedProvider: candidate.providerName,
+            receivedProvider: chunk.provider,
+            requestId: plan.request.requestId,
+          },
+        },
+      },
+    );
+  }
 
-            receivedProvider:
-              chunk.provider,
+  if (typeof chunk.text !== "string") {
+    throw new AIError(
+      [
+        `AI provider "${candidate.providerName}"`,
+        "returned a stream chunk with invalid text.",
+      ].join(" "),
+      "INVALID_RESPONSE",
+      {
+        retryable: false,
+        details: {
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
+          details: {
+            requestId: plan.request.requestId,
+          },
+        },
+      },
+    );
+  }
 
-            requestId:
-              plan.request.requestId,
+  if (typeof chunk.done !== "boolean") {
+    throw new AIError(
+      [
+        `AI provider "${candidate.providerName}"`,
+        "returned a stream chunk with invalid completion state.",
+      ].join(" "),
+      "INVALID_RESPONSE",
+      {
+        retryable: false,
+        details: {
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
+          details: {
+            requestId: plan.request.requestId,
           },
         },
       },
@@ -540,143 +516,81 @@ function validateStreamChunk(
 // ============================================================================
 
 export class AIExecutionStrategy {
-  private readonly options:
-    AIExecutionStrategyOptions;
+  private readonly options: AIExecutionStrategyOptions;
 
-  public constructor(
-    options: AIExecutionStrategyOptions = {},
-  ) {
-    this.options =
-      Object.freeze({
-        ...options,
-      });
+  public constructor(options: AIExecutionStrategyOptions = {}) {
+    this.options = Object.freeze({
+      ...options,
+    });
   }
 
-  // ========================================================================
+  // ==========================================================================
   // GENERATE
-  // ========================================================================
+  // ==========================================================================
 
-  public async generate(
-    plan: AIExecutionPlan,
-  ): Promise<AIResponse> {
-    const request =
-      plan.request;
+  public async generate(plan: AIExecutionPlan): Promise<AIResponse> {
+    const request = plan.request;
 
-    throwIfAborted(
-      request.signal,
-    );
+    throwIfAborted(request.signal);
 
-    const failures:
-      AIExecutionFailure[] = [];
+    const failures: AIExecutionFailure[] = [];
 
     let totalAttempts = 0;
 
     for (
       let candidateIndex = 0;
-      candidateIndex <
-      plan.candidates.length;
+      candidateIndex < plan.candidates.length;
       candidateIndex += 1
     ) {
-      const candidate =
-        plan.candidates[
-          candidateIndex
-        ];
+      const candidate = plan.candidates[candidateIndex];
 
       if (!candidate) {
         continue;
       }
 
-      const provider =
-        candidate.provider;
+      const provider = candidate.provider;
 
-      const maxAttempts =
-        plan.policy.execution
-          .maxAttemptsPerCandidate;
+      const maxAttempts = plan.policy.execution.maxAttemptsPerCandidate;
 
-      for (
-        let attempt = 1;
-        attempt <= maxAttempts;
-        attempt += 1
-      ) {
-        throwIfAborted(
-          request.signal,
-        );
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        throwIfAborted(request.signal);
 
         totalAttempts += 1;
 
-        this.options.onAttempt?.(
-          candidate,
-          attempt,
-        );
+        this.options.onAttempt?.(candidate, attempt);
 
         try {
-          const response =
-            await provider.generate(
-              request,
-            );
+          const response = await provider.generate(request);
 
-          return validateResponse(
-            response,
-            plan,
-            candidate,
-          );
+          return validateResponse(response, plan, candidate);
         } catch (error) {
-          const aiError =
-            toAIError(
-              error,
-              candidate,
-            );
+          const aiError = toAIError(error, candidate);
 
           failures.push({
-            provider:
-              candidate.providerName,
-
-            runtime:
-              candidate.runtime,
-
-            attempts:
-              attempt,
-
-            error:
-              aiError,
+            provider: candidate.providerName,
+            runtime: candidate.runtime,
+            attempts: attempt,
+            error: aiError,
           });
 
-          this.options.onFailure?.(
-            candidate,
-            attempt,
-            aiError,
-          );
+          this.options.onFailure?.(candidate, attempt, aiError);
 
-          if (
-            aiError.code ===
-            "ABORTED"
-          ) {
+          if (aiError.code === "ABORTED") {
             throw aiError;
           }
 
-          const attemptsRemaining =
-            attempt <
-            maxAttempts;
+          const attemptsRemaining = attempt < maxAttempts;
 
-          if (
-            aiError.retryable &&
-            attemptsRemaining
-          ) {
+          if (aiError.retryable && attemptsRemaining) {
             const retryDelay =
-              aiError.details
-                .retryAfterMs ??
+              aiError.details.retryAfterMs ??
               calculateRetryDelay(
                 attempt + 1,
-                plan.policy.execution
-                  .retryBaseDelayMs,
-                plan.policy.execution
-                  .retryMaxDelayMs,
+                plan.policy.execution.retryBaseDelayMs,
+                plan.policy.execution.retryMaxDelayMs,
               );
 
-            await delay(
-              retryDelay,
-              request.signal,
-            );
+            await delay(retryDelay, request.signal);
 
             continue;
           }
@@ -685,228 +599,133 @@ export class AIExecutionStrategy {
         }
       }
 
-      const nextCandidate =
-        plan.candidates[
-          candidateIndex + 1
-        ];
+      const nextCandidate = plan.candidates[candidateIndex + 1];
 
-      if (
-        !nextCandidate ||
-        !plan.policy.execution
-          .allowFallback
-      ) {
+      if (!nextCandidate || !plan.policy.execution.allowFallback) {
         break;
       }
 
-      const lastFailure =
-        failures[
-          failures.length - 1
-        ];
+      const lastFailure = failures[failures.length - 1];
 
       if (lastFailure) {
-        this.options.onFallback?.(
-          candidate,
-          nextCandidate,
-          lastFailure.error,
-        );
+        this.options.onFallback?.(candidate, nextCandidate, lastFailure.error);
       }
     }
 
-    throw this.createExecutionFailure(
-      failures,
-      totalAttempts,
-    );
+    throw this.createExecutionFailure(failures, totalAttempts);
   }
 
-  // ========================================================================
+  // ==========================================================================
   // STREAM
-  // ========================================================================
+  // ==========================================================================
 
-  public stream(
-    plan: AIExecutionPlan,
-  ): AsyncIterable<AIStreamChunk> {
-    return this.createStream(
-      plan,
-    );
+  public stream(plan: AIExecutionPlan): AsyncIterable<AIStreamChunk> {
+    return this.createStream(plan);
   }
 
   private async *createStream(
     plan: AIExecutionPlan,
   ): AsyncIterable<AIStreamChunk> {
-    const request =
-      plan.request;
+    const request = plan.request;
 
-    throwIfAborted(
-      request.signal,
-    );
+    throwIfAborted(request.signal);
 
-    let outputStarted =
-      false;
+    /**
+     * Once text has been emitted to the consumer, fallback is unsafe.
+     */
+    let outputStarted = false;
 
-    const failures:
-      AIExecutionFailure[] = [];
+    const failures: AIExecutionFailure[] = [];
 
     let totalAttempts = 0;
 
     for (
       let candidateIndex = 0;
-      candidateIndex <
-      plan.candidates.length;
+      candidateIndex < plan.candidates.length;
       candidateIndex += 1
     ) {
-      const candidate =
-        plan.candidates[
-          candidateIndex
-        ];
+      const candidate = plan.candidates[candidateIndex];
 
       if (!candidate) {
         continue;
       }
 
-      const provider =
-        candidate.provider;
+      const provider = candidate.provider;
 
-      if (
-        !provider.capabilities
-          .streaming
-      ) {
-        const error =
-          new AIError(
-            [
-              `AI provider "${candidate.providerName}"`,
-              "does not support streaming.",
-            ].join(" "),
-            "UNAVAILABLE",
-            {
-              retryable: false,
-
-              details: {
-                provider:
-                  candidate.providerName,
-
-                runtime:
-                  candidate.runtime,
-              },
+      if (!provider.capabilities.streaming) {
+        const error = new AIError(
+          [
+            `AI provider "${candidate.providerName}"`,
+            "does not support streaming.",
+          ].join(" "),
+          "UNAVAILABLE",
+          {
+            retryable: false,
+            details: {
+              provider: candidate.providerName,
+              runtime: candidate.runtime,
             },
-          );
+          },
+        );
 
         failures.push({
-          provider:
-            candidate.providerName,
-
-          runtime:
-            candidate.runtime,
-
+          provider: candidate.providerName,
+          runtime: candidate.runtime,
           attempts: 0,
-
           error,
         });
 
-        if (
-          !plan.policy.execution
-            .allowFallback
-        ) {
+        if (!plan.policy.execution.allowFallback) {
           break;
         }
 
-        const nextCandidate =
-          plan.candidates[
-            candidateIndex + 1
-          ];
+        const nextCandidate = plan.candidates[candidateIndex + 1];
 
-        if (
-          nextCandidate
-        ) {
-          this.options.onFallback?.(
-            candidate,
-            nextCandidate,
-            error,
-          );
+        if (nextCandidate) {
+          this.options.onFallback?.(candidate, nextCandidate, error);
         }
 
         continue;
       }
 
-      const maxAttempts =
-        plan.policy.execution
-          .maxAttemptsPerCandidate;
+      const maxAttempts = plan.policy.execution.maxAttemptsPerCandidate;
 
-      for (
-        let attempt = 1;
-        attempt <= maxAttempts;
-        attempt += 1
-      ) {
-        throwIfAborted(
-          request.signal,
-        );
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        throwIfAborted(request.signal);
 
         totalAttempts += 1;
 
-        this.options.onAttempt?.(
-          candidate,
-          attempt,
-        );
+        this.options.onAttempt?.(candidate, attempt);
 
-        let attemptEmittedOutput =
-          false;
+        let attemptEmittedOutput = false;
 
-        let receivedTerminalChunk =
-          false;
+        let receivedTerminalChunk = false;
 
         try {
-          const providerStream =
-            provider.stream(
-              request,
-            );
+          const providerStream = provider.stream(request);
 
-          for await (
-            const chunk of providerStream
-          ) {
-            throwIfAborted(
-              request.signal,
-            );
+          for await (const chunk of providerStream) {
+            throwIfAborted(request.signal);
 
-            validateStreamChunk(
-              chunk,
-              plan,
-              candidate,
-            );
+            validateStreamChunk(chunk, plan, candidate);
 
-            if (
-              chunk.text.length > 0
-            ) {
-              outputStarted =
-                true;
-
-              attemptEmittedOutput =
-                true;
+            if (chunk.text.length > 0) {
+              outputStarted = true;
+              attemptEmittedOutput = true;
             }
 
-            if (
-              chunk.done
-            ) {
-              receivedTerminalChunk =
-                true;
+            if (chunk.done) {
+              receivedTerminalChunk = true;
             }
 
             yield chunk;
 
-            if (
-              chunk.done
-            ) {
+            if (chunk.done) {
               break;
             }
           }
 
-          /**
-           * A provider stream ending without a terminal done chunk is an
-           * invalid/incomplete response.
-           *
-           * We intentionally do not silently manufacture a done chunk.
-           */
-          if (
-            !receivedTerminalChunk
-          ) {
+          if (!receivedTerminalChunk) {
             throw new AIError(
               [
                 `AI provider "${candidate.providerName}"`,
@@ -915,18 +734,11 @@ export class AIExecutionStrategy {
               "INVALID_RESPONSE",
               {
                 retryable: false,
-
                 details: {
-                  provider:
-                    candidate.providerName,
-
-                  runtime:
-                    candidate.runtime,
-
+                  provider: candidate.providerName,
+                  runtime: candidate.runtime,
                   details: {
-                    requestId:
-                      request.requestId,
-
+                    requestId: request.requestId,
                     outputStarted,
                   },
                 },
@@ -936,73 +748,40 @@ export class AIExecutionStrategy {
 
           return;
         } catch (error) {
-          const aiError =
-            toAIError(
-              error,
-              candidate,
-            );
+          const aiError = toAIError(error, candidate);
 
           failures.push({
-            provider:
-              candidate.providerName,
-
-            runtime:
-              candidate.runtime,
-
-            attempts:
-              attempt,
-
-            error:
-              aiError,
+            provider: candidate.providerName,
+            runtime: candidate.runtime,
+            attempts: attempt,
+            error: aiError,
           });
 
-          this.options.onFailure?.(
-            candidate,
-            attempt,
-            aiError,
-          );
+          this.options.onFailure?.(candidate, attempt, aiError);
 
-          if (
-            aiError.code ===
-            "ABORTED"
-          ) {
+          if (aiError.code === "ABORTED") {
             throw aiError;
           }
 
           /**
-           * Once output has reached the consumer, retrying or switching
-           * providers would make the response ambiguous or duplicated.
+           * Never retry or fallback once output has reached the consumer.
            */
-          if (
-            outputStarted ||
-            attemptEmittedOutput
-          ) {
+          if (outputStarted || attemptEmittedOutput) {
             throw aiError;
           }
 
-          const attemptsRemaining =
-            attempt <
-            maxAttempts;
+          const attemptsRemaining = attempt < maxAttempts;
 
-          if (
-            aiError.retryable &&
-            attemptsRemaining
-          ) {
+          if (aiError.retryable && attemptsRemaining) {
             const retryDelay =
-              aiError.details
-                .retryAfterMs ??
+              aiError.details.retryAfterMs ??
               calculateRetryDelay(
                 attempt + 1,
-                plan.policy.execution
-                  .retryBaseDelayMs,
-                plan.policy.execution
-                  .retryMaxDelayMs,
+                plan.policy.execution.retryBaseDelayMs,
+                plan.policy.execution.retryMaxDelayMs,
               );
 
-            await delay(
-              retryDelay,
-              request.signal,
-            );
+            await delay(retryDelay, request.signal);
 
             continue;
           }
@@ -1011,52 +790,31 @@ export class AIExecutionStrategy {
         }
       }
 
-      const nextCandidate =
-        plan.candidates[
-          candidateIndex + 1
-        ];
+      const nextCandidate = plan.candidates[candidateIndex + 1];
 
-      if (
-        !nextCandidate ||
-        !plan.policy.execution
-          .allowFallback
-      ) {
+      if (!nextCandidate || !plan.policy.execution.allowFallback) {
         break;
       }
 
-      const lastFailure =
-        failures[
-          failures.length - 1
-        ];
+      const lastFailure = failures[failures.length - 1];
 
       if (lastFailure) {
-        this.options.onFallback?.(
-          candidate,
-          nextCandidate,
-          lastFailure.error,
-        );
+        this.options.onFallback?.(candidate, nextCandidate, lastFailure.error);
       }
     }
 
-    throw this.createExecutionFailure(
-      failures,
-      totalAttempts,
-    );
+    throw this.createExecutionFailure(failures, totalAttempts);
   }
 
-  // ========================================================================
+  // ==========================================================================
   // FAILURE
-  // ========================================================================
+  // ==========================================================================
 
   private createExecutionFailure(
-    failures:
-      readonly AIExecutionFailure[],
+    failures: readonly AIExecutionFailure[],
     totalAttempts: number,
   ): AIError {
-    const lastFailure =
-      failures[
-        failures.length - 1
-      ];
+    const lastFailure = failures[failures.length - 1];
 
     if (!lastFailure) {
       return new AIError(
@@ -1067,38 +825,25 @@ export class AIExecutionStrategy {
         "UNAVAILABLE",
         {
           retryable: false,
+          details: {
+            details: {
+              totalAttempts,
+            },
+          },
         },
       );
     }
 
-    const providerNames =
-      failures.map(
-        (failure) =>
-          failure.provider,
-      );
+    const providerNames = failures.map((failure) => failure.provider);
 
-    const failureDetails =
-      failures.map(
-        (failure) => ({
-          provider:
-            failure.provider,
-
-          runtime:
-            failure.runtime,
-
-          attempts:
-            failure.attempts,
-
-          code:
-            failure.error.code,
-
-          retryable:
-            failure.error.retryable,
-
-          message:
-            failure.error.message,
-        }),
-      );
+    const failureDetails = failures.map((failure) => ({
+      provider: failure.provider,
+      runtime: failure.runtime,
+      attempts: failure.attempts,
+      code: failure.error.code,
+      retryable: failure.error.retryable,
+      message: failure.error.message,
+    }));
 
     return new AIError(
       [
@@ -1109,29 +854,19 @@ export class AIExecutionStrategy {
       ].join(" "),
       lastFailure.error.code,
       {
-        retryable:
-          lastFailure.error.retryable,
-
+        retryable: lastFailure.error.retryable,
         details: {
-          provider:
-            lastFailure.provider,
-
-          runtime:
-            lastFailure.runtime,
-
+          provider: lastFailure.provider,
+          runtime: lastFailure.runtime,
           details: {
             totalAttempts,
 
-            providerCount:
-              providerNames.length,
+            providerCount: providerNames.length,
 
-            failures:
-              failureDetails,
+            failures: failureDetails,
           },
         },
-
-        cause:
-          lastFailure.error,
+        cause: lastFailure.error,
       },
     );
   }
