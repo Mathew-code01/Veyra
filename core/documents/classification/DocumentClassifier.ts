@@ -2,6 +2,15 @@
 // FILE: core/documents/classification/DocumentClassifier.ts
 // PURPOSE:
 // Determines the canonical document type before parsing.
+//
+// Classification priority:
+//   1. MIME type
+//   2. filename extension
+//   3. UNKNOWN
+//
+// This class does NOT inspect arbitrary file contents.
+// Content sniffing should be introduced separately because it has
+// security and parser-specific implications.
 // ============================================================================
 
 import { DocumentType, type DocumentSource } from "../DocumentTypes";
@@ -33,6 +42,8 @@ export class DocumentClassifier {
 
     const mimeType = source.mimeType?.trim().toLowerCase();
 
+    const extension = extractExtension(source.filename);
+
     const extensionType = this.mimeTypeResolver.resolveFromExtension(
       source.filename,
     );
@@ -55,7 +66,7 @@ export class DocumentClassifier {
         confidence: extensionType === mimeTypeResult ? 1 : 0.9,
         source: "mime",
         mimeType,
-        extension: source.filename,
+        extension,
         warnings,
       };
     }
@@ -66,7 +77,7 @@ export class DocumentClassifier {
         confidence: 0.75,
         source: "extension",
         mimeType,
-        extension: source.filename,
+        extension,
         warnings,
       };
     }
@@ -76,11 +87,39 @@ export class DocumentClassifier {
       confidence: 0,
       source: "fallback",
       mimeType,
-      extension: source.filename,
+      extension,
       warnings: [
         ...warnings,
         "Unable to determine a supported document format.",
       ],
     };
   }
+}
+
+function extractExtension(filename?: string): string | undefined {
+  if (!filename) {
+    return undefined;
+  }
+
+  const normalized = filename.trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  const lastSeparator = Math.max(
+    normalized.lastIndexOf("/"),
+    normalized.lastIndexOf("\\"),
+  );
+
+  const basename =
+    lastSeparator >= 0 ? normalized.slice(lastSeparator + 1) : normalized;
+
+  const lastDot = basename.lastIndexOf(".");
+
+  if (lastDot <= 0 || lastDot === basename.length - 1) {
+    return undefined;
+  }
+
+  return basename.slice(lastDot).toLowerCase();
 }

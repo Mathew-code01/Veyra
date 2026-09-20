@@ -257,11 +257,24 @@ export interface DocumentChunkSource {
  */
 export interface DocumentChunk {
   readonly id: string;
+
   readonly documentId: string;
+
   readonly index: number;
+
   readonly text: string;
+
   readonly tokenEstimate?: number;
+
   readonly source: DocumentChunkSource;
+
+  /**
+   * Additional document-specific chunk metadata.
+   *
+   * Kept generic so the canonical document type does not become
+   * tightly coupled to a particular indexing/vector database.
+   */
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 /**

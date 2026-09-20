@@ -6,6 +6,8 @@
 // IMPORTANT:
 // This does NOT collapse all newlines into spaces.
 // Document structure depends on meaningful line boundaries.
+//
+// This class is intentionally synchronous and cancellation-agnostic.
 // ============================================================================
 
 export interface WhitespaceNormalizationOptions {
@@ -52,11 +54,11 @@ export class WhitespaceNormalizer {
     }
 
     if (config.collapseBlankLines) {
-      const max = Math.max(1, config.maxConsecutiveBlankLines);
+      const max = Math.max(1, Math.floor(config.maxConsecutiveBlankLines));
 
       const expression = new RegExp(`\\n{${max + 1},}`, "gu");
 
-      result = result.replace(expression, `${"\n".repeat(max)}`);
+      result = result.replace(expression, "\n".repeat(max));
     }
 
     return result.trim();

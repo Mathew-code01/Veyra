@@ -3,14 +3,23 @@
 // PURPOSE:
 // Canonical text normalization.
 //
-// Responsibilities:
+// RESPONSIBILITIES:
 // - Unicode normalization
 // - BOM removal
 // - control-character cleanup
 // - newline normalization
 // - whitespace normalization
 //
-// It does NOT perform semantic document parsing.
+// IMPORTANT:
+// This class is intentionally synchronous and cancellation-agnostic.
+// Cancellation belongs to DocumentNormalizer, which orchestrates potentially
+// large document structures.
+//
+// It does NOT:
+// - parse documents
+// - classify documents
+// - normalize document metadata
+// - perform semantic document processing
 // ============================================================================
 
 import { WhitespaceNormalizer } from "./WhitespaceNormalizer";
@@ -71,9 +80,8 @@ export class TextNormalizer {
     }
 
     /**
-     * Unicode normalization prevents visually
-     * identical strings from having different
-     * underlying representations.
+     * Unicode normalization prevents visually identical strings
+     * from having different underlying representations.
      */
     if (typeof result.normalize === "function") {
       result = result.normalize(config.unicodeForm);
@@ -94,17 +102,17 @@ function removeUnsafeControlCharacters(text: string): string {
 
       /**
        * Preserve:
-       * - newline
        * - tab
+       * - newline
        *
-       * Remove other C0 controls.
+       * Remove other C0 control characters.
        */
       if (code < 32 && code !== 9 && code !== 10) {
         return false;
       }
 
       /**
-       * DEL and C1 controls.
+       * Remove DEL and C1 control characters.
        */
       if (code >= 127 && code <= 159) {
         return false;

@@ -1,11 +1,20 @@
+
 // ============================================================================
 // FILE: core/documents/parsers/MarkdownParser.ts
 // PURPOSE:
 // Markdown parser.
 //
-// This implementation deliberately avoids coupling the document core
-// to a specific Markdown package. A Markdown renderer/parser can later
-// be injected if richer AST support is required.
+// ARCHITECTURE:
+// DocumentSource
+//   -> MarkdownParser
+//   -> ParsedDocument
+//   -> DocumentNormalizer
+//   -> DocumentChunker
+//   -> DocumentIndexer
+//
+// This parser deliberately avoids coupling the document core to a specific
+// Markdown package. A Markdown renderer/parser can later be injected if
+// richer AST support is required.
 // ============================================================================
 
 import {
@@ -14,6 +23,8 @@ import {
   type DocumentParagraph,
   type DocumentSection,
   type DocumentSource,
+  type DocumentTable,
+  type DocumentTableCell,
   type ParsedDocument,
 } from "../DocumentTypes";
 
@@ -31,13 +42,22 @@ import type { DocumentParser } from "./DocumentParser";
 export class MarkdownParser implements DocumentParser {
   public readonly type = DocumentType.MARKDOWN;
 
-  public async parse(source: DocumentSource): Promise<ParsedDocument> {
+  public async parse(
+    source: DocumentSource,
+    options?: {
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<ParsedDocument> {
     const data = assertSourceData(source.data, "Markdown");
 
     try {
+      this.throwIfAborted(options?.signal);
+
       const identity = createDocumentIdentity(source);
 
       const rawMarkdown = decodeUtf8(data);
+
+      this.throwIfAborted(options?.signal);
 
       const text = cleanParserText(stripMarkdownSyntax(rawMarkdown));
 
@@ -52,11 +72,23 @@ export class MarkdownParser implements DocumentParser {
         );
       }
 
+      this.throwIfAborted(options?.signal);
+
       const headings = extractHeadings(rawMarkdown);
+
+      this.throwIfAborted(options?.signal);
 
       const paragraphs = extractParagraphs(rawMarkdown, identity.id);
 
+      this.throwIfAborted(options?.signal);
+
       const sections = buildSections(headings, paragraphs);
+
+      this.throwIfAborted(options?.signal);
+
+      const tables = extractMarkdownTables(rawMarkdown, identity.id);
+
+      this.throwIfAborted(options?.signal);
 
       return {
         identity,
@@ -65,7 +97,7 @@ export class MarkdownParser implements DocumentParser {
         paragraphs,
         headings,
         sections,
-        tables: extractMarkdownTables(rawMarkdown, identity.id),
+        tables,
         metadata: {
           filename: source.filename,
           mimeType: source.mimeType,
@@ -86,6 +118,21 @@ export class MarkdownParser implements DocumentParser {
         documentType: DocumentType.MARKDOWN,
       });
     }
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) {
+      return;
+    }
+
+    throw DocumentError.aborted(
+      {
+        documentType: DocumentType.MARKDOWN,
+        stage: "parsing",
+        filename: undefined,
+      },
+      signal.reason,
+    );
   }
 }
 
@@ -202,9 +249,13 @@ function stripMarkdownSyntax(markdown: string): string {
     .replace(/~~([^~]+)~~/gu, "$1");
 }
 
-function extractMarkdownTables(markdown: string, documentId: string) {
+function extractMarkdownTables(
+  markdown: string,
+  documentId: string,
+): DocumentTable[] {
   const lines = markdown.split("\n");
-  const tables = [];
+
+  const tables: DocumentTable[] = [];
 
   for (let index = 0; index < lines.length - 1; index++) {
     const header = lines[index].trim();
@@ -219,7 +270,7 @@ function extractMarkdownTables(markdown: string, documentId: string) {
 
     const headers = splitTableRow(header);
 
-    const cells = [];
+    const cells: DocumentTableCell[] = [];
 
     let row = 0;
     let cursor = index + 2;

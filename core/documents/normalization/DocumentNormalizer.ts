@@ -3,19 +3,18 @@
 // PURPOSE:
 // Converts ParsedDocument into the canonical NormalizedDocument.
 //
-// PIPELINE:
-// ParsedDocument
-//      ↓
-// TextNormalizer
-//      ↓
-// structure normalization
-//      ↓
-// metadata normalization
-//      ↓
-// NormalizedDocument
+// RESPONSIBILITIES:
+// - orchestrate text normalization
+// - normalize document structure
+// - preserve canonical document structure
+// - calculate canonical text statistics
+// - honor cancellation
 //
-// This class does not perform persistence, indexing, embedding,
-// retrieval, or AI operations.
+// IMPORTANT:
+// Cancellation belongs here because this class owns orchestration of
+// potentially large document structures.
+//
+// TextNormalizer and WhitespaceNormalizer remain pure synchronous utilities.
 // ============================================================================
 
 import { DocumentError, DocumentErrorCode } from "../DocumentError";
@@ -38,6 +37,11 @@ import {
 
 export interface DocumentNormalizationOptions extends TextNormalizationOptions {
   readonly normalizeStructure?: boolean;
+
+  /**
+   * Cancels normalization when the owning pipeline/job is aborted.
+   */
+  readonly signal?: AbortSignal;
 }
 
 const DEFAULT_OPTIONS: Required<
@@ -61,6 +65,19 @@ export class DocumentNormalizer {
       throw new DocumentError(
         DocumentErrorCode.NORMALIZATION_FAILED,
         "A parsed document is required for normalization.",
+        {
+          stage: "normalization",
+        },
+      );
+    }
+
+    if (!document.identity?.id?.trim()) {
+      throw new DocumentError(
+        DocumentErrorCode.INVALID_INPUT,
+        "Parsed document must have a non-empty identity.",
+        {
+          stage: "normalization",
+        },
       );
     }
 
@@ -70,7 +87,24 @@ export class DocumentNormalizer {
     };
 
     try {
-      const text = this.textNormalizer.normalize(document.text, config);
+      throwIfAborted(config.signal);
+
+      /**
+       * Only pass text-specific options into TextNormalizer.
+       *
+       * Do not pass:
+       * - normalizeStructure
+       * - signal
+       */
+      const textOptions: TextNormalizationOptions = {
+        unicodeForm: config.unicodeForm,
+        normalizeWhitespace: config.normalizeWhitespace,
+        removeControlCharacters: config.removeControlCharacters,
+      };
+
+      const text = this.textNormalizer.normalize(document.text, textOptions);
+
+      throwIfAborted(config.signal);
 
       if (!text) {
         throw new DocumentError(
@@ -78,6 +112,7 @@ export class DocumentNormalizer {
           "Document contains no usable text after normalization.",
           {
             documentId: document.identity.id,
+            stage: "normalization",
           },
         );
       }
@@ -86,29 +121,45 @@ export class DocumentNormalizer {
         ? normalizeParagraphs(
             document.paragraphs ?? [],
             this.textNormalizer,
-            config,
+            textOptions,
+            config.signal,
           )
         : [...(document.paragraphs ?? [])];
+
+      throwIfAborted(config.signal);
 
       const headings = config.normalizeStructure
         ? normalizeHeadings(
             document.headings ?? [],
             this.textNormalizer,
-            config,
+            textOptions,
+            config.signal,
           )
         : [...(document.headings ?? [])];
+
+      throwIfAborted(config.signal);
 
       const sections = config.normalizeStructure
         ? normalizeSections(
             document.sections ?? [],
             this.textNormalizer,
-            config,
+            textOptions,
+            config.signal,
           )
         : [...(document.sections ?? [])];
 
+      throwIfAborted(config.signal);
+
       const tables = config.normalizeStructure
-        ? normalizeTables(document.tables ?? [], this.textNormalizer, config)
+        ? normalizeTables(
+            document.tables ?? [],
+            this.textNormalizer,
+            textOptions,
+            config.signal,
+          )
         : [...(document.tables ?? [])];
+
+      throwIfAborted(config.signal);
 
       const metadata = createDocumentMetadata({
         ...(document.metadata ?? {}),
@@ -120,9 +171,13 @@ export class DocumentNormalizer {
         wordCount: countWords(text),
       });
 
+      throwIfAborted(config.signal);
+
       return {
         identity: document.identity,
+
         type: document.type,
+
         text,
 
         paragraphs,
@@ -144,6 +199,7 @@ export class DocumentNormalizer {
 
       throw DocumentError.from(error, DocumentErrorCode.NORMALIZATION_FAILED, {
         documentId: document.identity.id,
+        stage: "normalization",
       });
     }
   }
@@ -152,71 +208,134 @@ export class DocumentNormalizer {
 function normalizeParagraphs(
   paragraphs: readonly DocumentParagraph[],
   normalizer: TextNormalizer,
-  options: DocumentNormalizationOptions,
+  options: TextNormalizationOptions,
+  signal?: AbortSignal,
 ): DocumentParagraph[] {
-  return paragraphs
-    .map((paragraph) => ({
+  const result: DocumentParagraph[] = [];
+
+  for (const paragraph of paragraphs) {
+    throwIfAborted(signal);
+
+    const text = normalizer.normalize(paragraph.text, options);
+
+    if (text.length === 0) {
+      continue;
+    }
+
+    result.push({
       ...paragraph,
-      text: normalizer.normalize(paragraph.text, options),
-    }))
-    .filter((paragraph) => paragraph.text.length > 0);
+      text,
+    });
+  }
+
+  return result;
 }
 
 function normalizeHeadings(
   headings: readonly DocumentHeading[],
   normalizer: TextNormalizer,
-  options: DocumentNormalizationOptions,
+  options: TextNormalizationOptions,
+  signal?: AbortSignal,
 ): DocumentHeading[] {
-  return headings
-    .map((heading) => ({
+  const result: DocumentHeading[] = [];
+
+  for (const heading of headings) {
+    throwIfAborted(signal);
+
+    const text = normalizer.normalize(heading.text, options);
+
+    if (text.length === 0) {
+      continue;
+    }
+
+    result.push({
       ...heading,
-      text: normalizer.normalize(heading.text, options),
+      text,
       level: clampHeadingLevel(heading.level),
-    }))
-    .filter((heading) => heading.text.length > 0);
+    });
+  }
+
+  return result;
 }
 
 function normalizeSections(
   sections: readonly DocumentSection[],
   normalizer: TextNormalizer,
-  options: DocumentNormalizationOptions,
+  options: TextNormalizationOptions,
+  signal?: AbortSignal,
 ): DocumentSection[] {
-  return sections
-    .map((section) => ({
-      ...section,
+  const result: DocumentSection[] = [];
 
-      title: section.title
-        ? normalizer.normalize(section.title, options)
-        : undefined,
+  for (const section of sections) {
+    throwIfAborted(signal);
 
-      paragraphs: normalizeParagraphs(section.paragraphs, normalizer, options),
+    const title = section.title
+      ? normalizer.normalize(section.title, options)
+      : undefined;
 
-      headings: normalizeHeadings(section.headings, normalizer, options),
-    }))
-    .filter((section) =>
-      Boolean(
-        section.title || section.paragraphs.length || section.headings.length,
-      ),
+    const paragraphs = normalizeParagraphs(
+      section.paragraphs,
+      normalizer,
+      options,
+      signal,
     );
+
+    const headings = normalizeHeadings(
+      section.headings,
+      normalizer,
+      options,
+      signal,
+    );
+
+    throwIfAborted(signal);
+
+    if (title || paragraphs.length > 0 || headings.length > 0) {
+      result.push({
+        ...section,
+        title,
+        paragraphs,
+        headings,
+      });
+    }
+  }
+
+  return result;
 }
 
 function normalizeTables(
   tables: readonly DocumentTable[],
   normalizer: TextNormalizer,
-  options: DocumentNormalizationOptions,
+  options: TextNormalizationOptions,
+  signal?: AbortSignal,
 ): DocumentTable[] {
-  return tables.map((table) => ({
-    ...table,
+  const result: DocumentTable[] = [];
 
-    headers: table.headers
+  for (const table of tables) {
+    throwIfAborted(signal);
+
+    const headers = table.headers
       ? table.headers.map((header) => normalizer.normalize(header, options))
-      : undefined,
+      : undefined;
 
-    cells: table.cells.map((cell) => ({
-      ...cell,
-      text: normalizer.normalize(cell.text, options),
-    })),
-  }));
+    const cells = [];
+
+    for (const cell of table.cells) {
+      throwIfAborted(signal);
+
+      cells.push({
+        ...cell,
+        text: normalizer.normalize(cell.text, options),
+      });
+    }
+
+    result.push({
+      ...table,
+      headers,
+      cells,
+    });
+  }
+
+  return result;
 }
 
 function clampHeadingLevel(level: number): number {
@@ -228,5 +347,20 @@ function clampHeadingLevel(level: number): number {
 }
 
 function countWords(text: string): number {
-  return text.trim() ? text.trim().split(/\s+/u).length : 0;
+  const normalized = text.trim();
+
+  return normalized ? normalized.split(/\s+/u).length : 0;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  throw DocumentError.aborted(
+    {
+      stage: "normalization",
+    },
+    signal.reason,
+  );
 }

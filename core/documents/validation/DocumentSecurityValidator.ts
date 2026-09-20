@@ -4,7 +4,10 @@
 // Performs security-oriented validation before a document reaches parsers.
 //
 // IMPORTANT:
-// Parsers must never be trusted simply because the file extension looks safe.
+// This class validates document INPUT metadata.
+// It is NOT a filesystem sandbox.
+//
+// Actual file access must be performed by a controlled file-access layer.
 // ============================================================================
 
 import { DocumentError, DocumentErrorCode } from "../DocumentError";
@@ -28,7 +31,7 @@ export class DocumentSecurityValidator {
 
     const warnings: string[] = [];
 
-    if (source.filename) {
+    if (source.filename !== undefined) {
       const filename = source.filename.trim();
 
       if (!filename) {
@@ -38,36 +41,27 @@ export class DocumentSecurityValidator {
         );
       }
 
-      /**
-       * Prevent obvious path traversal in filenames.
-       *
-       * Actual filesystem access must still be performed through
-       * a controlled storage/file-access layer.
-       */
-      if (filename.includes("..\\") || filename.includes("../")) {
+      this.validateFilename(filename);
+    }
+
+    if (source.path !== undefined) {
+      const path = source.path.trim();
+
+      if (!path) {
         throw new DocumentError(
           DocumentErrorCode.SECURITY_VALIDATION_FAILED,
-          "Path traversal sequences are not permitted in document filenames.",
-          {
-            filename,
-          },
+          "Document path cannot be empty.",
         );
       }
 
       /**
-       * Control characters are not useful in normal filenames.
+       * The security validator does not authorize arbitrary paths.
+       *
+       * A dedicated filesystem access layer must enforce allowed roots.
        */
-      for (const character of filename) {
-        if (character.charCodeAt(0) < 32) {
-          throw new DocumentError(
-            DocumentErrorCode.SECURITY_VALIDATION_FAILED,
-            "Document filename contains control characters.",
-            {
-              filename,
-            },
-          );
-        }
-      }
+      warnings.push(
+        "Filesystem access must be performed through the controlled file-access layer.",
+      );
     }
 
     if (source.data) {
@@ -78,9 +72,98 @@ export class DocumentSecurityValidator {
       }
     }
 
+    if (source.url) {
+      try {
+        const parsed = new URL(source.url);
+
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new DocumentError(
+            DocumentErrorCode.SECURITY_VALIDATION_FAILED,
+            "Only HTTP and HTTPS document URLs are supported.",
+            {
+              metadata: {
+                protocol: parsed.protocol,
+              },
+            },
+          );
+        }
+      } catch (error) {
+        if (error instanceof DocumentError) {
+          throw error;
+        }
+
+        throw new DocumentError(
+          DocumentErrorCode.SECURITY_VALIDATION_FAILED,
+          "Document URL is invalid.",
+          {
+            cause: error,
+          },
+          {
+            cause: error,
+          },
+        );
+      }
+    }
+
     return {
       safe: true,
       warnings,
     };
+  }
+
+  private validateFilename(filename: string): void {
+    /**
+     * Reject control characters.
+     */
+    for (const character of filename) {
+      const code = character.charCodeAt(0);
+
+      if (code < 32 || code === 127) {
+        throw new DocumentError(
+          DocumentErrorCode.SECURITY_VALIDATION_FAILED,
+          "Document filename contains control characters.",
+          {
+            filename,
+          },
+        );
+      }
+    }
+
+    /**
+     * Reject obvious traversal patterns.
+     */
+    const normalized = filename.replace(/\\/g, "/");
+
+    if (
+      normalized === ".." ||
+      normalized.startsWith("../") ||
+      normalized.includes("/../") ||
+      normalized.endsWith("/..")
+    ) {
+      throw new DocumentError(
+        DocumentErrorCode.SECURITY_VALIDATION_FAILED,
+        "Path traversal sequences are not permitted in document filenames.",
+        {
+          filename,
+        },
+      );
+    }
+
+    /**
+     * A filename is not allowed to become an absolute path.
+     */
+    if (
+      normalized.startsWith("/") ||
+      /^[A-Za-z]:\//u.test(normalized) ||
+      normalized.startsWith("//")
+    ) {
+      throw new DocumentError(
+        DocumentErrorCode.SECURITY_VALIDATION_FAILED,
+        "Absolute document paths are not permitted as filenames.",
+        {
+          filename,
+        },
+      );
+    }
   }
 }

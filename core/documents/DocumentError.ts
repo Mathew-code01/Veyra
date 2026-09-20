@@ -2,10 +2,15 @@
 // FILE: core/documents/DocumentError.ts
 // PURPOSE:
 // Canonical document-domain error representation.
+//
+// RULE:
+// Infrastructure/parser/library errors should be translated into
+// DocumentError before leaving the document subsystem.
 // ============================================================================
 
 export enum DocumentErrorCode {
   INVALID_INPUT = "DOCUMENT_INVALID_INPUT",
+
   FILE_NOT_FOUND = "DOCUMENT_FILE_NOT_FOUND",
   FILE_READ_FAILED = "DOCUMENT_FILE_READ_FAILED",
   FILE_TOO_LARGE = "DOCUMENT_FILE_TOO_LARGE",
@@ -35,13 +40,32 @@ export enum DocumentErrorCode {
 
 export interface DocumentErrorDetails {
   readonly documentId?: string;
+
   readonly filename?: string;
+
   readonly path?: string;
+
   readonly mimeType?: string;
+
   readonly documentType?: string;
+
   readonly stage?: string;
+
   readonly cause?: unknown;
+
   readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface SerializedDocumentError {
+  readonly name: string;
+
+  readonly code: DocumentErrorCode;
+
+  readonly message: string;
+
+  readonly details: DocumentErrorDetails;
+
+  readonly retryable: boolean;
 }
 
 /**
@@ -79,6 +103,9 @@ export class DocumentError extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 
+  /**
+   * Converts an unknown error into a canonical DocumentError.
+   */
   public static from(
     error: unknown,
     fallbackCode: DocumentErrorCode = DocumentErrorCode.INTERNAL_ERROR,
@@ -101,5 +128,58 @@ export class DocumentError extends Error {
         cause: error,
       },
     );
+  }
+
+  /**
+   * Creates a canonical document cancellation error.
+   */
+  public static aborted(
+    details: DocumentErrorDetails = {},
+    cause?: unknown,
+  ): DocumentError {
+    return new DocumentError(
+      DocumentErrorCode.ABORTED,
+      "Document processing was aborted.",
+      {
+        ...details,
+        cause,
+      },
+      {
+        cause,
+        retryable: false,
+      },
+    );
+  }
+
+  /**
+   * Determines whether an unknown value is a DocumentError.
+   */
+  public static is(error: unknown): error is DocumentError {
+    return error instanceof DocumentError;
+  }
+
+  /**
+   * Safe structured representation for logging/IPC/API boundaries.
+   *
+   * The original cause is deliberately not serialized because it can
+   * contain circular references, credentials, buffers, or implementation
+   * details from parser libraries.
+   */
+  public toJSON(): SerializedDocumentError {
+    return {
+      name: this.name,
+      code: this.code,
+      message: this.message,
+      details: {
+        documentId: this.details.documentId,
+        filename: this.details.filename,
+        path: this.details.path,
+        mimeType: this.details.mimeType,
+        documentType: this.details.documentType,
+        stage: this.details.stage,
+        metadata: this.details.metadata,
+      },
+      retryable: this.retryable,
+    };
   }
 }
