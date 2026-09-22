@@ -1,10 +1,71 @@
-// core/vision/index.ts
+// ============================================================================
+// FILE: core/vision/index.ts
+//
+// PURPOSE:
+// Public API for the Veyra Vision subsystem.
+//
+// Consumers should import Vision functionality from this module instead of
+// reaching into implementation files directly.
+// ============================================================================
 
+// ============================================================================
+// CONTRACTS
+// ============================================================================
 
-export * from "./CaptureEngine";
-export * from "./ImageProcessor";
-export * from "./OCRService";
-export * from "./VisionProvider";
-export * from "./ContentClassifier";
-export * from "./VisionAnalyzer";
-export * from "./ImageCompressor";
+export * from "./contracts/VisionTypes";
+
+export * from "./contracts/VisionRequest";
+
+export * from "./contracts/VisionResult";
+
+// ============================================================================
+// ERRORS
+// ============================================================================
+
+export * from "./errors/VisionError";
+
+// ============================================================================
+// CAPTURE
+// ============================================================================
+
+export * from "./capture/CaptureEngine";
+
+// ============================================================================
+// IMAGE PROCESSING
+// ============================================================================
+
+export * from "./processing/ImageProcessor";
+
+export * from "./processing/ImageCompressor";
+
+// ============================================================================
+// OCR
+// ============================================================================
+
+export * from "./ocr/OCRService";
+
+export * from "./ocr/OCRTypes";
+
+// ============================================================================
+// CLASSIFICATION
+// ============================================================================
+
+export * from "./classification/ContentClassifier";
+
+// ============================================================================
+// PROVIDERS
+// ============================================================================
+
+export * from "./providers/VisionProvider";
+
+// ============================================================================
+// ANALYSIS
+// ============================================================================
+
+export * from "./analysis/VisionAnalyzer";
+
+// ============================================================================
+// PIPELINE
+// ============================================================================
+
+export * from "./pipeline/VisionPipeline";
