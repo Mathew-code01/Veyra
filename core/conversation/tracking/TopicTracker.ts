@@ -1,99 +1,129 @@
-// core/conversation/TopicTracker.ts
-
 import type {
   ConversationTurn,
   TopicAnalysis,
-} from "../../shared/types/conversation";
+} from "../../../shared/types/conversation";
 
-const TOPIC_RULES: Array<{
-  topic: string;
-  keywords: string[];
-}> = [
-  {
-    topic: "resume",
-    keywords: ["resume", "cv", "background", "experience", "career"],
-  },
-  {
-    topic: "leadership",
-    keywords: ["lead", "leadership", "team", "manager", "mentor"],
-  },
-  {
-    topic: "react",
-    keywords: ["react", "component", "hooks", "jsx", "frontend"],
-  },
-  {
-    topic: "backend",
-    keywords: ["backend", "node", "express", "server", "api"],
-  },
-  {
-    topic: "database",
-    keywords: ["database", "postgres", "mongodb", "sql", "query"],
-  },
-  {
-    topic: "system-design",
-    keywords: [
-      "architecture",
-      "scale",
-      "distributed",
-      "cache",
-      "queue",
-      "load balancer",
-    ],
-  },
-  {
-    topic: "coding",
-    keywords: [
-      "algorithm",
-      "function",
-      "array",
-      "tree",
-      "graph",
-      "complexity",
-      "code",
-    ],
-  },
-  {
-    topic: "product",
-    keywords: ["product", "user", "metric", "feature", "roadmap"],
-  },
-];
+const STOP_WORDS = new Set([
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "but",
+  "to",
+  "of",
+  "in",
+  "on",
+  "for",
+  "with",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "this",
+  "that",
+  "it",
+  "i",
+  "you",
+  "we",
+  "they",
+  "he",
+  "she",
+  "my",
+  "your",
+  "our",
+  "their",
+  "what",
+  "why",
+  "how",
+  "when",
+  "where",
+  "who",
+]);
 
 export class TopicTracker {
   track(current: ConversationTurn, previous?: TopicAnalysis): TopicAnalysis {
-    const text = current.text.toLowerCase();
+    const keywords = this.extractKeywords(current.text);
 
-    const candidates = TOPIC_RULES.map((rule) => {
-      const matched = rule.keywords.filter((keyword) => text.includes(keyword));
-
-      return {
-        ...rule,
-        matched,
-        score: matched.length / Math.max(rule.keywords.length, 1),
-      };
-    })
-      .filter((item) => item.matched.length > 0)
-      .sort((a, b) => b.score - a.score);
-
-    if (candidates.length === 0) {
+    if (keywords.length === 0) {
       return {
         topic: previous?.topic ?? "general",
-        confidence: previous ? Math.max(0.35, previous.confidence * 0.85) : 0.3,
+        confidence: previous ? Math.max(0.3, previous.confidence * 0.85) : 0.3,
         changeType: "none",
         previousTopic: previous?.topic,
         keywords: [],
       };
     }
 
-    const best = candidates[0];
+    const topic = this.buildTopic(keywords);
 
-    const topicChanged = Boolean(previous) && previous?.topic !== best.topic;
+    const previousTopic = previous?.topic;
+
+    if (!previousTopic) {
+      return {
+        topic,
+        confidence: 0.55,
+        changeType: "new_topic",
+        keywords,
+      };
+    }
+
+    if (previousTopic === topic) {
+      return {
+        topic,
+        confidence: Math.min(0.95, previous.confidence + 0.05),
+        changeType: "none",
+        previousTopic,
+        keywords,
+      };
+    }
+
+    const related = this.isRelated(previousTopic, keywords);
 
     return {
-      topic: best.topic,
-      confidence: Math.min(0.98, 0.55 + best.matched.length * 0.1),
-      changeType: topicChanged ? "new_topic" : "none",
-      previousTopic: previous?.topic,
-      keywords: best.matched,
+      topic,
+      confidence: related ? 0.65 : 0.78,
+      changeType: related ? "subtopic" : "new_topic",
+      previousTopic,
+      keywords,
     };
+  }
+
+  private extractKeywords(text: string): string[] {
+    const tokens = text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+
+    const frequency = new Map<string, number>();
+
+    for (const token of tokens) {
+      if (token.length < 3 || STOP_WORDS.has(token)) {
+        continue;
+      }
+
+      frequency.set(token, (frequency.get(token) ?? 0) + 1);
+    }
+
+    return [...frequency.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([token]) => token);
+  }
+
+  private buildTopic(keywords: readonly string[]): string {
+    return keywords.slice(0, 3).join("-");
+  }
+
+  private isRelated(
+    previousTopic: string,
+    keywords: readonly string[],
+  ): boolean {
+    const previousTokens = new Set(previousTopic.split("-"));
+
+    return keywords.some((keyword) => previousTokens.has(keyword));
   }
 }

@@ -1,8 +1,6 @@
-// core/conversation/QuestionDetector.ts
+import type { QuestionAnalysis } from "../../../shared/types/conversation";
 
-import type { QuestionAnalysis } from "../../shared/types/conversation";
-
-const QUESTION_STARTERS = [
+const QUESTION_STARTERS = new Set([
   "what",
   "why",
   "how",
@@ -21,17 +19,13 @@ const QUESTION_STARTERS = [
   "has",
   "are",
   "is",
-  "tell me",
-  "describe",
-  "walk me through",
-  "explain",
-];
+]);
 
-const QUESTION_PATTERNS = [
+const QUESTION_PATTERNS: readonly RegExp[] = [
   /\bcan you\b/i,
   /\bcould you\b/i,
   /\bwould you\b/i,
-  /\btell me about\b/i,
+  /\btell me\b/i,
   /\bwalk me through\b/i,
   /\bdescribe\b/i,
   /\bexplain\b/i,
@@ -49,9 +43,9 @@ const QUESTION_PATTERNS = [
 
 export class QuestionDetector {
   detect(text: string): QuestionAnalysis {
-    const normalized = this.normalize(text);
+    const normalizedText = text.replace(/\s+/g, " ").trim();
 
-    if (!normalized) {
+    if (!normalizedText) {
       return {
         isQuestion: false,
         type: "unknown",
@@ -63,17 +57,16 @@ export class QuestionDetector {
       };
     }
 
-    const explicitQuestionMark = /[?؟]\s*$/.test(text.trim());
+    const lower = normalizedText.toLowerCase();
 
-    const firstWord = normalized.split(/\s+/)[0];
+    const explicitQuestionMark = /[?؟]\s*$/.test(normalizedText);
 
-    const starterMatch = QUESTION_STARTERS.some(
-      (starter) =>
-        normalized === starter || normalized.startsWith(`${starter} `),
-    );
+    const firstWord = lower.split(/\s+/)[0];
+
+    const starterMatch = QUESTION_STARTERS.has(firstWord);
 
     const patternMatches = QUESTION_PATTERNS.filter((pattern) =>
-      pattern.test(normalized),
+      pattern.test(lower),
     );
 
     const signals: string[] = [];
@@ -97,12 +90,12 @@ export class QuestionDetector {
       firstWord,
     });
 
-    const isQuestion = confidence >= 0.55 && normalized.length >= 3;
+    const isQuestion = normalizedText.length >= 3 && confidence >= 0.55;
 
     return {
       isQuestion,
-      type: isQuestion ? "general" : "unknown",
-      normalizedText: normalized,
+      type: isQuestion ? "unknown" : "unknown",
+      normalizedText,
       confidence,
       requiresCandidateAnswer: isQuestion,
       explicitQuestionMark,
@@ -111,15 +104,21 @@ export class QuestionDetector {
   }
 
   private calculateConfidence(input: {
-    explicitQuestionMark: boolean;
-    starterMatch: boolean;
-    patternCount: number;
-    firstWord: string;
+    readonly explicitQuestionMark: boolean;
+    readonly starterMatch: boolean;
+    readonly patternCount: number;
+    readonly firstWord: string;
   }): number {
     let score = 0;
 
-    if (input.explicitQuestionMark) score += 0.45;
-    if (input.starterMatch) score += 0.3;
+    if (input.explicitQuestionMark) {
+      score += 0.45;
+    }
+
+    if (input.starterMatch) {
+      score += 0.3;
+    }
+
     if (input.patternCount > 0) {
       score += Math.min(0.35, input.patternCount * 0.15);
     }
@@ -131,9 +130,5 @@ export class QuestionDetector {
     }
 
     return Math.min(1, score);
-  }
-
-  private normalize(text: string): string {
-    return text.replace(/\s+/g, " ").trim().toLowerCase();
   }
 }
