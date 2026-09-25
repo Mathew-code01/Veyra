@@ -1,7 +1,11 @@
 // shared/constants/interviewTypes.ts
 
 /**
- * Supported interview types.
+ * High-level interview/task categories supported by Veyra.
+ *
+ * These describe the nature of the interview task.
+ *
+ * They do NOT describe conversational behavior.
  */
 export const INTERVIEW_TYPES = Object.freeze([
   "behavioral",
@@ -11,15 +15,16 @@ export const INTERVIEW_TYPES = Object.freeze([
   "product",
   "case",
   "communication",
+  "experience",
+  "motivation",
+  "situational",
+  "general",
   "mixed",
   "unknown",
 ] as const);
 
 export type InterviewType = (typeof INTERVIEW_TYPES)[number];
 
-/**
- * Human-readable labels.
- */
 export const INTERVIEW_TYPE_LABELS: Readonly<Record<InterviewType, string>> =
   Object.freeze({
     behavioral: "Behavioral",
@@ -29,43 +34,54 @@ export const INTERVIEW_TYPE_LABELS: Readonly<Record<InterviewType, string>> =
     product: "Product",
     case: "Case",
     communication: "Communication",
+    experience: "Experience",
+    motivation: "Motivation",
+    situational: "Situational",
+    general: "General",
     mixed: "Mixed",
     unknown: "Unknown",
   });
 
-/**
- * Product-facing descriptions.
- */
 export const INTERVIEW_TYPE_DESCRIPTIONS: Readonly<
   Record<InterviewType, string>
 > = Object.freeze({
   behavioral:
-    "Questions about experience, behavior, achievements and past situations.",
+    "Questions about past experiences, behavior, achievements, challenges and situations.",
 
   technical:
-    "Questions about technical concepts, implementation and engineering decisions.",
+    "Questions about technical concepts, engineering decisions, implementation and technical reasoning.",
 
   coding:
-    "Programming, algorithms, data structures and implementation problems.",
+    "Programming, algorithms, data structures, debugging and implementation tasks.",
 
   "system-design":
-    "Architecture, scalability, reliability, APIs, databases and distributed systems.",
+    "Architecture, scalability, reliability, APIs, data systems and distributed-system decisions.",
 
-  product: "Product thinking, users, metrics, prioritization and trade-offs.",
+  product:
+    "Users, product decisions, metrics, prioritization, experimentation and trade-offs.",
 
-  case: "Structured problem solving, assumptions, analysis and recommendations.",
+  case: "Structured problem solving, assumptions, analysis, quantitative or qualitative reasoning and recommendations.",
 
   communication:
-    "Communication, collaboration, explanation and interpersonal scenarios.",
+    "Communication, explanation, collaboration, stakeholder interaction and interpersonal scenarios.",
 
-  mixed: "A session containing multiple interview styles.",
+  experience:
+    "Questions about the candidate's background, work history, projects, responsibilities and achievements.",
 
-  unknown: "Interview type has not yet been determined.",
+  motivation:
+    "Questions about goals, interests, career motivations, role motivations and company motivations.",
+
+  situational:
+    "Hypothetical or scenario-based questions requiring judgment or decision-making.",
+
+  general:
+    "General interview questions that do not fit a more specific category.",
+
+  mixed: "A conversation containing multiple interview or task categories.",
+
+  unknown: "The interview or task category has not yet been determined.",
 });
 
-/**
- * Runtime validation helper.
- */
 export function isInterviewType(value: unknown): value is InterviewType {
   return (
     typeof value === "string" &&

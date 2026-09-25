@@ -1,14 +1,25 @@
-// shared/types/conversation.ts
-
 import type { ISODateString, UUID } from "./common";
 
 /**
- * Speaker participating in an interview conversation.
+ * Participant in a conversation.
+ *
+ * Conversation does not assume this is an interview.
+ * The same representation can be used for:
+ *
+ * - interviews
+ * - meetings
+ * - calls
+ * - coaching
+ * - presentations
+ * - general conversations
  */
 export type SpeakerRole = "interviewer" | "candidate" | "unknown";
 
 /**
  * High-level conversational intent.
+ *
+ * This describes what a participant is doing conversationally.
+ * It does NOT describe the interview category.
  */
 export type ConversationIntent =
   | "question"
@@ -23,39 +34,38 @@ export type ConversationIntent =
   | "unknown";
 
 /**
- * Interview question category.
+ * Conversational form of a question.
+ *
+ * This deliberately does NOT contain:
+ *
+ * - behavioral
+ * - coding
+ * - technical
+ * - system_design
+ * - product
+ *
+ * Those belong to core/interview.
  */
-export type QuestionType =
-  | "behavioral"
-  | "technical"
-  | "coding"
-  | "system_design"
-  | "product"
-  | "case"
-  | "communication"
-  | "experience"
-  | "motivation"
-  | "situational"
-  | "general"
+export type ConversationQuestionType =
+  | "open_ended"
+  | "yes_no"
+  | "choice"
+  | "request"
+  | "confirmation"
+  | "clarification"
   | "unknown";
 
 /**
- * Topic transition type.
+ * Topic transition.
  */
 export type TopicChangeType = "new_topic" | "subtopic" | "return" | "none";
 
 /**
- * Canonical conversational transcript segment.
+ * Canonical transcript segment shared across Veyra.
  *
- * This is the shared/domain representation used by:
- *
- * client
- * desktop
- * server
- * core
- *
- * The audio subsystem uses AudioTranscriptSegment because its
- * representation is intentionally pipeline-specific.
+ * Audio may produce a richer internal representation,
+ * but this is the cross-domain representation used when
+ * conversation processing begins.
  */
 export interface TranscriptSegment {
   readonly id: UUID;
@@ -78,7 +88,7 @@ export interface TranscriptSegment {
 }
 
 /**
- * A logical conversational turn.
+ * Logical conversational turn.
  */
 export interface ConversationTurn {
   readonly id: UUID;
@@ -101,12 +111,12 @@ export interface ConversationTurn {
 }
 
 /**
- * Question analysis.
+ * Conversational question analysis.
  */
 export interface QuestionAnalysis {
   readonly isQuestion: boolean;
 
-  readonly type: QuestionType;
+  readonly type: ConversationQuestionType;
 
   readonly normalizedText: string;
 
@@ -120,7 +130,8 @@ export interface QuestionAnalysis {
 }
 
 /**
- * Follow-up relationship analysis.
+ * Relationship between the current question and
+ * a previous conversational question.
  */
 export interface FollowUpAnalysis {
   readonly isFollowUp: boolean;
@@ -134,7 +145,7 @@ export interface FollowUpAnalysis {
 }
 
 /**
- * Question repetition analysis.
+ * Repetition analysis.
  */
 export interface RepetitionAnalysis {
   readonly isRepeated: boolean;
@@ -184,12 +195,12 @@ export interface IntentAnalysis {
 }
 
 /**
- * Complete conversation analysis result.
+ * Complete analysis of one conversational event.
  */
 export interface ConversationAnalysis {
   readonly turn: ConversationTurn;
 
-  readonly question?: QuestionAnalysis;
+  readonly question: QuestionAnalysis;
 
   readonly followUp: FollowUpAnalysis;
 
@@ -205,7 +216,7 @@ export interface ConversationAnalysis {
 }
 
 /**
- * Serializable conversation-memory snapshot.
+ * Serializable conversation state.
  */
 export interface ConversationMemorySnapshot {
   readonly turns: readonly ConversationTurn[];
