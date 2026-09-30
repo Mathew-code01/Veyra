@@ -3,16 +3,53 @@
 // PURPOSE:
 // Canonical AI-layer error representation.
 //
-// IMPORTANT:
-// AIError uses the shared ErrorCode vocabulary from:
-//   core/errors/ErrorCode.ts
+// Error codes come from the shared contract:
 //
-// AIErrorDetails contains structured diagnostic metadata used by AIManager,
-// LocalModelProvider, CloudAIProvider, AIRouter, AIExecutionPlan,
-// AIExecutionStrategy, and other AI-layer components.
+//   shared/constants/errorCodes.ts
+//
+// AIError itself remains in core because it contains execution behaviour.
 // ============================================================================
 
-import { defaultErrorRetryable, type ErrorCode } from "../errors/ErrorCode";
+import { ERROR_CODES, type ErrorCode } from "../../shared/constants/errorCodes";
+
+// ============================================================================
+// RETRY DEFAULTS
+// ============================================================================
+
+function defaultErrorRetryable(code: ErrorCode): boolean {
+  switch (code) {
+    case ERROR_CODES.RATE_LIMITED:
+    case ERROR_CODES.QUOTA_EXCEEDED:
+    case ERROR_CODES.TIMEOUT:
+    case ERROR_CODES.NETWORK_ERROR:
+    case ERROR_CODES.SERVICE_UNAVAILABLE:
+    case ERROR_CODES.AI_PROVIDER_UNAVAILABLE:
+    case ERROR_CODES.AI_PROVIDER_TIMEOUT:
+    case ERROR_CODES.AI_PROVIDER_RATE_LIMITED:
+      return true;
+
+    case ERROR_CODES.CANCELLED:
+    case ERROR_CODES.ABORTED:
+    case ERROR_CODES.INVALID_REQUEST:
+    case ERROR_CODES.INVALID_RESPONSE:
+    case ERROR_CODES.INVALID_STATE:
+    case ERROR_CODES.UNAUTHORIZED:
+    case ERROR_CODES.FORBIDDEN:
+    case ERROR_CODES.NOT_FOUND:
+    case ERROR_CODES.PROVIDER:
+    case ERROR_CODES.UNAVAILABLE:
+    case ERROR_CODES.UNSUPPORTED:
+    case ERROR_CODES.CONFIGURATION:
+    case ERROR_CODES.MODEL_NOT_FOUND:
+    case ERROR_CODES.MODEL_NOT_INSTALLED:
+    case ERROR_CODES.MODEL_UNSUPPORTED:
+    case ERROR_CODES.MODEL_NOT_LOADED:
+      return false;
+
+    default:
+      return false;
+  }
+}
 
 // ============================================================================
 // ERROR CODE
@@ -20,8 +57,6 @@ import { defaultErrorRetryable, type ErrorCode } from "../errors/ErrorCode";
 
 /**
  * Backwards-compatible AI-layer alias.
- *
- * ErrorCode.ts remains the single source of truth.
  */
 export type AIErrorCode = ErrorCode;
 
@@ -31,21 +66,12 @@ export type AIErrorCode = ErrorCode;
 
 export interface AIErrorDetails {
   /**
-   * HTTP/status-like code when one exists.
-   *
-   * Local model/runtime errors may not have a status.
+   * HTTP/status-like code when available.
    */
   readonly status?: number;
 
   /**
    * Provider that produced the error.
-   *
-   * Examples:
-   *   gemini
-   *   groq
-   *   mistral
-   *   cloud:gemini
-   *   local
    */
   readonly provider?: string;
 
@@ -56,38 +82,26 @@ export interface AIErrorDetails {
 
   /**
    * Runtime involved in the failure.
-   *
-   * Examples:
-   *   llama_cpp
-   *   cloud
-   *   local
    */
   readonly runtime?: string;
 
   /**
-   * Runtime that the caller expected.
-   *
-   * Diagnostic metadata used by AIManager when a registered provider
-   * is not the expected Veyra provider implementation.
+   * Runtime expected by the caller.
    */
   readonly expectedRuntime?: "local" | "cloud";
 
   /**
-   * Optional provider/server-supplied retry delay.
+   * Provider/server retry delay.
    */
   readonly retryAfterMs?: number;
 
   /**
    * Original underlying error.
-   *
-   * Kept in structured diagnostics for application-level inspection.
    */
   readonly cause?: unknown;
 
   /**
-   * Additional structured diagnostic information.
-   *
-   * Nested execution/routing diagnostics belong here.
+   * Additional structured diagnostics.
    */
   readonly details?: Readonly<Record<string, unknown>>;
 }
@@ -97,19 +111,10 @@ export interface AIErrorDetails {
 // ============================================================================
 
 export class AIError extends Error {
-  /**
-   * Canonical Veyra error code.
-   */
   public readonly code: AIErrorCode;
 
-  /**
-   * Whether the operation may reasonably be retried.
-   */
   public readonly retryable: boolean;
 
-  /**
-   * Structured diagnostic information.
-   */
   public readonly details: AIErrorDetails;
 
   public constructor(
@@ -117,20 +122,19 @@ export class AIError extends Error {
     code: AIErrorCode,
     options: {
       readonly retryable?: boolean;
+
       readonly details?: AIErrorDetails;
+
       readonly cause?: unknown;
     } = {},
   ) {
-    /**
-     * Preserve the native Error.cause property where the runtime supports
-     * the standard ErrorOptions constructor.
-     *
-     * We intentionally avoid relying on it for application diagnostics;
-     * `details.cause` remains available as the Veyra-specific representation.
-     */
     super(
       message,
-      options.cause !== undefined ? { cause: options.cause } : undefined,
+      options.cause !== undefined
+        ? {
+            cause: options.cause,
+          }
+        : undefined,
     );
 
     this.name = "AIError";
@@ -141,6 +145,7 @@ export class AIError extends Error {
 
     this.details = Object.freeze({
       ...(options.details ?? {}),
+
       ...(options.cause !== undefined
         ? {
             cause: options.cause,
@@ -148,10 +153,6 @@ export class AIError extends Error {
         : {}),
     });
 
-    /**
-     * Required for reliable instanceof AIError behaviour when targeting
-     * environments/transpilation modes where Error subclassing needs it.
-     */
     Object.setPrototypeOf(this, new.target.prototype);
   }
 
@@ -159,9 +160,6 @@ export class AIError extends Error {
   // UNKNOWN ERROR NORMALIZATION
   // ==========================================================================
 
-  /**
-   * Normalize arbitrary thrown values into the canonical AIError type.
-   */
   public static fromUnknown(error: unknown, details?: AIErrorDetails): AIError {
     if (error instanceof AIError) {
       if (!details) {
@@ -170,14 +168,17 @@ export class AIError extends Error {
 
       return new AIError(error.message, error.code, {
         retryable: error.retryable,
+
         details: {
           ...error.details,
           ...details,
+
           details: {
             ...(error.details.details ?? {}),
             ...(details.details ?? {}),
           },
         },
+
         cause: error.details.cause ?? error.cause,
       });
     }
@@ -187,17 +188,21 @@ export class AIError extends Error {
       error instanceof DOMException &&
       error.name === "AbortError"
     ) {
-      return new AIError("AI request was aborted.", "ABORTED", {
+      return new AIError("AI request was aborted.", ERROR_CODES.ABORTED, {
         retryable: false,
+
         details,
+
         cause: error,
       });
     }
 
     if (error instanceof Error && error.name === "AbortError") {
-      return new AIError("AI request was aborted.", "ABORTED", {
+      return new AIError("AI request was aborted.", ERROR_CODES.ABORTED, {
         retryable: false,
+
         details,
+
         cause: error,
       });
     }
@@ -205,18 +210,22 @@ export class AIError extends Error {
     if (error instanceof Error) {
       return new AIError(
         error.message || "Unknown AI provider error.",
-        "UNKNOWN",
+        ERROR_CODES.UNKNOWN,
         {
           retryable: false,
+
           details,
+
           cause: error,
         },
       );
     }
 
-    return new AIError("Unknown AI provider error.", "UNKNOWN", {
+    return new AIError("Unknown AI provider error.", ERROR_CODES.UNKNOWN, {
       retryable: false,
+
       details,
+
       cause: error,
     });
   }
@@ -228,7 +237,7 @@ export class AIError extends Error {
   public static modelNotFound(model: string): AIError {
     return new AIError(
       `Local model "${model}" was not found in the Veyra model registry.`,
-      "MODEL_NOT_FOUND",
+      ERROR_CODES.MODEL_NOT_FOUND,
       {
         details: {
           model,
@@ -241,7 +250,7 @@ export class AIError extends Error {
   public static modelNotInstalled(model: string): AIError {
     return new AIError(
       `Local model "${model}" is not installed.`,
-      "MODEL_NOT_INSTALLED",
+      ERROR_CODES.MODEL_NOT_INSTALLED,
       {
         details: {
           model,
@@ -254,7 +263,7 @@ export class AIError extends Error {
   public static modelUnsupported(model: string): AIError {
     return new AIError(
       `Local model "${model}" is not supported by the available Veyra runtimes.`,
-      "MODEL_UNSUPPORTED",
+      ERROR_CODES.MODEL_UNSUPPORTED,
       {
         details: {
           model,
@@ -267,7 +276,7 @@ export class AIError extends Error {
   public static modelNotLoaded(model: string): AIError {
     return new AIError(
       `Local model "${model}" is not currently loaded.`,
-      "MODEL_NOT_LOADED",
+      ERROR_CODES.MODEL_NOT_LOADED,
       {
         details: {
           model,
