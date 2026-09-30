@@ -1,106 +1,43 @@
-// core/ai/AIRequest.ts
+// ============================================================================
+// FILE: core/ai/AIRequest.ts
+// PURPOSE:
+// Core AI request compatibility layer.
+//
+// The canonical request contract lives in:
+//   shared/types/ai.ts
+//
+// core/ai re-exports it so existing execution imports continue to work.
+//
+// This file intentionally contains no duplicate request interface.
+// ============================================================================
 
-export type AIMessageRole = "system" | "user" | "assistant";
+export type {
+  AIMessage,
+  AIMessageRole,
+  AIRequest,
+  AIRequestOptions,
+  AIVisionInput,
+  AIResponseFormat,
+} from "../../shared/types/ai";
 
-export interface AIMessage {
-  readonly role: AIMessageRole;
-  readonly content: string;
-}
-
-/**
- * Optional multimodal input attached to an AI request.
- *
- * The model provider decides whether the selected model/runtime
- * can actually process the supplied image.
- */
-export interface AIVisionInput {
-  /**
-   * Local image path.
-   *
-   * Example:
-   * C:\Users\MATTHEW\Pictures\screenshot.png
-   */
-  readonly imagePath?: string;
-
-  /**
-   * Base64/data URL representation of an image.
-   *
-   * Example:
-   * data:image/png;base64,...
-   */
-  readonly imageDataUrl?: string;
-
-  /**
-   * Optional MIME type when imagePath is supplied.
-   */
-  readonly imageMimeType?: string;
-}
-
-export interface AIRequestOptions {
-  readonly temperature?: number;
-
-  readonly maxTokens?: number;
-
-  readonly topP?: number;
-
-  readonly topK?: number;
-
-  readonly stopSequences?: readonly string[];
-
-  readonly responseFormat?: "text" | "json";
-
-  readonly metadata?: Readonly<Record<string, string | number | boolean>>;
-}
-
-export interface AIRequest {
-  /**
-   * Stable identifier for the request.
-   */
-  readonly requestId: string;
-
-  /**
-   * Optional explicit model ID.
-   *
-   * Example:
-   * qwen3-0.6b-q4
-   */
-  readonly model?: string;
-
-  /**
-   * Ordered conversation messages.
-   */
-  readonly messages: readonly AIMessage[];
-
-  /**
-   * Optional generation settings.
-   */
-  readonly options?: AIRequestOptions;
-
-  /**
-   * Optional multimodal input.
-   */
-  readonly vision?: AIVisionInput;
-
-  /**
-   * Abort signal owned by the caller.
-   */
-  readonly signal?: AbortSignal;
-
-  /**
-   * Optional request timeout.
-   */
-  readonly timeoutMs?: number;
-}
+import type { AIMessage, AIRequest } from "../../shared/types/ai";
 
 /**
  * Create a new AI request.
+ *
+ * This helper remains in core/ai for backwards compatibility.
  */
 export function createAIRequest(
   messages: readonly AIMessage[],
   options: Omit<AIRequest, "requestId" | "messages"> = {},
 ): AIRequest {
+  const requestId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
   return Object.freeze({
-    requestId: crypto.randomUUID(),
+    requestId,
     messages: Object.freeze([...messages]),
     ...options,
   });
