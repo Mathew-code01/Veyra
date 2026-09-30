@@ -182,11 +182,17 @@ export class LocalModelProvider implements AIProvider {
   public readonly name: string;
 
   public readonly capabilities = Object.freeze({
+    text: true,
+
     streaming: true,
 
     vision: true,
 
+    embeddings: false,
+
     structuredOutput: true,
+
+    toolCalling: false,
 
     local: true,
   });
