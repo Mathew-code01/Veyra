@@ -1,68 +1,96 @@
-// core/ai/AIProvider.ts
+// ============================================================================
+// FILE: core/ai/AIProvider.ts
+// PURPOSE:
+// Core execution provider interface.
+//
+// Shared AI types are imported from:
+//   shared/types/ai.ts
+//
+// This file owns the execution-facing provider interface because provider
+// implementations are a core concern.
+// ============================================================================
 
-import type { AIRequest } from "./AIRequest";
-import type { AIResponse, AIStreamChunk } from "./AIResponse";
+import type {
+  AIProviderCapabilities as SharedAIProviderCapabilities,
+  AIProviderHealth as SharedAIProviderHealth,
+  AIRequest,
+  AIResponse,
+  AIStreamChunk,
+} from "../../shared/types/ai";
+
+// ============================================================================
+// STATUS
+// ============================================================================
 
 export type AIProviderStatus =
   "healthy" | "degraded" | "unavailable" | "unknown";
 
-export interface AIProviderCapabilities {
-  /**
-   * Provider can stream generated tokens.
-   */
-  readonly streaming: boolean;
+// ============================================================================
+// CAPABILITIES
+// ============================================================================
 
+/**
+ * Core capability contract.
+ *
+ * It extends the shared capability model while preserving the shape already
+ * consumed by LocalModelProvider, CloudAIProvider, AIManager and routing.
+ */
+export interface AIProviderCapabilities extends SharedAIProviderCapabilities {
   /**
-   * Provider can process images.
-   */
-  readonly vision: boolean;
-
-  /**
-   * Provider supports structured output.
+   * Whether the provider supports structured output.
    */
   readonly structuredOutput: boolean;
 
   /**
-   * Provider executes locally on the user's machine.
+   * Whether the provider supports tool/function calling.
+   */
+  readonly toolCalling: boolean;
+
+  /**
+   * Whether the provider executes locally.
    */
   readonly local: boolean;
 }
 
-export interface AIProviderHealth {
-  readonly provider: string;
+// ============================================================================
+// HEALTH
+// ============================================================================
 
+export interface AIProviderHealth extends SharedAIProviderHealth {
   readonly status: AIProviderStatus;
-
-  readonly latencyMs?: number;
-
-  readonly checkedAt: number;
-
-  readonly error?: string;
-
-  /**
-   * Currently loaded model, when applicable.
-   */
-  readonly model?: string;
-
-  /**
-   * Runtime name, when applicable.
-   */
-  readonly runtime?: string;
-
-  /**
-   * Additional diagnostics.
-   */
-  readonly details?: Readonly<Record<string, unknown>>;
 }
 
+// ============================================================================
+// PROVIDER
+// ============================================================================
+
 export interface AIProvider {
+  /**
+   * Runtime/provider identifier.
+   *
+   * Examples:
+   *
+   * local
+   * cloud:gemini
+   * cloud:groq
+   * cloud:mistral
+   */
   readonly name: string;
 
   readonly capabilities: AIProviderCapabilities;
 
+  /**
+   * Non-streaming generation.
+   */
   generate(request: AIRequest): Promise<AIResponse>;
 
+  /**
+   * Streaming generation.
+   */
   stream(request: AIRequest): AsyncIterable<AIStreamChunk>;
 
+  /**
+   * Provider/runtime health.
+   */
   healthCheck(signal?: AbortSignal): Promise<AIProviderHealth>;
 }
