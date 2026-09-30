@@ -1,4 +1,10 @@
-// core/ai/AIStream.ts
+// ============================================================================
+// FILE: core/ai/AIStream.ts
+// PURPOSE:
+// In-memory AI stream accumulator.
+//
+// This is core execution state and therefore does not belong in shared/.
+// ============================================================================
 
 import type { AIStreamChunk } from "./AIResponse";
 
