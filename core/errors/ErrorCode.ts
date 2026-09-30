@@ -1,207 +1,121 @@
 // ============================================================================
 // FILE: core/errors/ErrorCode.ts
 // PURPOSE:
-// Canonical error-code vocabulary shared by every Veyra execution layer.
+// Core compatibility layer for the canonical shared error vocabulary.
 //
 // ARCHITECTURE:
-// - core/ai uses these codes for local and generic AI failures.
-// - core/cloud uses these codes for cloud transport/provider failures.
-// - adapters such as CloudAIProvider preserve the same code when translating
-//   errors between layers.
+//
+//   shared/constants/errorCodes.ts
+//              │
+//              ├── ERROR_CODES
+//              ├── ErrorCode
+//              ├── ErrorSeverity
+//              └── ErrorDetails
+//                       │
+//                       ▼
+//              core/errors/ErrorCode.ts
 //
 // IMPORTANT:
-// There must be ONE canonical spelling for semantically identical errors.
 //
-// Examples:
-//   RATE_LIMITED  -> RATE_LIMIT
-//   BAD_REQUEST   -> INVALID_REQUEST
-//   SERVER        -> UNAVAILABLE
+// There must be ONE canonical error-code vocabulary across Veyra.
 //
-// This file intentionally contains no dependency on AI, cloud, Electron,
-// HTTP clients, providers, or runtimes.
+// This file intentionally does NOT define another ErrorCode union.
+//
+// The canonical source is:
+//
+//   shared/constants/errorCodes.ts
+//
+// Core execution behaviour such as retry policy may remain here.
 // ============================================================================
 
-export type ErrorCode =
-  // --------------------------------------------------------------------------
-  // REQUEST / ACCESS
-  // --------------------------------------------------------------------------
+export {
+  ERROR_CODES,
+  type ErrorCode,
+  type ErrorSeverity,
+  type ErrorDetails,
+} from "../../shared/constants/errorCodes";
 
-  /**
-   * The request is malformed, invalid, or cannot be accepted.
-   *
-   * Cloud:
-   *   HTTP 400 / 422
-   *
-   * Local:
-   *   Invalid AI/runtime request parameters.
-   */
-  | "INVALID_REQUEST"
+import { ERROR_CODES, type ErrorCode } from "../../shared/constants/errorCodes";
 
-  /**
-   * Credentials are missing, invalid, expired, or rejected.
-   */
-  | "AUTHENTICATION"
-
-  /**
-   * Credentials are valid but do not have permission for the operation.
-   */
-  | "AUTHORIZATION"
-
-  // --------------------------------------------------------------------------
-  // RATE / QUOTA
-  // --------------------------------------------------------------------------
-
-  /**
-   * The caller is temporarily sending requests too quickly.
-   *
-   * This is the canonical replacement for:
-   *   RATE_LIMITED
-   */
-  | "RATE_LIMIT"
-
-  /**
-   * The provider/account/model quota has been exhausted.
-   *
-   * This remains distinct from RATE_LIMIT because quota exhaustion and
-   * request-rate throttling are not the same condition.
-   */
-  | "QUOTA_EXCEEDED"
-
-  // --------------------------------------------------------------------------
-  // TRANSPORT / AVAILABILITY
-  // --------------------------------------------------------------------------
-
-  /**
-   * The operation exceeded its allowed time.
-   */
-  | "TIMEOUT"
-
-  /**
-   * The request could not reach or communicate with its target.
-   */
-  | "NETWORK"
-
-  /**
-   * The selected provider or execution backend failed at the provider layer.
-   */
-  | "PROVIDER"
-
-  /**
-   * The target/resource could not be found.
-   *
-   * This is intentionally separate from MODEL_NOT_FOUND because a cloud
-   * provider, endpoint, or other resource can also be missing.
-   */
-  | "NOT_FOUND"
-
-  /**
-   * The target is temporarily unavailable or a backend service failed.
-   *
-   * This is the canonical replacement for:
-   *   SERVER
-   */
-  | "UNAVAILABLE"
-
-  /**
-   * The requested operation conflicts with the current resource state.
-   */
-  | "CONFLICT"
-
-  /**
-   * The requested operation/capability is not supported.
-   *
-   * This is different from MODEL_UNSUPPORTED, which specifically describes
-   * a model/runtime compatibility problem.
-   */
-  | "UNSUPPORTED"
-
-  // --------------------------------------------------------------------------
-  // MODEL / RUNTIME
-  // --------------------------------------------------------------------------
-
-  /**
-   * The requested model does not exist or could not be located.
-   */
-  | "MODEL_NOT_FOUND"
-
-  /**
-   * The model exists but is not installed locally.
-   */
-  | "MODEL_NOT_INSTALLED"
-
-  /**
-   * The model is known but unsupported by the available runtime.
-   */
-  | "MODEL_UNSUPPORTED"
-
-  /**
-   * The model is installed/known but is not currently loaded.
-   */
-  | "MODEL_NOT_LOADED"
-
-  // --------------------------------------------------------------------------
-  // CONTENT / RESPONSE
-  // --------------------------------------------------------------------------
-
-  /**
-   * The provider/runtime refused the content because of a content policy.
-   */
-  | "CONTENT_BLOCKED"
-
-  /**
-   * The provider returned a response that Veyra could not safely interpret.
-   */
-  | "INVALID_RESPONSE"
-
-  // --------------------------------------------------------------------------
-  // LIFECYCLE / CONFIGURATION
-  // --------------------------------------------------------------------------
-
-  /**
-   * The operation was explicitly cancelled or aborted.
-   */
-  | "ABORTED"
-
-  /**
-   * Required runtime/provider configuration is invalid or missing.
-   */
-  | "CONFIGURATION"
-
-  /**
-   * The error could not be classified more specifically.
-   */
-  | "UNKNOWN";
+// ============================================================================
+// RETRY POLICY
+// ============================================================================
 
 /**
  * Returns the default retryability for a canonical Veyra error code.
  *
- * Explicit retryable values supplied by callers still override this default.
+ * Explicit retryability supplied by the caller still takes precedence.
+ *
+ * Retryable conditions are limited to transient failures:
+ *
+ * - rate limiting
+ * - quota exhaustion
+ * - timeout
+ * - network failure
+ * - temporary service/provider unavailability
  */
 export function defaultErrorRetryable(code: ErrorCode): boolean {
   switch (code) {
-    case "RATE_LIMIT":
-    case "QUOTA_EXCEEDED":
-    case "TIMEOUT":
-    case "NETWORK":
-    case "UNAVAILABLE":
+    // ------------------------------------------------------------------------
+    // TRANSIENT / RETRYABLE
+    // ------------------------------------------------------------------------
+
+    case ERROR_CODES.RATE_LIMITED:
+    case ERROR_CODES.QUOTA_EXCEEDED:
+    case ERROR_CODES.TIMEOUT:
+    case ERROR_CODES.NETWORK_ERROR:
+    case ERROR_CODES.SERVICE_UNAVAILABLE:
+    case ERROR_CODES.AI_PROVIDER_UNAVAILABLE:
+    case ERROR_CODES.AI_PROVIDER_TIMEOUT:
+    case ERROR_CODES.AI_PROVIDER_RATE_LIMITED:
       return true;
 
-    case "INVALID_REQUEST":
-    case "AUTHENTICATION":
-    case "AUTHORIZATION":
-    case "PROVIDER":
-    case "NOT_FOUND":
-    case "CONFLICT":
-    case "UNSUPPORTED":
-    case "MODEL_NOT_FOUND":
-    case "MODEL_NOT_INSTALLED":
-    case "MODEL_UNSUPPORTED":
-    case "MODEL_NOT_LOADED":
-    case "CONTENT_BLOCKED":
-    case "INVALID_RESPONSE":
-    case "ABORTED":
-    case "CONFIGURATION":
-    case "UNKNOWN":
+    // ------------------------------------------------------------------------
+    // NON-RETRYABLE
+    // ------------------------------------------------------------------------
+
+    case ERROR_CODES.CANCELLED:
+    case ERROR_CODES.ABORTED:
+    case ERROR_CODES.INVALID_REQUEST:
+    case ERROR_CODES.INVALID_RESPONSE:
+    case ERROR_CODES.INVALID_STATE:
+    case ERROR_CODES.UNAUTHORIZED:
+    case ERROR_CODES.FORBIDDEN:
+    case ERROR_CODES.NOT_FOUND:
+    case ERROR_CODES.PROVIDER:
+    case ERROR_CODES.UNAVAILABLE:
+    case ERROR_CODES.UNSUPPORTED:
+    case ERROR_CODES.CONFIGURATION:
+    case ERROR_CODES.MODEL_NOT_FOUND:
+    case ERROR_CODES.MODEL_NOT_INSTALLED:
+    case ERROR_CODES.MODEL_UNSUPPORTED:
+    case ERROR_CODES.MODEL_NOT_LOADED:
+    case ERROR_CODES.UNKNOWN:
+    case ERROR_CODES.VALIDATION_FAILED:
+    case ERROR_CODES.INTERNAL_ERROR:
+    case ERROR_CODES.AI_PROVIDER_ERROR:
+    case ERROR_CODES.AI_MODEL_NOT_FOUND:
+    case ERROR_CODES.AI_CONTEXT_TOO_LARGE:
+    case ERROR_CODES.AI_REQUEST_CANCELLED:
+    case ERROR_CODES.AUDIO_PERMISSION_DENIED:
+    case ERROR_CODES.AUDIO_DEVICE_NOT_FOUND:
+    case ERROR_CODES.AUDIO_DEVICE_UNAVAILABLE:
+    case ERROR_CODES.AUDIO_CAPTURE_FAILED:
+    case ERROR_CODES.CAPTURE_PERMISSION_DENIED:
+    case ERROR_CODES.CAPTURE_SOURCE_NOT_FOUND:
+    case ERROR_CODES.CAPTURE_FAILED:
+    case ERROR_CODES.DOCUMENT_NOT_FOUND:
+    case ERROR_CODES.DOCUMENT_UNSUPPORTED:
+    case ERROR_CODES.DOCUMENT_TOO_LARGE:
+    case ERROR_CODES.DOCUMENT_READ_FAILED:
+    case ERROR_CODES.DOCUMENT_PARSE_FAILED:
+    case ERROR_CODES.PROFILE_NOT_FOUND:
+    case ERROR_CODES.SESSION_NOT_FOUND:
+    case ERROR_CODES.SESSION_ALREADY_ACTIVE:
+    case ERROR_CODES.SESSION_NOT_ACTIVE:
+    case ERROR_CODES.SESSION_INVALID_TRANSITION:
+    case ERROR_CODES.STORAGE_ERROR:
+    case ERROR_CODES.DATABASE_ERROR:
     default:
       return false;
   }
