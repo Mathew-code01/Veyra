@@ -92,7 +92,7 @@ export class CloudError extends Error {
 
   public constructor(
     message: string,
-    code: CloudErrorCode = "UNKNOWN",
+    code: CloudErrorCode = "UNKNOWN_ERROR",
     options: CloudErrorOptions = {},
   ) {
     super(message);
@@ -185,10 +185,10 @@ export class CloudError extends Error {
       // ----------------------------------------------------------------------
 
       case 401:
-        return "AUTHENTICATION";
+        return "UNAUTHORIZED";
 
       case 403:
-        return "AUTHORIZATION";
+        return "FORBIDDEN";
 
       // ----------------------------------------------------------------------
       // RESOURCE
@@ -213,7 +213,7 @@ export class CloudError extends Error {
       // ----------------------------------------------------------------------
 
       case 429:
-        return "RATE_LIMIT";
+        return "RATE_LIMITED";
 
       // ----------------------------------------------------------------------
       // UNSUPPORTED
@@ -238,7 +238,7 @@ export class CloudError extends Error {
       // ----------------------------------------------------------------------
 
       default:
-        return status >= 500 ? "UNAVAILABLE" : "UNKNOWN";
+        return status >= 500 ? "UNAVAILABLE" : "UNKNOWN_ERROR";
     }
   }
 

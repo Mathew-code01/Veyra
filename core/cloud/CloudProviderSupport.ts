@@ -100,7 +100,7 @@ export async function resolveCredential(
   if (!value || !value.trim()) {
     throw new CloudError(
       `Credential "${config.credential.id}" for provider "${config.id}" could not be resolved.`,
-      "AUTHENTICATION",
+      "UNAUTHORIZED",
       {
         retryable: false,
         providerId: config.id,

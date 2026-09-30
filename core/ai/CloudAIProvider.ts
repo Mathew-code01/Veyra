@@ -139,22 +139,39 @@ export class CloudAIProvider implements AIProvider {
 
     this.providerId = providerId;
 
+    const provider = options.registry?.tryGet(providerId);
+
+    if (!provider && !options.gateway) {
+      throw new CloudError(
+        `Cloud provider "${providerId}" is not registered.`,
+        "NOT_FOUND",
+        {
+          retryable: false,
+          providerId,
+        },
+      );
+    }
+
     this.gateway =
       options.gateway ?? this.createGatewayFromRegistry(options.registry);
 
-    this.name = options.name ?? `cloud:${providerId}`;
+    this.name = options.name?.trim() || `cloud:${providerId}`;
 
-    const provider = options.registry?.tryGet(providerId);
+    this.capabilities = Object.freeze({
+      text: provider?.capabilities.textGeneration ?? true,
 
-    this.capabilities = {
       streaming: provider?.capabilities.streaming ?? true,
 
       vision: provider?.capabilities.vision ?? false,
 
+      embeddings: provider?.capabilities.embeddings ?? false,
+
       structuredOutput: provider?.capabilities.structuredOutput ?? false,
 
+      toolCalling: provider?.capabilities.toolCalling ?? false,
+
       local: false,
-    };
+    });
   }
 
   // ==========================================================================
@@ -820,9 +837,7 @@ export class CloudAIProvider implements AIProvider {
   // USAGE MAPPING
   // ==========================================================================
 
-  private mapUsage(
-    value: unknown,
-  ):
+  private mapUsage(value: unknown):
     | {
         inputTokens?: number;
         outputTokens?: number;
