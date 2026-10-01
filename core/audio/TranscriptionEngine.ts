@@ -1,30 +1,53 @@
-// core/audio/TranscriptionEngine.ts
+// ============================================================================
+// FILE: core/audio/TranscriptionEngine.ts
+// PURPOSE:
+// Core transcription orchestration boundary.
+//
+// RESPONSIBILITY:
+// - Define transcription requests/results.
+// - Manage provider execution.
+// - Enforce concurrency limits.
+// - Propagate cancellation.
+// - Normalize provider errors.
+//
+// IMPORTANT:
+// This is an INTERNAL core/audio contract.
+// It must not be copied into shared/.
+// ============================================================================
+
+// ============================================================================
+// AUDIO FORMAT
+// ============================================================================
 
 export interface TranscriptionAudioFormat {
   readonly sampleRate: number;
+
   readonly channels: number;
+
   readonly sampleFormat: "pcm_s16le" | "pcm_f32le" | "wav" | "opus" | "webm";
+
   readonly bitDepth?: 16 | 24 | 32;
 }
 
+// ============================================================================
+// REQUEST
+// ============================================================================
+
 export interface TranscriptionRequest {
+  /**
+   * Raw audio bytes.
+   */
   readonly audio: Uint8Array;
 
   /**
-   * MIME type of the original audio.
-   *
-   * Examples:
-   *
-   * audio/wav
-   * audio/webm
-   * audio/opus
+   * MIME type associated with the supplied audio.
    */
   readonly mimeType?: string;
 
   /**
-   * Actual audio format when the bytes come from AudioCapture.
+   * Actual audio format.
    *
-   * This is particularly important for raw PCM.
+   * Particularly important for raw PCM.
    */
   readonly format?: TranscriptionAudioFormat;
 
@@ -32,10 +55,23 @@ export interface TranscriptionRequest {
 
   readonly prompt?: string;
 
+  /**
+   * Capture timestamp associated with this request.
+   *
+   * This is metadata only. It is NOT interpreted as a transcript
+   * segment start/end time by the transcription engine.
+   */
   readonly timestamp?: number;
 
+  /**
+   * Abort the operation.
+   */
   readonly signal?: AbortSignal;
 }
+
+// ============================================================================
+// WORD
+// ============================================================================
 
 export interface TranscriptionWord {
   readonly word: string;
@@ -46,6 +82,10 @@ export interface TranscriptionWord {
 
   readonly confidence?: number;
 }
+
+// ============================================================================
+// RESULT
+// ============================================================================
 
 export interface TranscriptionResult {
   readonly text: string;
@@ -63,9 +103,16 @@ export interface TranscriptionResult {
   readonly model?: string;
 }
 
+// ============================================================================
+// PARTIAL RESULT
+// ============================================================================
+
 export interface PartialTranscription {
   readonly text: string;
 
+  /**
+   * Timestamp associated with this partial result.
+   */
   readonly timestamp: number;
 
   readonly isFinal: boolean;
@@ -73,22 +120,65 @@ export interface PartialTranscription {
   readonly confidence?: number;
 }
 
+// ============================================================================
+// PROVIDER
+// ============================================================================
+
 export interface TranscriptionProvider {
   readonly name: string;
 
   transcribe(request: TranscriptionRequest): Promise<TranscriptionResult>;
 
+  /**
+   * Optional provider-level streaming implementation.
+   *
+   * The provider may emit zero or more partial results and must resolve
+   * with the final TranscriptionResult.
+   */
   transcribeStream?(
     request: TranscriptionRequest,
     onPartial: (partial: PartialTranscription) => void,
   ): Promise<TranscriptionResult>;
 }
 
+// ============================================================================
+// ENGINE OPTIONS
+// ============================================================================
+
 export interface TranscriptionEngineOptions {
   readonly provider: TranscriptionProvider;
 
+  /**
+   * Maximum number of simultaneous provider operations.
+   *
+   * Default: 1.
+   */
   readonly maxConcurrentRequests?: number;
 }
+
+// ============================================================================
+// INTERNAL QUEUED JOB
+// ============================================================================
+
+interface TranscriptionJob {
+  readonly request: TranscriptionRequest;
+
+  readonly stream: boolean;
+
+  readonly onPartial?: (partial: PartialTranscription) => void;
+
+  readonly resolve: (result: TranscriptionResult) => void;
+
+  readonly reject: (error: Error) => void;
+
+  settled: boolean;
+
+  abortCleanup?: () => void;
+}
+
+// ============================================================================
+// ENGINE
+// ============================================================================
 
 export class TranscriptionEngine {
   private readonly provider: TranscriptionProvider;
@@ -97,67 +187,104 @@ export class TranscriptionEngine {
 
   private activeRequests = 0;
 
-  private readonly queue: Array<{
-    request: TranscriptionRequest;
-
-    resolve: (result: TranscriptionResult) => void;
-
-    reject: (error: Error) => void;
-  }> = [];
+  private readonly queue: TranscriptionJob[] = [];
 
   public constructor(options: TranscriptionEngineOptions) {
+    if (!options.provider) {
+      throw new Error("TranscriptionEngine requires a provider.");
+    }
+
     this.provider = options.provider;
 
-    this.maxConcurrentRequests = Math.max(
-      1,
-      options.maxConcurrentRequests ?? 1,
+    this.maxConcurrentRequests = normalizeConcurrency(
+      options.maxConcurrentRequests,
     );
   }
+
+  // ==========================================================================
+  // BATCH TRANSCRIPTION
+  // ==========================================================================
 
   public async transcribe(
     request: TranscriptionRequest,
   ): Promise<TranscriptionResult> {
-    if (request.audio.byteLength === 0) {
-      throw new Error("Cannot transcribe empty audio.");
-    }
+    validateRequest(request);
+
+    this.throwIfAborted(request.signal);
 
     return new Promise<TranscriptionResult>((resolve, reject) => {
-      this.queue.push({
+      const job: TranscriptionJob = {
         request,
+
+        stream: false,
+
         resolve,
+
         reject,
-      });
+
+        settled: false,
+      };
+
+      this.attachAbortHandler(job);
+
+      if (job.settled) {
+        return;
+      }
+
+      this.queue.push(job);
 
       void this.drain();
     });
   }
 
+  // ==========================================================================
+  // STREAM TRANSCRIPTION
+  // ==========================================================================
+
   public async transcribeStream(
     request: TranscriptionRequest,
     onPartial: (partial: PartialTranscription) => void,
   ): Promise<TranscriptionResult> {
-    if (request.audio.byteLength === 0) {
-      throw new Error("Cannot transcribe empty audio.");
+    validateRequest(request);
+
+    if (typeof onPartial !== "function") {
+      throw new Error(
+        "TranscriptionEngine.transcribeStream requires onPartial.",
+      );
     }
 
-    if (!this.provider.transcribeStream) {
-      const result = await this.transcribe(request);
+    this.throwIfAborted(request.signal);
 
-      onPartial({
-        text: result.text,
+    return new Promise<TranscriptionResult>((resolve, reject) => {
+      const job: TranscriptionJob = {
+        request,
 
-        timestamp: Date.now(),
+        stream: true,
 
-        isFinal: true,
+        onPartial,
 
-        confidence: result.confidence,
-      });
+        resolve,
 
-      return result;
-    }
+        reject,
 
-    return this.provider.transcribeStream(request, onPartial);
+        settled: false,
+      };
+
+      this.attachAbortHandler(job);
+
+      if (job.settled) {
+        return;
+      }
+
+      this.queue.push(job);
+
+      void this.drain();
+    });
   }
+
+  // ==========================================================================
+  // STATE
+  // ==========================================================================
 
   public getProviderName(): string {
     return this.provider.name;
@@ -171,6 +298,14 @@ export class TranscriptionEngine {
     return this.activeRequests;
   }
 
+  public getMaxConcurrentRequests(): number {
+    return this.maxConcurrentRequests;
+  }
+
+  // ==========================================================================
+  // QUEUE
+  // ==========================================================================
+
   private async drain(): Promise<void> {
     while (
       this.activeRequests < this.maxConcurrentRequests &&
@@ -182,33 +317,196 @@ export class TranscriptionEngine {
         return;
       }
 
+      if (job.settled) {
+        continue;
+      }
+
       this.activeRequests += 1;
 
       void this.execute(job);
     }
   }
 
-  private async execute(job: {
-    request: TranscriptionRequest;
-
-    resolve: (result: TranscriptionResult) => void;
-
-    reject: (error: Error) => void;
-  }): Promise<void> {
+  private async execute(job: TranscriptionJob): Promise<void> {
     try {
-      const result = await this.provider.transcribe(job.request);
+      this.throwIfAborted(job.request.signal);
 
-      job.resolve(result);
+      let result: TranscriptionResult;
+
+      if (job.stream && this.provider.transcribeStream) {
+        result = await this.provider.transcribeStream(
+          job.request,
+          (partial) => {
+            if (job.settled) {
+              return;
+            }
+
+            try {
+              job.onPartial?.(partial);
+            } catch (error) {
+              /*
+               * Consumer callback failures must not corrupt the
+               * provider operation.
+               *
+               * The provider remains responsible for producing the
+               * transcription result.
+               */
+              void error;
+            }
+          },
+        );
+      } else {
+        result = await this.provider.transcribe(job.request);
+
+        /*
+         * Providers without native streaming support receive a
+         * deterministic final event so callers can use one interface.
+         */
+        if (job.stream) {
+          job.onPartial?.({
+            text: result.text,
+
+            timestamp: job.request.timestamp ?? Date.now(),
+
+            isFinal: true,
+
+            confidence: result.confidence,
+          });
+        }
+      }
+
+      this.resolveJob(job, result);
     } catch (error) {
-      job.reject(normalizeError(error));
+      this.rejectJob(job, normalizeError(error));
     } finally {
       this.activeRequests -= 1;
+
+      job.abortCleanup?.();
 
       void this.drain();
     }
   }
+
+  // ==========================================================================
+  // CANCELLATION
+  // ==========================================================================
+
+  private attachAbortHandler(job: TranscriptionJob): void {
+    const signal = job.request.signal;
+
+    if (!signal) {
+      return;
+    }
+
+    const abort = (): void => {
+      if (job.settled) {
+        return;
+      }
+
+      /*
+       * If the job is still waiting in the queue, remove it immediately.
+       *
+       * If it is already executing, the signal is passed to the provider.
+       * Provider implementations are responsible for honoring it.
+       */
+      const index = this.queue.indexOf(job);
+
+      if (index >= 0) {
+        this.queue.splice(index, 1);
+      }
+
+      this.rejectJob(job, createAbortError());
+    };
+
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+
+    signal.addEventListener("abort", abort, {
+      once: true,
+    });
+
+    job.abortCleanup = () => {
+      signal.removeEventListener("abort", abort);
+    };
+  }
+
+  private resolveJob(job: TranscriptionJob, result: TranscriptionResult): void {
+    if (job.settled) {
+      return;
+    }
+
+    job.settled = true;
+
+    job.abortCleanup?.();
+
+    job.resolve(result);
+  }
+
+  private rejectJob(job: TranscriptionJob, error: Error): void {
+    if (job.settled) {
+      return;
+    }
+
+    job.settled = true;
+
+    job.abortCleanup?.();
+
+    job.reject(error);
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) {
+      return;
+    }
+
+    throw createAbortError();
+  }
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+function validateRequest(request: TranscriptionRequest): void {
+  if (!request) {
+    throw new Error("Transcription request is required.");
+  }
+
+  if (!(request.audio instanceof Uint8Array)) {
+    throw new Error("Transcription request audio must be a Uint8Array.");
+  }
+
+  if (request.audio.byteLength === 0) {
+    throw new Error("Cannot transcribe empty audio.");
+  }
+}
+
+function normalizeConcurrency(value: number | undefined): number {
+  if (value == null) {
+    return 1;
+  }
+
+  if (!Number.isFinite(value)) {
+    throw new Error("maxConcurrentRequests must be a finite number.");
+  }
+
+  return Math.max(1, Math.floor(value));
 }
 
 function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function createAbortError(): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("Transcription request was aborted.", "AbortError");
+  }
+
+  const error = new Error("Transcription request was aborted.");
+
+  error.name = "AbortError";
+
+  return error;
 }
