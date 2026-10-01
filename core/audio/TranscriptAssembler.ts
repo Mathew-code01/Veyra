@@ -8,8 +8,26 @@
 // TranscriptEntry is an INTERNAL audio representation.
 //
 // It is NOT the canonical conversation transcript contract.
-// Stage B will map this representation into the shared/conversation
-// boundary.
+// Stage B maps this representation into the shared/conversation boundary.
+//
+// DOWNSTREAM CONSUMPTION:
+//
+//   TranscriptAssembler
+//          │
+//          ├── partial transcript → getSnapshot()
+//          │
+//          └── finalized entries → takeFinalEntries()
+//                                      │
+//                                      ▼
+//                           AudioTranscriptPublisher
+//                                      │
+//                                      ▼
+//                           AudioConversationBridge
+//                                      │
+//                                      ▼
+//                             ConversationManager
+//
+// The assembler deliberately does not know about conversation.
 // ============================================================================
 
 import type {
@@ -63,9 +81,31 @@ export interface TranscriptSnapshot {
 // ============================================================================
 
 export class TranscriptAssembler {
+  /**
+   * Finalized transcript entries.
+   *
+   * Partial transcript state is kept separately in currentPartial.
+   */
   private readonly entries: TranscriptEntry[] = [];
 
+  /**
+   * Currently active non-final transcript.
+   *
+   * Only one active partial is maintained at a time.
+   */
   private currentPartial?: TranscriptEntry;
+
+  /**
+   * Number of finalized entries already consumed by a downstream publisher.
+   *
+   * This is intentionally an internal cursor.
+   *
+   * The assembler does NOT know who consumes these entries.
+   *
+   * It only guarantees that takeFinalEntries() returns each finalized
+   * entry once per assembler lifecycle.
+   */
+  private publishedFinalEntryCount = 0;
 
   // ==========================================================================
   // PARTIAL
@@ -82,6 +122,10 @@ export class TranscriptAssembler {
     endTime = partial.timestamp,
     speakerId?: string,
   ): TranscriptSnapshot {
+    if (!partial) {
+      throw new Error("Transcript partial is required.");
+    }
+
     validateTimestamp(startTime, "startTime");
 
     validateTimestamp(endTime, "endTime");
@@ -110,6 +154,13 @@ export class TranscriptAssembler {
 
     /*
      * A final partial is a completed transcript segment.
+     *
+     * Normally AudioTranscriptionPipeline deliberately does not send
+     * final partial events here because the resolved TranscriptionResult
+     * is treated as authoritative.
+     *
+     * Keeping this behavior here makes TranscriptAssembler independently
+     * safe if another caller uses it directly.
      */
     if (partial.isFinal) {
       this.commitFinalEntry(entry);
@@ -130,12 +181,29 @@ export class TranscriptAssembler {
   // FINAL RESULT
   // ==========================================================================
 
+  /**
+   * Add a finalized transcription result.
+   *
+   * IMPORTANT:
+   *
+   * This method returns a TranscriptSnapshot, not a TranscriptEntry.
+   *
+   * Consumers that need to publish newly finalized entries should call:
+   *
+   *     takeFinalEntries()
+   *
+   * after calling addFinal().
+   */
   public addFinal(
     result: TranscriptionResult,
     startTime: number,
     endTime: number,
     speakerId?: string,
   ): TranscriptSnapshot {
+    if (!result) {
+      throw new Error("Transcript result is required.");
+    }
+
     validateTimestamp(startTime, "startTime");
 
     validateTimestamp(endTime, "endTime");
@@ -179,14 +247,78 @@ export class TranscriptAssembler {
   // SNAPSHOT
   // ==========================================================================
 
+  /**
+   * Return the current transcript snapshot.
+   *
+   * Includes finalized entries and the current partial, if one exists.
+   */
   public getSnapshot(): TranscriptSnapshot {
     return this.snapshot();
   }
 
+  /**
+   * Return all finalized entries currently held by the assembler.
+   *
+   * The returned array is a defensive copy.
+   *
+   * IMPORTANT:
+   *
+   * This does NOT consume entries.
+   *
+   * Use takeFinalEntries() when handing finalized entries to a
+   * downstream integration.
+   */
   public getEntries(): readonly TranscriptEntry[] {
     return this.entries.slice();
   }
 
+  /**
+   * Return finalized transcript entries only.
+   *
+   * The returned array is a defensive copy.
+   *
+   * This intentionally excludes the currently active partial transcript.
+   */
+  public getFinalEntries(): readonly TranscriptEntry[] {
+    return this.entries.slice();
+  }
+
+  /**
+   * Return finalized entries that have not yet been consumed by a
+   * downstream integration.
+   *
+   * This creates a one-way consumption cursor without coupling the
+   * assembler to conversation or any other subsystem.
+   *
+   * Example:
+   *
+   *     entries: [A, B, C]
+   *     cursor:  2
+   *
+   *     takeFinalEntries()
+   *       → [C]
+   *
+   *     cursor becomes 3.
+   *
+   * A subsequent call returns [].
+   */
+  public takeFinalEntries(): readonly TranscriptEntry[] {
+    if (this.publishedFinalEntryCount >= this.entries.length) {
+      return Object.freeze([]);
+    }
+
+    const entries = this.entries.slice(this.publishedFinalEntryCount);
+
+    this.publishedFinalEntryCount = this.entries.length;
+
+    return Object.freeze(entries);
+  }
+
+  /**
+   * Return the complete visible transcript text.
+   *
+   * Includes the current partial transcript when present.
+   */
   public getText(): string {
     return buildText(this.getVisibleEntries());
   }
@@ -195,12 +327,22 @@ export class TranscriptAssembler {
   // RESET
   // ==========================================================================
 
+  /**
+   * Clear the assembler completely.
+   *
+   * The finalized-entry consumption cursor must also be reset.
+   */
   public clear(): void {
     this.entries.length = 0;
 
     this.currentPartial = undefined;
+
+    this.publishedFinalEntryCount = 0;
   }
 
+  /**
+   * Alias for clear().
+   */
   public reset(): void {
     this.clear();
   }
@@ -259,6 +401,10 @@ function buildText(entries: readonly TranscriptEntry[]): string {
 }
 
 function cleanTranscript(text: string): string {
+  if (typeof text !== "string") {
+    return "";
+  }
+
   return text
     .replace(/\s+/g, " ")
     .replace(/\s+([,.!?])/g, "$1")
