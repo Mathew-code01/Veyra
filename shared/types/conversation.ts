@@ -1,25 +1,56 @@
+// ============================================================================
+// FILE: shared/types/conversation.ts
+// PURPOSE:
+// Canonical conversation-domain types shared across Veyra.
+//
+// ARCHITECTURAL RULE:
+// This file is the single source of truth for conversation data contracts.
+//
+// It must NOT:
+// - depend on core/conversation
+// - depend on core/audio
+// - contain interview-specific classification
+// - contain implementation logic
+//
+// Interview-specific interpretation belongs to:
+//     core/interview
+//
+// Audio-specific interpretation belongs to:
+//     core/audio
+// ============================================================================
+
 import type { ISODateString, UUID } from "./common";
 
+// ============================================================================
+// SPEAKER
+// ============================================================================
+
 /**
- * Participant in a conversation.
+ * Generic conversational speaker role.
  *
- * Conversation does not assume this is an interview.
- * The same representation can be used for:
+ * Conversation must remain domain-neutral.
  *
- * - interviews
- * - meetings
- * - calls
- * - coaching
- * - presentations
- * - general conversations
+ * "candidate" and "interviewer" deliberately do NOT belong here.
+ * Those semantics belong to core/interview.
  */
-export type SpeakerRole = "interviewer" | "candidate" | "unknown";
+export type SpeakerRole = "participant" | "assistant" | "system" | "unknown";
+
+// ============================================================================
+// CONVERSATIONAL INTENT
+// ============================================================================
 
 /**
  * High-level conversational intent.
  *
  * This describes what a participant is doing conversationally.
- * It does NOT describe the interview category.
+ *
+ * It does NOT describe:
+ * - interview type
+ * - coding question
+ * - behavioral question
+ * - technical question
+ * - system design
+ * - product interview
  */
 export type ConversationIntent =
   | "question"
@@ -33,18 +64,14 @@ export type ConversationIntent =
   | "answer"
   | "unknown";
 
+// ============================================================================
+// QUESTION TYPE
+// ============================================================================
+
 /**
  * Conversational form of a question.
  *
- * This deliberately does NOT contain:
- *
- * - behavioral
- * - coding
- * - technical
- * - system_design
- * - product
- *
- * Those belong to core/interview.
+ * This is intentionally domain-neutral.
  */
 export type ConversationQuestionType =
   | "open_ended"
@@ -55,29 +82,54 @@ export type ConversationQuestionType =
   | "clarification"
   | "unknown";
 
-/**
- * Topic transition.
- */
+// ============================================================================
+// TOPIC
+// ============================================================================
+
 export type TopicChangeType = "new_topic" | "subtopic" | "return" | "none";
 
+// ============================================================================
+// CANONICAL TRANSCRIPT SEGMENT
+// ============================================================================
+
 /**
- * Canonical transcript segment shared across Veyra.
+ * Canonical transcript segment consumed by core/conversation.
  *
- * Audio may produce a richer internal representation,
- * but this is the cross-domain representation used when
- * conversation processing begins.
+ * Audio may produce richer audio-specific representations.
+ * Those are mapped into this type before conversation analysis.
  */
 export interface TranscriptSegment {
   readonly id: UUID;
 
   readonly sessionId: UUID;
 
+  /**
+   * Generic conversational speaker role.
+   */
   readonly speaker: SpeakerRole;
+
+  /**
+   * Stable speaker identity when available.
+   *
+   * Example:
+   *     "speaker-1"
+   *     "speaker-2"
+   *
+   * This is intentionally different from semantic roles such as
+   * candidate/interviewer.
+   */
+  readonly speakerId?: string;
 
   readonly text: string;
 
+  /**
+   * Start timestamp in Unix milliseconds.
+   */
   readonly startMs: number;
 
+  /**
+   * End timestamp in Unix milliseconds.
+   */
   readonly endMs: number;
 
   readonly isFinal: boolean;
@@ -85,17 +137,25 @@ export interface TranscriptSegment {
   readonly confidence?: number;
 
   readonly createdAt: ISODateString;
+
+  /**
+   * Identifies the subsystem that produced the segment.
+   */
+  readonly source?: "audio" | "text" | "system" | "unknown";
 }
 
-/**
- * Logical conversational turn.
- */
+// ============================================================================
+// CONVERSATION TURN
+// ============================================================================
+
 export interface ConversationTurn {
   readonly id: UUID;
 
   readonly segmentId: UUID;
 
   readonly speaker: SpeakerRole;
+
+  readonly speakerId?: string;
 
   readonly text: string;
 
@@ -110,9 +170,10 @@ export interface ConversationTurn {
   readonly confidence: number;
 }
 
-/**
- * Conversational question analysis.
- */
+// ============================================================================
+// QUESTION ANALYSIS
+// ============================================================================
+
 export interface QuestionAnalysis {
   readonly isQuestion: boolean;
 
@@ -122,17 +183,23 @@ export interface QuestionAnalysis {
 
   readonly confidence: number;
 
-  readonly requiresCandidateAnswer: boolean;
+  /**
+   * Generic conversational requirement.
+   *
+   * This deliberately replaces the old:
+   *     requiresCandidateAnswer
+   */
+  readonly requiresResponse: boolean;
 
   readonly explicitQuestionMark: boolean;
 
   readonly questionSignals: readonly string[];
 }
 
-/**
- * Relationship between the current question and
- * a previous conversational question.
- */
+// ============================================================================
+// FOLLOW-UP
+// ============================================================================
+
 export interface FollowUpAnalysis {
   readonly isFollowUp: boolean;
 
@@ -144,9 +211,10 @@ export interface FollowUpAnalysis {
     "direct" | "deepening" | "clarifying" | "challenging" | "none";
 }
 
-/**
- * Repetition analysis.
- */
+// ============================================================================
+// REPETITION
+// ============================================================================
+
 export interface RepetitionAnalysis {
   readonly isRepeated: boolean;
 
@@ -157,9 +225,10 @@ export interface RepetitionAnalysis {
   readonly similarity: number;
 }
 
-/**
- * Clarification analysis.
- */
+// ============================================================================
+// CLARIFICATION
+// ============================================================================
+
 export interface ClarificationAnalysis {
   readonly isClarification: boolean;
 
@@ -168,9 +237,10 @@ export interface ClarificationAnalysis {
   readonly target?: string;
 }
 
-/**
- * Topic analysis.
- */
+// ============================================================================
+// TOPIC
+// ============================================================================
+
 export interface TopicAnalysis {
   readonly topic: string;
 
@@ -183,9 +253,10 @@ export interface TopicAnalysis {
   readonly keywords: readonly string[];
 }
 
-/**
- * Intent analysis.
- */
+// ============================================================================
+// INTENT
+// ============================================================================
+
 export interface IntentAnalysis {
   readonly intent: ConversationIntent;
 
@@ -194,9 +265,10 @@ export interface IntentAnalysis {
   readonly signals: readonly string[];
 }
 
-/**
- * Complete analysis of one conversational event.
- */
+// ============================================================================
+// COMPLETE ANALYSIS
+// ============================================================================
+
 export interface ConversationAnalysis {
   readonly turn: ConversationTurn;
 
@@ -215,10 +287,13 @@ export interface ConversationAnalysis {
   readonly recentTurns: readonly ConversationTurn[];
 }
 
-/**
- * Serializable conversation state.
- */
+// ============================================================================
+// MEMORY SNAPSHOT
+// ============================================================================
+
 export interface ConversationMemorySnapshot {
+  readonly sessionId: UUID;
+
   readonly turns: readonly ConversationTurn[];
 
   readonly activeTopic?: TopicAnalysis;
@@ -227,7 +302,18 @@ export interface ConversationMemorySnapshot {
 
   readonly questionHistory: readonly ConversationTurn[];
 
-  readonly candidateAnswerCount: number;
+  /**
+   * Number of conversational questions observed.
+   */
+  readonly questionCount: number;
 
-  readonly interviewerTurnCount: number;
+  /**
+   * Number of turns classified as responses to previous questions.
+   */
+  readonly responseCount: number;
+
+  /**
+   * Number of distinct speaker identities observed.
+   */
+  readonly participantCount: number;
 }
