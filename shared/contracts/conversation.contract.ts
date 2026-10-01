@@ -1,43 +1,64 @@
+// ============================================================================
+// FILE: shared/contracts/conversation.contract.ts
+// PURPOSE:
+// Stable application boundary for the conversation subsystem.
+//
+// Implementation:
+//     core/conversation
+//
+// Consumers:
+//     desktop
+//     client
+//     server
+//     orchestration layers
+// ============================================================================
+
 import type {
   ConversationAnalysis,
   ConversationMemorySnapshot,
   TranscriptSegment,
 } from "../types/conversation";
 
-/**
- * Request sent to the Conversation domain.
- */
+import type { UUID } from "../types/common";
+
+// ============================================================================
+// ANALYSIS
+// ============================================================================
+
 export interface ConversationAnalysisRequest {
   readonly segment: TranscriptSegment;
 
   readonly signal?: AbortSignal;
 }
 
-/**
- * Response returned by the Conversation domain.
- */
 export interface ConversationAnalysisResponse {
   readonly analysis: ConversationAnalysis;
 }
 
-/**
- * Current conversation state request.
- */
+// ============================================================================
+// STATE
+// ============================================================================
+
 export interface ConversationStateRequest {
-  readonly sessionId: string;
+  readonly sessionId: UUID;
 }
 
-/**
- * Current conversation state response.
- */
 export interface ConversationStateResponse {
   readonly state: ConversationMemorySnapshot;
 }
 
+// ============================================================================
+// SERVICE CONTRACT
+// ============================================================================
+
 /**
- * Cross-boundary Conversation service contract.
+ * Stable async boundary.
  *
- * The implementation lives in core/conversation.
+ * The internal conversation engine may remain synchronous because its
+ * current analysis pipeline is CPU-local and deterministic.
+ *
+ * This adapter provides the async application boundary required by
+ * desktop/client/server orchestration.
  */
 export interface ConversationServiceContract {
   analyze(
