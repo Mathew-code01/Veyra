@@ -1,8 +1,6 @@
-// core/conversation/ClarificationDetector.ts
+import type { ClarificationAnalysis } from "../../../shared/types/conversation";
 
-import type { ClarificationAnalysis } from "../../shared/types/conversation";
-
-const PATTERNS = [
+const PATTERNS: readonly RegExp[] = [
   /\bwhat do you mean\b/i,
   /\bcan you clarify\b/i,
   /\bcould you clarify\b/i,
@@ -17,6 +15,13 @@ const PATTERNS = [
 export class ClarificationDetector {
   detect(text: string): ClarificationAnalysis {
     const normalized = text.replace(/\s+/g, " ").trim();
+
+    if (!normalized) {
+      return {
+        isClarification: false,
+        confidence: 0,
+      };
+    }
 
     const matches = PATTERNS.filter((pattern) => pattern.test(normalized));
 

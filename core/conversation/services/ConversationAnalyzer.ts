@@ -1,3 +1,5 @@
+// core/conversation/services/ConversationAnalyzer.ts
+
 import type {
   ConversationAnalysis,
   ConversationTurn,
@@ -50,6 +52,10 @@ export class ConversationAnalyzer implements ConversationAnalyzerContract {
 
       const normalizedText = this.normalizer.normalize(input.segment.text);
 
+      if (!normalizedText) {
+        throw new Error("Conversation segment contains no analyzable text.");
+      }
+
       const normalizedSegment: TranscriptSegment = {
         ...input.segment,
         text: normalizedText,
@@ -59,23 +65,47 @@ export class ConversationAnalyzer implements ConversationAnalyzerContract {
 
       this.assertNotCancelled(input.signal);
 
+      // --------------------------------------------------------------
+      // QUESTION
+      // --------------------------------------------------------------
+
       const detectedQuestion = this.questionDetector.detect(normalizedText);
 
       const question = this.questionClassifier.classify(detectedQuestion);
 
       this.assertNotCancelled(input.signal);
 
+      // --------------------------------------------------------------
+      // TOPIC
+      // --------------------------------------------------------------
+
       const topic = this.topicTracker.track(turn, input.previousTopic);
 
-      const preliminaryClarification =
-        this.clarificationDetector.detect(normalizedText);
+      // --------------------------------------------------------------
+      // CLARIFICATION
+      // --------------------------------------------------------------
+
+      const clarification = this.clarificationDetector.detect(normalizedText);
+
+      // --------------------------------------------------------------
+      // RESPONSE RELATIONSHIP
+      // --------------------------------------------------------------
+
+      const isResponseToQuestion = this.isResponseToPreviousQuestion(
+        turn,
+        input.previousQuestion,
+      );
+
+      // --------------------------------------------------------------
+      // PRELIMINARY INTENT
+      // --------------------------------------------------------------
 
       const preliminaryIntent = this.intentClassifier.classify({
         text: normalizedText,
         isQuestion: question.isQuestion,
         isFollowUp: false,
-        isClarification: preliminaryClarification.isClarification,
-        speaker: turn.speaker,
+        isClarification: clarification.isClarification,
+        isResponseToQuestion,
       });
 
       const preliminaryTurn: ConversationTurn = {
@@ -86,19 +116,27 @@ export class ConversationAnalyzer implements ConversationAnalyzerContract {
         confidence: preliminaryIntent.confidence,
       };
 
+      // --------------------------------------------------------------
+      // FOLLOW-UP
+      // --------------------------------------------------------------
+
       const followUp = this.followUpDetector.detect(
         preliminaryTurn,
         input.previousQuestion,
       );
 
-      const clarification = this.clarificationDetector.detect(normalizedText);
+      this.assertNotCancelled(input.signal);
+
+      // --------------------------------------------------------------
+      // FINAL INTENT
+      // --------------------------------------------------------------
 
       const intent = this.intentClassifier.classify({
         text: normalizedText,
         isQuestion: question.isQuestion,
         isFollowUp: followUp.isFollowUp,
         isClarification: clarification.isClarification,
-        speaker: turn.speaker,
+        isResponseToQuestion,
       });
 
       const finalTurn: ConversationTurn = {
@@ -106,6 +144,10 @@ export class ConversationAnalyzer implements ConversationAnalyzerContract {
         intent: intent.intent,
         confidence: intent.confidence,
       };
+
+      // --------------------------------------------------------------
+      // REPETITION
+      // --------------------------------------------------------------
 
       const repetition = this.repetitionDetector.detect(finalTurn, [
         ...input.previousQuestions,
@@ -139,14 +181,54 @@ export class ConversationAnalyzer implements ConversationAnalyzerContract {
 
   private createTurn(segment: TranscriptSegment): ConversationTurn {
     return {
-      id: `turn_${segment.id}`,
+      id: segment.id,
       segmentId: segment.id,
       speaker: segment.speaker,
+      speakerId: segment.speakerId,
       text: segment.text,
       timestamp: segment.createdAt,
       intent: "unknown",
       confidence: 0,
     };
+  }
+
+  private isResponseToPreviousQuestion(
+    currentTurn: ConversationTurn,
+    previousQuestion?: ConversationTurn,
+  ): boolean {
+    if (!previousQuestion) {
+      return false;
+    }
+
+    /*
+     * Speaker identity is the strongest signal.
+     *
+     * Example:
+     *
+     * speaker-1 asks a question
+     * speaker-2 responds
+     *
+     * This can be interpreted as a response without assuming
+     * speaker-1 is an interviewer or speaker-2 is a candidate.
+     */
+    if (currentTurn.speakerId && previousQuestion.speakerId) {
+      return currentTurn.speakerId !== previousQuestion.speakerId;
+    }
+
+    /*
+     * Fall back to generic semantic roles when available.
+     *
+     * Do not infer "answer" when both sides are simply
+     * generic participants and no speaker identity exists.
+     */
+    if (
+      currentTurn.speaker !== "participant" &&
+      previousQuestion.speaker !== "participant"
+    ) {
+      return currentTurn.speaker !== previousQuestion.speaker;
+    }
+
+    return false;
   }
 
   private assertNotCancelled(signal?: AbortSignal): void {

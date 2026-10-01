@@ -1,23 +1,39 @@
+// core/conversation/state/ConversationMemory.ts
+
 import type {
   ConversationMemorySnapshot,
   ConversationTurn,
   TopicAnalysis,
 } from "../../../shared/types/conversation";
 
+import type { UUID } from "../../../shared/types/common";
+
 export interface ConversationMemoryOptions {
   readonly maxTurns?: number;
+
   readonly maxQuestionHistory?: number;
 }
 
 export class ConversationMemory {
+  private readonly sessionId: UUID;
+
   private readonly maxTurns: number;
+
   private readonly maxQuestionHistory: number;
 
   private turns: ConversationTurn[] = [];
+
   private questionHistory: ConversationTurn[] = [];
+
   private activeTopic?: TopicAnalysis;
 
-  constructor(options: ConversationMemoryOptions = {}) {
+  constructor(sessionId: UUID, options: ConversationMemoryOptions = {}) {
+    if (!sessionId) {
+      throw new Error("ConversationMemory requires a sessionId.");
+    }
+
+    this.sessionId = sessionId;
+
     this.maxTurns = Math.max(1, options.maxTurns ?? 100);
 
     this.maxQuestionHistory = Math.max(1, options.maxQuestionHistory ?? 50);
@@ -59,27 +75,40 @@ export class ConversationMemory {
   }
 
   snapshot(): ConversationMemorySnapshot {
-    const candidateAnswerCount = this.turns.filter(
-      (turn) => turn.speaker === "candidate" && turn.intent === "answer",
+    const responseCount = this.turns.filter(
+      (turn) => turn.intent === "answer",
     ).length;
 
-    const interviewerTurnCount = this.turns.filter(
-      (turn) => turn.speaker === "interviewer",
-    ).length;
+    const speakerIds = new Set<string>();
+
+    for (const turn of this.turns) {
+      speakerIds.add(turn.speakerId ?? turn.speaker);
+    }
 
     return {
+      sessionId: this.sessionId,
+
       turns: [...this.turns],
+
       activeTopic: this.activeTopic,
+
       lastQuestion: this.getLastQuestion(),
+
       questionHistory: [...this.questionHistory],
-      candidateAnswerCount,
-      interviewerTurnCount,
+
+      questionCount: this.questionHistory.length,
+
+      responseCount,
+
+      participantCount: speakerIds.size,
     };
   }
 
   clear(): void {
     this.turns = [];
+
     this.questionHistory = [];
+
     this.activeTopic = undefined;
   }
 }

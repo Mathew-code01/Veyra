@@ -1,31 +1,72 @@
-// Contracts
+// ============================================================================
+// FILE: core/conversation/index.ts
+// PURPOSE:
+// Public exports for the conversation domain.
+// ============================================================================
+
+// ============================================================================
+// CONTRACTS
+// ============================================================================
+
 export * from "./contracts/ConversationAnalyzer";
 
-// Errors
+// ============================================================================
+// ERRORS
+// ============================================================================
+
 export * from "./errors/ConversationError";
 
-// Normalization
+// ============================================================================
+// NORMALIZATION
+// ============================================================================
+
 export * from "./normalization/ConversationTextNormalizer";
 
-// Detectors
+// ============================================================================
+// DETECTORS
+// ============================================================================
+
 export * from "./detectors/ClarificationDetector";
 export * from "./detectors/FollowUpDetector";
 export * from "./detectors/QuestionDetector";
 export * from "./detectors/RepetitionDetector";
 
-// Classification
+// ============================================================================
+// CLASSIFICATION
+// ============================================================================
+
 export * from "./classification/IntentClassifier";
 export * from "./classification/QuestionClassifier";
 
-// State
+// ============================================================================
+// STATE
+// ============================================================================
+
 export * from "./state/ConversationMemory";
 
-// Tracking
+// ============================================================================
+// TRACKING
+// ============================================================================
+
 export * from "./tracking/TopicTracker";
 
-// Services
+// ============================================================================
+// SERVICES
+// ============================================================================
+
 export * from "./services/ConversationAnalyzer";
 export * from "./services/ConversationManager";
+export * from "./services/ConversationService";
 
-// Validation
+// ============================================================================
+// VALIDATION
+// ============================================================================
+
 export * from "./validation/ConversationValidator";
+
+// ============================================================================
+// AUDIO INTEGRATION
+// ============================================================================
+
+export * from "./adapters/AudioTranscriptMapper";
+export * from "./adapters/AudioConversationBridge";
