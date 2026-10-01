@@ -9,8 +9,7 @@ import { z } from "zod";
  * This is the only shared validation module that should export
  * aiProviderSchema.
  */
-export const aiProviderSchema = z.enum(["gemini", "ollama", "mock"]);
-
+export const aiProviderSchema = z.string().trim().min(1).max(100);
 /**
  * Supported AI request modes.
  */

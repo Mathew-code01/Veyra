@@ -1,6 +1,26 @@
-// shared/types/audio.ts
+// ============================================================================
+// FILE: shared/types/audio.ts
+// PURPOSE:
+// Stable audio-domain types shared across core, desktop, client and server.
+//
+// ARCHITECTURAL RULE:
+// This file describes application-boundary data.
+// It does NOT import from core/audio.
+//
+// core/audio owns implementation types such as:
+// - AudioChunk
+// - AudioBuffer
+// - TranscriptionEngine
+// - TranscriptAssembler
+//
+// This file owns the stable representation that other layers may consume.
+// ============================================================================
 
 import type { ISODateString, UUID } from "./common";
+
+// ============================================================================
+// DEVICE
+// ============================================================================
 
 /**
  * Audio device direction.
@@ -8,7 +28,7 @@ import type { ISODateString, UUID } from "./common";
 export type AudioDeviceType = "input" | "output";
 
 /**
- * Audio device information exposed across the application boundary.
+ * Audio device exposed across an application boundary.
  */
 export interface AudioDevice {
   readonly id: string;
@@ -22,23 +42,50 @@ export interface AudioDevice {
   readonly enabled: boolean;
 }
 
-/**
- * Permission states shared by OS/device integrations.
- */
+// ============================================================================
+// PERMISSIONS
+// ============================================================================
+
 export type PermissionState = "granted" | "denied" | "prompt" | "unknown";
 
-/**
- * Current microphone permission.
- */
 export interface AudioPermissionState {
   readonly microphone: PermissionState;
 }
 
+// ============================================================================
+// AUDIO FORMAT
+// ============================================================================
+
 /**
- * Audio session lifecycle state.
+ * Stable shared representation of an audio format.
+ *
+ * This mirrors the conceptual format used by core/audio without
+ * importing the core implementation.
+ */
+export type AudioSampleFormat =
+  "pcm_s16le" | "pcm_f32le" | "wav" | "opus" | "webm";
+
+export interface AudioFormat {
+  readonly sampleRate: number;
+
+  readonly channels: number;
+
+  readonly sampleFormat: AudioSampleFormat;
+
+  readonly bitDepth?: 16 | 24 | 32;
+}
+
+// ============================================================================
+// AUDIO SESSION
+// ============================================================================
+
+/**
+ * Application-level audio session state.
+ *
+ * A session represents a capture lifecycle, not a conversation itself.
  */
 export interface AudioSessionState {
-  readonly sessionId?: UUID;
+  readonly sessionId: UUID;
 
   readonly active: boolean;
 
@@ -46,62 +93,110 @@ export interface AudioSessionState {
 
   readonly startedAt: ISODateString | null;
 
-  readonly stoppedAt?: ISODateString | null;
+  readonly stoppedAt: ISODateString | null;
 
-  readonly sampleRate: number;
-
-  readonly channels: number;
+  readonly format: AudioFormat;
 
   readonly bytesCaptured: number;
 
   readonly durationMs: number;
 }
 
-/**
- * Speaker identity associated with an audio transcript.
- */
-export type TranscriptSpeaker = "interviewer" | "candidate" | "unknown";
+// ============================================================================
+// AUDIO TRANSCRIPT
+// ============================================================================
 
 /**
- * Audio-pipeline-specific transcript segment.
+ * Optional speaker identifier.
  *
- * NOTE:
- * This is intentionally NOT named TranscriptSegment.
- * The canonical conversational TranscriptSegment lives in
- * shared/types/conversation.ts.
+ * Audio deliberately does NOT define semantic identities such as
+ * interviewer/candidate.
+ *
+ * Higher-level conversation/interview logic may interpret this identifier.
+ */
+export type AudioSpeakerId = string;
+
+/**
+ * Transcript segment produced by the audio subsystem.
+ *
+ * This is intentionally distinct from the canonical conversation
+ * TranscriptSegment.
+ *
+ * Stage B will define the mapping:
+ *
+ * core/audio
+ *     ↓
+ * shared audio transcript
+ *     ↓
+ * core/conversation
  */
 export interface AudioTranscriptSegment {
   readonly id: UUID;
 
+  readonly sessionId: UUID;
+
   readonly text: string;
 
-  readonly speaker: TranscriptSpeaker;
+  readonly speakerId?: AudioSpeakerId;
 
   readonly startedAt: ISODateString;
 
   readonly endedAt: ISODateString;
 
-  readonly confidence: number;
+  readonly confidence?: number;
 
   readonly isFinal: boolean;
+
+  /**
+   * Identifies the subsystem that produced the transcript.
+   */
+  readonly source: "audio";
+
+  /**
+   * Optional transcription provider information.
+   */
+  readonly provider?: string;
+
+  /**
+   * Optional model identifier.
+   */
+  readonly model?: string;
+
+  /**
+   * Optional detected language.
+   */
+  readonly language?: string;
 }
 
+// ============================================================================
+// TRANSCRIPT STATE
+// ============================================================================
+
 /**
- * Current transcript state produced by the audio subsystem.
+ * Current audio transcript state.
+ *
+ * This remains an audio-domain state object.
+ * It is not the canonical conversation state.
  */
 export interface TranscriptState {
+  readonly sessionId: UUID;
+
   readonly active: boolean;
 
   readonly segments: readonly AudioTranscriptSegment[];
 
+  /**
+   * Current non-final transcript text.
+   */
   readonly partialText: string;
 }
 
-/**
- * Audio processing metrics.
- */
+// ============================================================================
+// AUDIO METRICS
+// ============================================================================
+
 export interface AudioMetrics {
-  readonly sessionId?: UUID;
+  readonly sessionId: UUID;
 
   readonly sampleRate: number;
 
