@@ -1,4 +1,3 @@
-
 // ============================================================================
 // FILE: core/vision/providers/AIManagerVisionProvider.ts
 //
@@ -19,7 +18,7 @@
 //     AIManager
 //          │
 //          ▼
-//     AI routing / execution
+//     Registered AI provider
 //          │
 //     ┌────┴─────────────────┐
 //     ▼                      ▼
@@ -59,9 +58,9 @@
 // - model loading
 // - cloud transport
 // - local runtime management
-// - prompt ownership for the VisionAnalyzer
+// - Vision orchestration
 //
-// Those remain inside core/ai and the lower-level provider/runtime layers.
+// Those remain inside their respective layers.
 // ============================================================================
 
 import type { AIManager } from "../../ai/AIManager";
@@ -96,29 +95,28 @@ export interface AIManagerVisionProviderOptions {
   /**
    * Existing Veyra AI manager.
    *
-   * The adapter delegates all actual AI execution to this manager.
+   * The adapter delegates actual AI execution to this manager.
    */
   readonly aiManager: AIManager;
 
   /**
-   * Registered AI provider that this Vision adapter should use.
+   * Registered AI provider represented by this Vision adapter.
    *
    * Examples:
    *
    *     local
    *     ollama
-   *     cloud:gemini
-   *     cloud:mistral
+   *     gemini
+   *     mistral
+   *     groq
+   *     cerebras
    */
   readonly providerName: string;
 
   /**
    * Optional Vision-facing provider name.
    *
-   * If omitted, the AI provider name is used.
-   *
-   * This allows multiple adapters to target the same underlying AI provider
-   * with different Vision configurations if required later.
+   * If omitted, the underlying AI provider name is used.
    */
   readonly name?: string;
 }
@@ -152,7 +150,6 @@ export class AIManagerVisionProvider implements VisionProvider {
     }
 
     this.aiManager = options.aiManager;
-
     this.aiProviderName = providerName;
 
     const aiProvider = this.getAIProvider();
@@ -165,7 +162,9 @@ export class AIManagerVisionProvider implements VisionProvider {
           details: {
             stage: "provider",
             providerName,
-            capability: "vision",
+            metadata: {
+              capability: "vision",
+            },
           },
         },
       );
@@ -176,11 +175,15 @@ export class AIManagerVisionProvider implements VisionProvider {
     this.name = configuredName || providerName;
 
     /**
-     * These capabilities describe THIS Vision adapter.
+     * These capabilities describe the Vision adapter itself.
      *
-     * The adapter currently exposes only non-streaming VisionProvider.analyze().
-     * Therefore streaming and structured output are deliberately false even if
-     * the underlying AI provider supports them.
+     * The current VisionProvider interface exposes a non-streaming
+     * analyze() operation only, therefore streaming is false here even
+     * when the underlying AI provider supports streaming.
+     *
+     * Structured output is also false because this adapter currently
+     * exposes the AI result as VisionResponse.description rather than
+     * exposing a structured-output API.
      */
     this.capabilities = Object.freeze({
       vision: true,
@@ -221,9 +224,7 @@ export class AIManagerVisionProvider implements VisionProvider {
     }
 
     if (!request.image.data.byteLength) {
-      throw VisionError.invalidImage(
-        "Vision provider image cannot be empty.",
-      );
+      throw VisionError.invalidImage("Vision provider image cannot be empty.");
     }
 
     const mimeType = request.image.mimeType?.trim().toLowerCase();
@@ -247,8 +248,8 @@ export class AIManagerVisionProvider implements VisionProvider {
       /**
        * Re-read the provider from AIManager at execution time.
        *
-       * This avoids permanently retaining a stale provider object if the
-       * AIManager replaces the registration for this provider name.
+       * This means the adapter does not retain a stale provider object if
+       * the AIManager registration is replaced later.
        */
       const aiProvider = this.getAIProvider();
 
@@ -260,16 +261,15 @@ export class AIManagerVisionProvider implements VisionProvider {
             details: {
               stage: "provider",
               providerName: this.aiProviderName,
-              capability: "vision",
+              metadata: {
+                capability: "vision",
+              },
             },
           },
         );
       }
 
-      const imageDataUrl = createImageDataUrl(
-        request.image.data,
-        mimeType,
-      );
+      const imageDataUrl = createImageDataUrl(request.image.data, mimeType);
 
       const aiRequest = this.createAIRequest({
         request,
@@ -279,7 +279,22 @@ export class AIManagerVisionProvider implements VisionProvider {
 
       throwIfAborted(request.signal);
 
-      const response = await this.aiManager.generate(aiRequest);
+      /**
+       * IMPORTANT:
+       *
+       * The current AIManager API is:
+       *
+       *     generate(providerName, request)
+       *
+       * Therefore the provider name is supplied explicitly here.
+       *
+       * We still execute through AIManager rather than calling the
+       * underlying provider directly.
+       */
+      const response = await this.aiManager.generate(
+        this.aiProviderName,
+        aiRequest,
+      );
 
       throwIfAborted(request.signal);
 
@@ -313,15 +328,33 @@ export class AIManagerVisionProvider implements VisionProvider {
     throwIfAborted(signal);
 
     try {
+      /**
+       * AIManager currently exposes healthCheck() for all providers.
+       *
+       * It does not expose a targeted healthCheck(providerName, signal)
+       * method, so the adapter checks the registered provider directly.
+       *
+       * This remains inside the adapter and does not leak AIManager into
+       * VisionAnalyzer.
+       */
       const provider = this.getAIProvider();
 
-      const health = await provider.healthCheck(signal);
+      throwIfAborted(signal);
 
-      return (
-        health.status === "healthy" ||
-        health.status === "degraded"
-      );
-    } catch {
+      const health = await provider.healthCheck();
+
+      throwIfAborted(signal);
+
+      return health.status === "healthy" || health.status === "degraded";
+    } catch (error) {
+      if (signal?.aborted) {
+        throw VisionError.cancelled({
+          stage: "provider",
+          providerName: this.name,
+          cause: error,
+        });
+      }
+
       return false;
     }
   }
@@ -347,19 +380,20 @@ export class AIManagerVisionProvider implements VisionProvider {
       requestId: createRequestId(),
 
       /**
-       * Explicitly target the AI provider represented by this adapter.
+       * Keep the provider on the request as well as passing it explicitly
+       * to AIManager.generate().
        *
-       * The request still enters AIManager rather than calling the provider
-       * directly, so the existing AI execution boundary remains intact.
+       * This preserves the canonical shared AIRequest contract and allows
+       * downstream diagnostics to see which provider was intended.
        */
       provider: this.aiProviderName,
 
       model: request.modelName?.trim() || undefined,
 
       /**
-       * VisionProvider currently does not expose an AIRequestMode.
+       * VisionProvider does not expose AIRequestMode.
        *
-       * "general" is therefore the correct neutral shared mode.
+       * "general" is the neutral shared mode.
        */
       mode: "general",
 
@@ -413,7 +447,9 @@ export class AIManagerVisionProvider implements VisionProvider {
           details: {
             stage: "provider",
             providerName: this.aiProviderName,
-            responseType: response.type,
+            metadata: {
+              responseType: response.type,
+            },
           },
         },
       );
@@ -431,26 +467,28 @@ export class AIManagerVisionProvider implements VisionProvider {
           details: {
             stage: "provider",
             providerName: this.aiProviderName,
-            responseType: textResponse.type,
+            metadata: {
+              responseType: textResponse.type,
+            },
           },
         },
       );
     }
 
-    const metadata = textResponse.metadata;
+    const responseMetadata = textResponse.metadata;
 
     const providerMetadata: VisionProviderMetadata = Object.freeze({
-      providerName: metadata.provider || this.aiProviderName,
+      providerName: responseMetadata.provider || this.aiProviderName,
 
-      modelName: metadata.model || undefined,
+      modelName: responseMetadata.model || undefined,
 
-      requestId: metadata.requestId,
+      requestId: responseMetadata.requestId,
 
       executionTarget: this.getExecutionTarget(),
 
-      usage: toVisionUsage(metadata.usage),
+      usage: toVisionUsage(responseMetadata.usage),
 
-      metadata: metadata.details,
+      metadata: responseMetadata.details,
     });
 
     return Object.freeze({
@@ -461,21 +499,21 @@ export class AIManagerVisionProvider implements VisionProvider {
       metadata: Object.freeze({
         "ai.responseType": textResponse.type,
 
-        "ai.provider": metadata.provider,
+        "ai.provider": responseMetadata.provider,
 
-        "ai.model": metadata.model,
+        "ai.model": responseMetadata.model,
 
-        "ai.requestId": metadata.requestId,
+        "ai.requestId": responseMetadata.requestId,
 
-        ...(metadata.finishReason
+        ...(responseMetadata.finishReason
           ? {
-              "ai.finishReason": metadata.finishReason,
+              "ai.finishReason": responseMetadata.finishReason,
             }
           : {}),
 
-        ...(metadata.cached !== undefined
+        ...(responseMetadata.cached !== undefined
           ? {
-              "ai.cached": metadata.cached,
+              "ai.cached": responseMetadata.cached,
             }
           : {}),
       }),
@@ -488,17 +526,24 @@ export class AIManagerVisionProvider implements VisionProvider {
 
   private getAIProvider() {
     try {
-      return this.aiManager.getProvider(this.aiProviderName);
+      /**
+       * IMPORTANT:
+       *
+       * The current AIManager API exposes:
+       *
+       *     get(providerName)
+       *
+       * not:
+       *
+       *     getProvider(providerName)
+       */
+      return this.aiManager.get(this.aiProviderName);
     } catch (error) {
-      throw VisionError.fromUnknown(
-        error,
-        "VISION_CONFIGURATION_ERROR",
-        {
-          stage: "provider",
-          providerName: this.aiProviderName,
-          cause: error,
-        },
-      );
+      throw VisionError.fromUnknown(error, "VISION_CONFIGURATION_ERROR", {
+        stage: "provider",
+        providerName: this.aiProviderName,
+        cause: error,
+      });
     }
   }
 
@@ -614,18 +659,15 @@ function serializeMetadataValue(value: unknown): string {
 // IMAGE DATA URL
 // ============================================================================
 
-function createImageDataUrl(
-  data: Uint8Array,
-  mimeType: string,
-): string {
+function createImageDataUrl(data: Uint8Array, mimeType: string): string {
   return `data:${mimeType};base64,${encodeBase64(data)}`;
 }
 
 /**
  * Portable base64 encoder.
  *
- * This intentionally avoids a dependency on Node's Buffer so the adapter
- * remains usable in desktop/browser-compatible execution environments.
+ * This avoids depending on Node's Buffer so the adapter remains compatible
+ * with desktop/browser-oriented execution environments.
  */
 function encodeBase64(data: Uint8Array): string {
   const alphabet =
@@ -637,27 +679,22 @@ function encodeBase64(data: Uint8Array): string {
     const byte1 = data[index];
 
     const hasByte2 = index + 1 < data.length;
+
     const hasByte3 = index + 2 < data.length;
 
     const byte2 = hasByte2 ? data[index + 1] : 0;
+
     const byte3 = hasByte3 ? data[index + 2] : 0;
 
-    const combined =
-      (byte1 << 16) |
-      (byte2 << 8) |
-      byte3;
+    const combined = (byte1 << 16) | (byte2 << 8) | byte3;
 
     output += alphabet[(combined >> 18) & 0x3f];
 
     output += alphabet[(combined >> 12) & 0x3f];
 
-    output += hasByte2
-      ? alphabet[(combined >> 6) & 0x3f]
-      : "=";
+    output += hasByte2 ? alphabet[(combined >> 6) & 0x3f] : "=";
 
-    output += hasByte3
-      ? alphabet[combined & 0x3f]
-      : "=";
+    output += hasByte3 ? alphabet[combined & 0x3f] : "=";
   }
 
   return output;
@@ -700,9 +737,7 @@ function toVisionUsage(
       : {}),
   };
 
-  return Object.keys(result).length > 0
-    ? Object.freeze(result)
-    : undefined;
+  return Object.keys(result).length > 0 ? Object.freeze(result) : undefined;
 }
 
 // ============================================================================
@@ -719,10 +754,7 @@ function createRequestId(): string {
 
   const timestamp = Date.now().toString(16);
 
-  const random = Math.random()
-    .toString(16)
-    .slice(2)
-    .padEnd(24, "0");
+  const random = Math.random().toString(16).slice(2).padEnd(24, "0");
 
   return [
     timestamp.slice(-8),
