@@ -622,8 +622,24 @@ function buildResult(input: {
     input.vision?.confidence ?? input.classification.confidence,
   );
 
+  /*
+   * IMPORTANT BOUNDARY NORMALIZATION
+   *
+   * core/vision/ocr/OCRResult allows confidence to be undefined because an
+   * individual OCR adapter may not provide an aggregate confidence score.
+   *
+   * shared/types/vision.ts deliberately exposes a stronger canonical
+   * contract where VisionOCRResult.confidence is always present.
+   *
+   * Therefore we must normalize the internal OCR representation before
+   * returning the shared/canonical VisionResult.
+   */
+  const canonicalOCR = normalizeOCRResult(input.ocr);
+
   return Object.freeze({
     analysisId: createAnalysisId(),
+
+    requestId: input.request.id,
 
     summary: Object.freeze({
       description,
@@ -647,7 +663,7 @@ function buildResult(input: {
         : {}),
     }),
 
-    ocr: input.ocr,
+    ocr: canonicalOCR,
 
     observations: Object.freeze([...(input.vision?.observations ?? [])]),
 
@@ -676,6 +692,41 @@ function buildResult(input: {
 
       ...(input.vision?.metadata ?? {}),
     }),
+  });
+}
+
+// ============================================================================
+// OCR BOUNDARY NORMALIZATION
+// ============================================================================
+
+function normalizeOCRResult(ocr: OCRResult | undefined):
+  | {
+      readonly text: string;
+
+      readonly confidence: number;
+
+      readonly language?: string;
+    }
+  | undefined {
+  if (!ocr) {
+    return undefined;
+  }
+
+  return Object.freeze({
+    text: ocr.text.trim(),
+
+    /*
+     * The shared Vision contract requires a concrete confidence value.
+     *
+     * When the OCR engine does not provide one, 0 represents "no confidence
+     * information was supplied by the OCR engine" at this canonical boundary.
+     *
+     * We do not invent confidence from classification confidence or from
+     * another subsystem.
+     */
+    confidence: clamp01(ocr.confidence ?? 0),
+
+    language: ocr.language?.trim() || undefined,
   });
 }
 
