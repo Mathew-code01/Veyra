@@ -1,57 +1,85 @@
 // ============================================================================
 // FILE: core/context/ContextManager.ts
-// PURPOSE:
-// Central orchestration service for the generic context/RAG subsystem.
 //
-// CONTEXT SOURCES MAY INCLUDE:
+// PURPOSE:
+// Central orchestration service for the generic Veyra Context subsystem.
+//
+// CONTEXT ANSWERS:
+//
+//     "What information should Veyra know right now?"
+//
+// POSSIBLE SOURCES:
 // - documents
-// - conversations
+// - vision
+// - audio
+// - conversation
+// - candidate
 // - memories
 // - web
 // - tools
 // - generated content
 // - application state
+// - future sources
 //
-// IMPORTANT:
-// ContextManager does NOT depend on core/documents.
+// ARCHITECTURAL RULE:
 //
-// Documents are connected through an adapter:
+//     source domain
+//          ↓
+//     shared contract / adapter
+//          ↓
+//     ContextManager
+//          ↓
+//     embeddings
+//          ↓
+//     vector storage
+//          ↓
+//     retrieval/ranking/compression
 //
-//   core/documents/ContextDocumentIndexer
-//              ↓
-//   ContextManager.indexPreparedDocument()
-//
-// This allows the document subsystem to preserve its own parsing,
-// normalization and structural chunking decisions while ContextManager
-// remains responsible for embeddings, vector storage and retrieval.
+// core/context MUST NOT import source-domain implementations.
 // ============================================================================
 
-import type { Chunk, Chunker } from "./Chunker";
+import type {
+  ContextInput,
+  ContextItem,
+  PreparedContext,
+} from "./contracts/contextTypes";
 
 import type {
-  DocumentInput,
-  DocumentParser,
-  ParsedDocument,
-} from "./DocumentParser";
+  ContextQuery,
+  RetrievedContext,
+  RankedContext,
+  CompressedContext,
+} from "./contracts/ContextQuery";
 
-import type { EmbeddingService } from "./EmbeddingService";
+import type { Chunk, Chunker } from "./ingestion/Chunker";
 
-import type { VectorRecord, VectorStore } from "./VectorStore";
+import type { ContextParser } from "./ingestion/ContextParser";
 
-import type { Retriever, RetrievedContext } from "./Retriever";
+import type { EmbeddingService } from "./embeddings/EmbeddingService";
 
-import type { ContextRanker, RankedContext } from "./ContextRanker";
+import type {
+  ContextStore,
+  ContextVectorRecord,
+} from "./contracts/ContextStore";
 
-import type { ContextCompressor, CompressedContext } from "./ContextCompressor";
+import type { Retriever } from "./retrieval/Retriever";
+
+import type { ContextRanker } from "./retrieval/ContextRanker";
+
+import type { ContextCompressor } from "./retrieval/ContextCompressor";
+
+// ============================================================================
+// OPTIONS
+// ============================================================================
 
 export interface ContextManagerOptions {
-  readonly parser: DocumentParser;
+  readonly parser: ContextParser;
 
   readonly chunker: Chunker;
 
   readonly embeddings: EmbeddingService;
 
-  readonly vectorStore: VectorStore;
+  readonly vectorStore: ContextStore;
 
   readonly retriever: Retriever;
 
@@ -60,31 +88,25 @@ export interface ContextManagerOptions {
   readonly compressor: ContextCompressor;
 }
 
-export interface IndexedDocument {
-  readonly document: ParsedDocument;
-
-  readonly chunks: readonly Chunk[];
-}
+// ============================================================================
+// INDEX OPTIONS
+// ============================================================================
 
 export interface ContextIndexOptions {
   readonly signal?: AbortSignal;
 }
 
-export interface ContextQuery {
-  readonly query: string;
+// ============================================================================
+// RESULT
+// ============================================================================
 
-  readonly limit?: number;
+export interface ContextIndexResult extends PreparedContext {}
 
-  readonly minScore?: number;
+// ============================================================================
+// QUERY RESULT
+// ============================================================================
 
-  readonly documentIds?: readonly string[];
-
-  readonly documentTypes?: readonly string[];
-
-  readonly candidateId?: string;
-}
-
-export interface ContextResult {
+export interface ContextQueryResult {
   readonly query: string;
 
   readonly retrieved: readonly RetrievedContext[];
@@ -94,17 +116,18 @@ export interface ContextResult {
   readonly compressed: CompressedContext;
 }
 
-/**
- * Central context orchestration service.
- */
+// ============================================================================
+// MANAGER
+// ============================================================================
+
 export class ContextManager {
-  private readonly parser: DocumentParser;
+  private readonly parser: ContextParser;
 
   private readonly chunker: Chunker;
 
   private readonly embeddings: EmbeddingService;
 
-  private readonly vectorStore: VectorStore;
+  private readonly vectorStore: ContextStore;
 
   private readonly retriever: Retriever;
 
@@ -113,12 +136,14 @@ export class ContextManager {
   private readonly compressor: ContextCompressor;
 
   /**
-   * In-memory canonical context document registry.
+   * In-memory registry of canonical Context items.
    *
-   * Production deployments can replace/augment this with a persistent
-   * context repository without changing the ingestion contract.
+   * This registry is deliberately generic.
+   *
+   * A future persistent ContextRepository can replace this without changing
+   * the Context ingestion/retrieval contracts.
    */
-  private readonly documents = new Map<string, ParsedDocument>();
+  private readonly contexts = new Map<string, ContextItem>();
 
   public constructor(options: ContextManagerOptions) {
     if (!options) {
@@ -140,44 +165,41 @@ export class ContextManager {
     this.compressor = options.compressor;
   }
 
+  // ==========================================================================
+  // GENERIC INGESTION
+  // ==========================================================================
+
   /**
-   * Generic context ingestion path.
+   * Generic Context ingestion path.
    *
-   * This is intentionally preserved for non-document context.
-   *
-   * Flow:
-   *
-   *   DocumentInput
-   *       ↓
-   *   context parser
-   *       ↓
-   *   generic chunker
-   *       ↓
-   *   embeddings
-   *       ↓
-   *   vector store
+   * Use this when the caller provides text and wants Context to perform
+   * generic parsing/chunking.
    */
-  public async indexDocument(
-    input: DocumentInput,
+  public async index(
+    input: ContextInput,
     options: ContextIndexOptions = {},
-  ): Promise<IndexedDocument> {
+  ): Promise<ContextIndexResult> {
     this.throwIfAborted(options.signal);
 
-    const document = this.parser.parse(input);
+    const context = this.parser.parse(input);
 
     this.throwIfAborted(options.signal);
 
     const chunks = this.chunker.chunk(
-      document.id,
-      document.text,
+      context.id,
+      context.text,
       {
-        ...document.metadata,
+        ...context.metadata,
 
-        type: document.type,
+        sourceType: context.source.type,
 
-        sourceType: document.sourceType,
+        sourceId: context.source.id,
 
-        documentName: document.name,
+        sourceName: context.source.name,
+
+        contentType: context.contentType,
+
+        scope: context.scope,
       },
       {
         signal: options.signal,
@@ -186,55 +208,63 @@ export class ContextManager {
 
     this.throwIfAborted(options.signal);
 
-    return this.indexPreparedDocument(document, chunks, options);
+    return this.indexPreparedContext(context, chunks, options);
   }
 
+  // ==========================================================================
+  // PREPARED INGESTION
+  // ==========================================================================
+
   /**
-   * Prepared context ingestion path.
+   * Prepared Context ingestion path.
    *
-   * This is the production bridge used by core/documents.
+   * This is the important boundary used by source-specific adapters.
    *
-   * The caller has already:
+   * Example:
    *
-   *   - parsed the source
-   *   - normalized the content
-   *   - created canonical structural chunks
+   *     core/documents
+   *          ↓
+   *     ContextDocumentIndexer
+   *          ↓
+   *     indexPreparedContext()
    *
-   * Therefore ContextManager MUST NOT parse or rechunk this content.
+   * Documents have already parsed/normalized/chunked their data.
    *
-   * It is responsible only for:
+   * Therefore this method DOES NOT:
    *
-   *   chunks
-   *      ↓
-   *   embeddings
-   *      ↓
-   *   vector records
-   *      ↓
-   *   vector store
+   *     parse
+   *     normalize
+   *     rechunk
+   *
+   * It only performs:
+   *
+   *     prepared chunks
+   *          ↓
+   *     embeddings
+   *          ↓
+   *     Context vector records
+   *          ↓
+   *     storage
    */
-  public async indexPreparedDocument(
-    document: ParsedDocument,
+  public async indexPreparedContext(
+    context: ContextItem,
     chunks: readonly Chunk[],
     options: ContextIndexOptions = {},
-  ): Promise<IndexedDocument> {
-    this.validatePreparedDocument(document);
+  ): Promise<ContextIndexResult> {
+    this.validateContext(context);
 
-    this.validatePreparedChunks(document, chunks);
+    this.validatePreparedChunks(context, chunks);
 
     this.throwIfAborted(options.signal);
 
-    /**
-     * Generate embeddings before deleting the existing vector records.
-     *
-     * This prevents an embedding failure from immediately destroying the
-     * previous searchable representation.
-     *
-     * Full atomic replacement still belongs to the concrete VectorStore
-     * implementation when transactional semantics are available.
-     */
     const embeddingResult =
       chunks.length > 0
-        ? await this.embeddings.embed(chunks.map((chunk) => chunk.text))
+        ? await this.embeddings.embed(
+            chunks.map((chunk) => chunk.text),
+            {
+              signal: options.signal,
+            },
+          )
         : {
             embeddings: [],
           };
@@ -243,12 +273,12 @@ export class ContextManager {
 
     if (embeddingResult.embeddings.length !== chunks.length) {
       throw new Error(
-        `Embedding count mismatch for document "${document.id}". ` +
+        `Embedding count mismatch for context "${context.id}". ` +
           `Expected ${chunks.length}, received ${embeddingResult.embeddings.length}.`,
       );
     }
 
-    const records: VectorRecord[] = [];
+    const records: ContextVectorRecord[] = [];
 
     for (let index = 0; index < chunks.length; index += 1) {
       this.throwIfAborted(options.signal);
@@ -268,24 +298,36 @@ export class ContextManager {
       records.push({
         id: chunk.id,
 
-        vector,
+        contextId: context.id,
 
         text: chunk.text,
 
-        documentId: document.id,
+        vector,
+
+        sourceType: context.source.type,
+
+        sourceId: context.source.id,
+
+        sourceName: context.source.name ?? context.name,
+
+        contentType: context.contentType,
+
+        scope: context.scope,
 
         metadata: {
+          ...context.metadata,
+
           ...chunk.metadata,
 
-          contextId: document.id,
+          contextId: context.id,
 
-          documentId: document.id,
+          sourceType: context.source.type,
 
-          type: document.type,
+          sourceId: context.source.id,
 
-          sourceType: document.sourceType,
+          sourceName: context.source.name ?? context.name,
 
-          documentName: document.name,
+          contentType: context.contentType,
 
           embeddingModel: embeddingResult.model,
 
@@ -297,13 +339,12 @@ export class ContextManager {
     this.throwIfAborted(options.signal);
 
     /**
-     * Replace the previous searchable representation.
+     * Embeddings are generated BEFORE the previous representation is removed.
      *
-     * The VectorStore abstraction currently exposes delete + upsert rather
-     * than an atomic replace operation, so this remains the generic
-     * implementation.
+     * This avoids destroying an existing searchable representation when
+     * embedding generation fails.
      */
-    await this.vectorStore.deleteByDocument(document.id);
+    await this.vectorStore.deleteByContext(context.id);
 
     this.throwIfAborted(options.signal);
 
@@ -313,44 +354,54 @@ export class ContextManager {
 
     this.throwIfAborted(options.signal);
 
-    /**
-     * Keep the canonical context representation available for metadata
-     * inspection and direct context lookup.
-     */
-    this.documents.set(document.id, document);
+    this.contexts.set(context.id, context);
 
     return {
-      document,
+      context,
 
       chunks,
     };
   }
 
-  /**
-   * Removes a document from both the vector index and the
-   * in-memory context registry.
-   */
-  public async removeDocument(documentId: string): Promise<void> {
-    const normalizedDocumentId = documentId?.trim();
+  // ==========================================================================
+  // REMOVAL
+  // ==========================================================================
 
-    if (!normalizedDocumentId) {
-      throw new Error("A document ID is required.");
+  /**
+   * Remove a Context item and all associated vector records.
+   */
+  public async remove(
+    contextId: string,
+    options: ContextIndexOptions = {},
+  ): Promise<void> {
+    const normalized = contextId?.trim();
+
+    if (!normalized) {
+      throw new Error("A context ID is required.");
     }
 
-    await this.vectorStore.deleteByDocument(normalizedDocumentId);
+    this.throwIfAborted(options.signal);
 
-    this.documents.delete(normalizedDocumentId);
+    await this.vectorStore.deleteByContext(normalized);
+
+    this.throwIfAborted(options.signal);
+
+    this.contexts.delete(normalized);
   }
 
+  // ==========================================================================
+  // QUERY
+  // ==========================================================================
+
   /**
-   * Retrieves, ranks and compresses context.
+   * Retrieve, rank and compress generic Context.
    */
-  public async query(request: ContextQuery): Promise<ContextResult> {
+  public async query(request: ContextQuery): Promise<ContextQueryResult> {
     if (!request) {
       throw new Error("A context query request is required.");
     }
 
-    const query = request.query.trim();
+    const query = request.query?.trim();
 
     if (!query) {
       return {
@@ -364,17 +415,27 @@ export class ContextManager {
       };
     }
 
+    this.throwIfAborted(request.signal);
+
     const retrieved = await this.retriever.retrieve(query, {
       limit: request.limit,
 
       minScore: request.minScore,
 
-      documentIds: request.documentIds,
+      sourceTypes: request.sourceTypes,
 
-      documentTypes: request.documentTypes,
+      contentTypes: request.contentTypes,
 
-      candidateId: request.candidateId,
+      sourceIds: request.sourceIds,
+
+      scope: request.scope,
+
+      metadata: request.metadata,
+
+      signal: request.signal,
     });
+
+    this.throwIfAborted(request.signal);
 
     const ranked = this.ranker.rank(retrieved);
 
@@ -391,80 +452,89 @@ export class ContextManager {
     };
   }
 
-  public getDocument(documentId: string): ParsedDocument | undefined {
-    const normalizedDocumentId = documentId?.trim();
+  // ==========================================================================
+  // LOOKUPS
+  // ==========================================================================
 
-    if (!normalizedDocumentId) {
+  public get(contextId: string): ContextItem | undefined {
+    const normalized = contextId?.trim();
+
+    if (!normalized) {
       return undefined;
     }
 
-    return this.documents.get(normalizedDocumentId);
+    return this.contexts.get(normalized);
   }
 
-  public getDocuments(): readonly ParsedDocument[] {
-    return Array.from(this.documents.values());
+  public getAll(): readonly ContextItem[] {
+    return Array.from(this.contexts.values());
   }
 
   public async clear(): Promise<void> {
     await this.vectorStore.clear();
 
-    this.documents.clear();
+    this.contexts.clear();
   }
 
   public async getIndexedChunkCount(): Promise<number> {
     return this.vectorStore.count();
   }
 
-  private validatePreparedDocument(document: ParsedDocument): void {
-    if (!document) {
-      throw new Error("A prepared context document is required.");
+  public async getContextCount(): Promise<number> {
+    return this.contexts.size;
+  }
+
+  // ==========================================================================
+  // VALIDATION
+  // ==========================================================================
+
+  private validateContext(context: ContextItem): void {
+    if (!context) {
+      throw new Error("A Context item is required.");
     }
 
-    if (typeof document.id !== "string" || !document.id.trim()) {
-      throw new Error("A prepared context document must have a non-empty ID.");
+    if (typeof context.id !== "string" || !context.id.trim()) {
+      throw new Error("Context must have a non-empty ID.");
     }
 
-    if (typeof document.name !== "string" || !document.name.trim()) {
-      throw new Error(
-        `Prepared context document "${document.id}" must have a name.`,
-      );
-    }
-
-    if (typeof document.text !== "string") {
-      throw new Error(
-        `Prepared context document "${document.id}" must contain text.`,
-      );
-    }
-
-    if (!document.text.trim()) {
-      throw new Error(
-        `Prepared context document "${document.id}" contains no usable text.`,
-      );
-    }
-
-    if (typeof document.type !== "string" || !document.type.trim()) {
-      throw new Error(
-        `Prepared context document "${document.id}" must have a type.`,
-      );
+    if (typeof context.name !== "string" || !context.name.trim()) {
+      throw new Error(`Context "${context.id}" must have a non-empty name.`);
     }
 
     if (
-      typeof document.sourceType !== "string" ||
-      !document.sourceType.trim()
+      typeof context.contentType !== "string" ||
+      !context.contentType.trim()
     ) {
-      throw new Error(
-        `Prepared context document "${document.id}" must have a source type.`,
-      );
+      throw new Error(`Context "${context.id}" must have a content type.`);
+    }
+
+    if (!context.source || typeof context.source !== "object") {
+      throw new Error(`Context "${context.id}" must have source provenance.`);
+    }
+
+    if (
+      typeof context.source.type !== "string" ||
+      !context.source.type.trim()
+    ) {
+      throw new Error(`Context "${context.id}" must have a source type.`);
+    }
+
+    if (typeof context.text !== "string") {
+      throw new Error(`Context "${context.id}" must contain text.`);
+    }
+
+    if (!context.text.trim()) {
+      throw new Error(`Context "${context.id}" contains no usable text.`);
     }
   }
 
   private validatePreparedChunks(
-    document: ParsedDocument,
+    context: ContextItem,
     chunks: readonly Chunk[],
   ): void {
     if (!Array.isArray(chunks)) {
       throw new Error(
-        `Prepared chunks for document "${document.id}" must be an array.`,
+        `Prepared chunks for context "${context.id}" must be an array.`,
       );
     }
 
@@ -475,42 +545,30 @@ export class ContextManager {
 
       if (!chunk) {
         throw new Error(
-          `Prepared context document "${document.id}" contains an invalid chunk at index ${index}.`,
+          `Context "${context.id}" contains an invalid chunk at index ${index}.`,
         );
       }
 
       if (typeof chunk.id !== "string" || !chunk.id.trim()) {
         throw new Error(
-          `Prepared context document "${document.id}" contains a chunk without an ID.`,
+          `Context "${context.id}" contains a chunk without an ID.`,
         );
       }
 
-      if (
-        typeof chunk.contextId !== "string" ||
-        chunk.contextId !== document.id
-      ) {
+      if (chunk.contextId !== context.id) {
         throw new Error(
-          `Prepared context chunk "${chunk.id}" has contextId "${chunk.contextId}", ` +
-            `expected "${document.id}".`,
-        );
-      }
-
-      if (chunk.documentId !== undefined && chunk.documentId !== document.id) {
-        throw new Error(
-          `Prepared context chunk "${chunk.id}" belongs to document "${chunk.documentId}", ` +
-            `expected "${document.id}".`,
+          `Context chunk "${chunk.id}" has contextId "${chunk.contextId}", ` +
+            `expected "${context.id}".`,
         );
       }
 
       if (typeof chunk.text !== "string" || !chunk.text.trim()) {
-        throw new Error(
-          `Prepared context chunk "${chunk.id}" contains no usable text.`,
-        );
+        throw new Error(`Context chunk "${chunk.id}" contains no usable text.`);
       }
 
       if (seenIds.has(chunk.id)) {
         throw new Error(
-          `Prepared context document "${document.id}" contains duplicate chunk ID "${chunk.id}".`,
+          `Context "${context.id}" contains duplicate chunk ID "${chunk.id}".`,
         );
       }
 
@@ -525,6 +583,6 @@ export class ContextManager {
 
     throw signal.reason instanceof Error
       ? signal.reason
-      : new Error("Context indexing was cancelled.");
+      : new Error("Context operation was cancelled.");
   }
 }

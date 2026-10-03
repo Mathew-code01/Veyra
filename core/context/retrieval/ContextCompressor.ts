@@ -1,75 +1,118 @@
-// core/context/ContextCompressor.ts
+// ============================================================================
+// FILE: core/context/retrieval/ContextCompressor.ts
+//
+// PURPOSE:
+// Compress ranked Context into a bounded textual representation.
+//
+// This is generic.
+// It does not know whether the information came from:
+// - a document
+// - Vision
+// - Audio
+// - Conversation
+// - Candidate
+// - Memory
+// - Web
+// - Tool output
+// ============================================================================
 
-import type { RankedContext } from "./ContextRanker";
+import type {
+  CompressedContext,
+  RankedContext,
+} from "../contracts/ContextQuery";
 
-export interface CompressedContext {
-  readonly text: string;
-  readonly sourceCount: number;
-  readonly tokenEstimate: number;
-  readonly contexts: readonly RankedContext[];
-}
+import { estimateTokens } from "../ingestion/Chunker";
 
 export interface ContextCompressorOptions {
   readonly maxCharacters?: number;
+
+  readonly separator?: string;
 }
 
 export class ContextCompressor {
   private readonly maxCharacters: number;
 
+  private readonly separator: string;
+
   public constructor(options: ContextCompressorOptions = {}) {
-    this.maxCharacters = Math.max(500, options.maxCharacters ?? 8000);
+    const maxCharacters = options.maxCharacters ?? 8000;
+
+    if (!Number.isSafeInteger(maxCharacters) || maxCharacters <= 0) {
+      throw new RangeError(
+        "Context compressor maxCharacters must be a positive safe integer.",
+      );
+    }
+
+    this.maxCharacters = maxCharacters;
+
+    this.separator = options.separator ?? "\n\n";
   }
 
   public compress(contexts: readonly RankedContext[]): CompressedContext {
-    const selected: RankedContext[] = [];
-    const sections: string[] = [];
+    if (!Array.isArray(contexts)) {
+      throw new TypeError("Contexts must be an array.");
+    }
 
-    let characterCount = 0;
+    if (contexts.length === 0) {
+      return {
+        text: "",
+
+        sourceCount: 0,
+
+        tokenEstimate: 0,
+
+        contexts: [],
+      };
+    }
+
+    const selected: RankedContext[] = [];
+
+    const parts: string[] = [];
+
+    let currentLength = 0;
 
     for (const context of contexts) {
-      const section = this.formatContext(context);
+      const formatted = this.formatContext(context);
 
-      if (characterCount + section.length > this.maxCharacters) {
+      const separatorLength = parts.length > 0 ? this.separator.length : 0;
+
+      if (
+        currentLength + separatorLength + formatted.length >
+        this.maxCharacters
+      ) {
         break;
       }
 
-      selected.push(context);
-      sections.push(section);
+      parts.push(formatted);
 
-      characterCount += section.length;
+      selected.push(context);
+
+      currentLength += separatorLength + formatted.length;
     }
 
-    const text = sections.join("\n\n");
+    const text = parts.join(this.separator);
 
     return {
       text,
+
       sourceCount: selected.length,
-      tokenEstimate: this.estimateTokens(text),
+
+      tokenEstimate: estimateTokens(text),
+
       contexts: selected,
     };
   }
 
   private formatContext(context: RankedContext): string {
-    const type = String(context.metadata.type ?? "context");
-
     const source =
-      context.metadata.documentName ??
-      context.metadata.fileName ??
-      context.documentId;
+      context.source.name ?? context.source.id ?? context.source.type;
 
     return [
-      `[${type.toUpperCase()}]`,
-      `Source: ${source}`,
-      `Relevance: ${context.rankScore.toFixed(3)}`,
+      `[source=${source}]`,
+
+      `[type=${context.contentType}]`,
+
       context.text.trim(),
-    ].join("\n");
-  }
-
-  private estimateTokens(text: string): number {
-    if (!text) {
-      return 0;
-    }
-
-    return Math.ceil(text.length / 4);
+    ].join(" ");
   }
 }
