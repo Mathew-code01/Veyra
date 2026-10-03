@@ -1,97 +1,114 @@
-// core/context/ContextRanker.ts
+// ============================================================================
+// FILE: core/context/retrieval/ContextRanker.ts
+//
+// PURPOSE:
+// Generic post-retrieval ranking.
+//
+// IMPORTANT:
+// This class must NOT encode candidate/interview policy.
+//
+// Therefore it does not assume that:
+// - stories are more important
+// - resumes are more important
+// - candidate evidence is more important
+// - interview answers are more important
+//
+// Source-specific ranking policy can be injected by higher-level orchestration.
+// ============================================================================
 
-import type { RetrievedContext } from "./Retriever";
+import type {
+  RankedContext,
+  RetrievedContext,
+} from "../contracts/ContextQuery";
 
-export interface RankedContext extends RetrievedContext {
-  readonly rankScore: number;
-  readonly relevanceReason: string;
-}
-
-export interface ContextRankerOptions {
+export interface ContextRankingPolicy {
+  /**
+   * Optional multiplier by source type.
+   *
+   * Unspecified sources use 1.
+   */
   readonly sourceWeights?: Readonly<Record<string, number>>;
-}
 
-const DEFAULT_SOURCE_WEIGHTS: Record<string, number> = {
-  story: 1.15,
-  experience: 1.12,
-  project: 1.1,
-  skills: 1.05,
-  resume: 1,
-  "job-description": 0.98,
-  "company-research": 0.9,
-  generic: 0.85,
-};
+  /**
+   * Optional multiplier by content type.
+   */
+  readonly contentWeights?: Readonly<Record<string, number>>;
+
+  /**
+   * Optional metadata key containing a caller-provided priority.
+   */
+  readonly priorityMetadataKey?: string;
+}
 
 export class ContextRanker {
-  private readonly sourceWeights: Readonly<Record<string, number>>;
+  private readonly policy: ContextRankingPolicy;
 
-  public constructor(options: ContextRankerOptions = {}) {
-    this.sourceWeights = {
-      ...DEFAULT_SOURCE_WEIGHTS,
-      ...(options.sourceWeights ?? {}),
+  public constructor(policy: ContextRankingPolicy = {}) {
+    this.policy = {
+      sourceWeights: policy.sourceWeights ?? {},
+
+      contentWeights: policy.contentWeights ?? {},
+
+      priorityMetadataKey: policy.priorityMetadataKey,
     };
   }
 
   public rank(contexts: readonly RetrievedContext[]): readonly RankedContext[] {
-    const ranked = contexts.map((context) => {
-      const type = String(context.metadata.type ?? "generic");
+    if (!Array.isArray(contexts)) {
+      throw new TypeError("Contexts must be an array.");
+    }
 
-      const sourceWeight = this.sourceWeights[type] ?? 1;
+    const ranked = contexts.map((context) => this.rankOne(context));
 
-      const evidenceWeight = this.getEvidenceWeight(context.metadata);
+    ranked.sort((left, right) => right.rankScore - left.rankScore);
 
-      const rankScore = context.score * sourceWeight * evidenceWeight;
-
-      return {
-        ...context,
-        rankScore,
-        relevanceReason: this.getReason(type, sourceWeight, evidenceWeight),
-      };
-    });
-
-    return [...ranked].sort((a, b) => b.rankScore - a.rankScore);
+    return ranked;
   }
 
-  private getEvidenceWeight(
-    metadata: Readonly<Record<string, unknown>>,
-  ): number {
-    const verified = metadata.verified === true;
+  private rankOne(context: RetrievedContext): RankedContext {
+    const sourceWeight = this.policy.sourceWeights?.[context.source.type] ?? 1;
 
-    const confidence =
-      typeof metadata.confidence === "number" ? metadata.confidence : 1;
+    const contentWeight =
+      this.policy.contentWeights?.[context.contentType] ?? 1;
 
-    const boundedConfidence = Math.min(1, Math.max(0, confidence));
+    let priorityWeight = 1;
 
-    let weight = 0.85 + boundedConfidence * 0.15;
+    const reasons: string[] = [];
 
-    if (verified) {
-      weight += 0.08;
+    if (sourceWeight !== 1) {
+      priorityWeight *= sourceWeight;
+
+      reasons.push(`source-weight:${sourceWeight}`);
     }
 
-    return weight;
-  }
+    if (contentWeight !== 1) {
+      priorityWeight *= contentWeight;
 
-  private getReason(
-    type: string,
-    sourceWeight: number,
-    evidenceWeight: number,
-  ): string {
-    if (type === "story") {
-      return "STAR story evidence receives high priority.";
+      reasons.push(`content-weight:${contentWeight}`);
     }
 
-    if (type === "experience") {
-      return "Professional experience is prioritized as direct candidate evidence.";
+    if (this.policy.priorityMetadataKey) {
+      const raw = context.metadata[this.policy.priorityMetadataKey];
+
+      if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+        priorityWeight *= raw;
+
+        reasons.push(`metadata-priority:${raw}`);
+      }
     }
 
-    if (type === "project") {
-      return "Project evidence is prioritized for technical and project-specific questions.";
+    const rankScore = context.score * priorityWeight;
+
+    if (reasons.length === 0) {
+      reasons.push("semantic-similarity");
     }
 
-    if (sourceWeight > 1 && evidenceWeight > 1) {
-      return "High-confidence candidate evidence.";
-    }
+    return {
+      ...context,
 
-    return "Semantically relevant context.";
+      rankScore,
+
+      reasons,
+    };
   }
 }
