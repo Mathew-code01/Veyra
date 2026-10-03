@@ -2,10 +2,7 @@
 // FILE: core/vision/index.ts
 //
 // PURPOSE:
-// Public API for the Veyra Vision subsystem.
-//
-// Consumers should import Vision functionality from this module instead of
-// reaching into implementation files directly.
+// Public barrel for the Vision subsystem.
 // ============================================================================
 
 // ============================================================================
@@ -31,7 +28,7 @@ export * from "./errors/VisionError";
 export * from "./capture/CaptureEngine";
 
 // ============================================================================
-// IMAGE PROCESSING
+// PROCESSING
 // ============================================================================
 
 export * from "./processing/ImageProcessor";
@@ -42,9 +39,9 @@ export * from "./processing/ImageCompressor";
 // OCR
 // ============================================================================
 
-export * from "./ocr/OCRService";
-
 export * from "./ocr/OCRTypes";
+
+export * from "./ocr/OCRService";
 
 // ============================================================================
 // CLASSIFICATION
@@ -69,3 +66,22 @@ export * from "./analysis/VisionAnalyzer";
 // ============================================================================
 
 export * from "./pipeline/VisionPipeline";
+
+// ============================================================================
+// CONTEXT ADAPTER
+// ============================================================================
+//
+// Vision publishes completed analysis results into the generic Context
+// subsystem through this adapter.
+//
+// IMPORTANT:
+//
+// This does NOT make core/context depend on core/vision.
+// The dependency direction remains:
+//
+//     Vision → Context
+//
+// Context itself remains source-agnostic.
+//
+
+export * from "./adapters/VisionContextIndexer";

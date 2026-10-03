@@ -53,7 +53,7 @@ import type {
   ContextItem,
   ContextSource,
   ContextSourceType,
-} from "../context/contracts/contextTypes";
+} from "../context/contracts/ContextTypes";
 
 import type { ProcessedDocument } from "./DocumentTypes";
 
