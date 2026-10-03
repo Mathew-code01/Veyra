@@ -1,93 +1,75 @@
-// core/context/VectorStore.ts
+// ============================================================================
+// FILE: core/context/storage/VectorStore.ts
+//
+// PURPOSE:
+// Generic vector storage abstraction.
+//
+// IMPORTANT:
+// There is intentionally NO documentId requirement here.
+//
+// A document is only one possible source of Context.
+//
+// The store therefore operates on:
+// - contextId
+// - sourceType
+// - sourceId
+// - contentType
+// - scope
+// - generic metadata
+// ============================================================================
 
-export interface VectorRecordMetadata {
-  readonly documentId: string;
-  readonly type?: string;
-  readonly candidateId?: string;
-  readonly source?: string;
-  readonly [key: string]: unknown;
-}
+import type {
+  ContextContentType,
+  ContextScope,
+  ContextSourceType,
+} from "../contracts/contextTypes";
 
-export interface VectorRecord {
-  readonly id: string;
-  readonly vector: readonly number[];
-  readonly text: string;
-  readonly documentId: string;
-  readonly metadata: VectorRecordMetadata;
-}
+import type {
+  ContextStore,
+  ContextVectorRecord,
+  ContextVectorSearchOptions,
+  ContextVectorSearchResult,
+} from "../contracts/ContextStore";
 
-export interface VectorSearchOptions {
-  readonly limit?: number;
-  readonly minScore?: number;
-  readonly documentIds?: readonly string[];
-  readonly documentTypes?: readonly string[];
-  readonly candidateId?: string;
-}
+// ============================================================================
+// PUBLIC TYPES
+// ============================================================================
 
-export interface VectorSearchResult {
-  readonly record: VectorRecord;
-  readonly score: number;
-}
+export type {
+  ContextVectorRecord,
+  ContextVectorSearchOptions,
+  ContextVectorSearchResult,
+  ContextStore,
+};
 
-export interface VectorStore {
-  upsert(records: readonly VectorRecord[]): Promise<void>;
+// ============================================================================
+// IN-MEMORY STORE
+// ============================================================================
 
-  deleteByDocument(documentId: string): Promise<void>;
+export class InMemoryVectorStore implements ContextStore {
+  private readonly records = new Map<string, ContextVectorRecord>();
 
-  search(
-    vector: readonly number[],
-    options?: VectorSearchOptions,
-  ): Promise<readonly VectorSearchResult[]>;
+  public async upsert(records: readonly ContextVectorRecord[]): Promise<void> {
+    if (!Array.isArray(records)) {
+      throw new TypeError("Vector records must be an array.");
+    }
 
-  count(): Promise<number>;
-
-  clear(): Promise<void>;
-}
-
-function cosineSimilarity(
-  left: readonly number[],
-  right: readonly number[],
-): number {
-  if (left.length !== right.length || left.length === 0) {
-    return 0;
-  }
-
-  let dot = 0;
-  let leftMagnitude = 0;
-  let rightMagnitude = 0;
-
-  for (let index = 0; index < left.length; index += 1) {
-    const a = left[index] ?? 0;
-    const b = right[index] ?? 0;
-
-    dot += a * b;
-    leftMagnitude += a * a;
-    rightMagnitude += b * b;
-  }
-
-  if (leftMagnitude === 0 || rightMagnitude === 0) {
-    return 0;
-  }
-
-  return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
-}
-
-export class InMemoryVectorStore implements VectorStore {
-  private readonly records = new Map<string, VectorRecord>();
-
-  public async upsert(records: readonly VectorRecord[]): Promise<void> {
     for (const record of records) {
       this.validateRecord(record);
-      this.records.set(record.id, {
-        ...record,
-        vector: [...record.vector],
-      });
+
+      this.records.set(record.id, record);
     }
   }
 
-  public async deleteByDocument(documentId: string): Promise<void> {
-    for (const [id, record] of this.records.entries()) {
-      if (record.documentId === documentId) {
+  public async deleteByContext(contextId: string): Promise<void> {
+    const normalized = contextId?.trim();
+
+    if (!normalized) {
+      throw new Error("A context ID is required.");
+    }
+
+    for (const [id, record] of this.records) {
+      if (record.contextId === normalized) {
         this.records.delete(id);
       }
     }
@@ -95,54 +77,45 @@ export class InMemoryVectorStore implements VectorStore {
 
   public async search(
     vector: readonly number[],
-    options: VectorSearchOptions = {},
-  ): Promise<readonly VectorSearchResult[]> {
-    const limit = Math.max(1, options.limit ?? 8);
-    const minScore = options.minScore ?? -1;
+    options: ContextVectorSearchOptions,
+  ): Promise<readonly ContextVectorSearchResult[]> {
+    this.validateVector(vector);
 
-    const documentIds = options.documentIds
-      ? new Set(options.documentIds)
-      : undefined;
+    if (!options) {
+      throw new Error("Vector search options are required.");
+    }
 
-    const documentTypes = options.documentTypes
-      ? new Set(options.documentTypes)
-      : undefined;
+    this.throwIfAborted(options.signal);
 
-    const results: VectorSearchResult[] = [];
+    const results: ContextVectorSearchResult[] = [];
 
     for (const record of this.records.values()) {
-      if (documentIds && !documentIds.has(record.documentId)) {
+      this.throwIfAborted(options.signal);
+
+      if (record.vector.length !== vector.length) {
         continue;
       }
 
-      if (
-        documentTypes &&
-        record.metadata.type &&
-        !documentTypes.has(record.metadata.type)
-      ) {
-        continue;
-      }
-
-      if (
-        options.candidateId &&
-        record.metadata.candidateId !== options.candidateId
-      ) {
+      if (!matchesFilters(record, options)) {
         continue;
       }
 
       const score = cosineSimilarity(vector, record.vector);
 
-      if (score >= minScore) {
-        results.push({
-          record,
-          score,
-        });
+      if (score < options.minScore) {
+        continue;
       }
+
+      results.push({
+        record,
+
+        score,
+      });
     }
 
-    results.sort((a, b) => b.score - a.score);
+    results.sort((left, right) => right.score - left.score);
 
-    return results.slice(0, limit);
+    return results.slice(0, options.limit);
   }
 
   public async count(): Promise<number> {
@@ -153,27 +126,167 @@ export class InMemoryVectorStore implements VectorStore {
     this.records.clear();
   }
 
-  private validateRecord(record: VectorRecord): void {
-    if (!record.id.trim()) {
-      throw new Error("Vector record id is required.");
+  private validateRecord(record: ContextVectorRecord): void {
+    if (!record) {
+      throw new Error("Vector record is required.");
     }
 
-    if (!record.documentId.trim()) {
-      throw new Error("Vector record documentId is required.");
+    if (!record.id?.trim()) {
+      throw new Error("Vector record requires an ID.");
     }
 
-    if (!record.text.trim()) {
-      throw new Error(`Vector record "${record.id}" contains empty text.`);
+    if (!record.contextId?.trim()) {
+      throw new Error(`Vector record "${record.id}" requires a contextId.`);
     }
 
-    if (record.vector.length === 0) {
-      throw new Error(`Vector record "${record.id}" contains an empty vector.`);
+    if (typeof record.text !== "string") {
+      throw new Error(`Vector record "${record.id}" requires text.`);
     }
 
-    if (record.vector.some((value) => !Number.isFinite(value))) {
-      throw new Error(
-        `Vector record "${record.id}" contains an invalid vector.`,
-      );
+    this.validateVector(record.vector);
+
+    if (!record.sourceType) {
+      throw new Error(`Vector record "${record.id}" requires sourceType.`);
+    }
+
+    if (!record.contentType) {
+      throw new Error(`Vector record "${record.id}" requires contentType.`);
     }
   }
+
+  private validateVector(vector: readonly number[]): void {
+    if (!Array.isArray(vector)) {
+      throw new TypeError("Vector must be an array.");
+    }
+
+    if (vector.length === 0) {
+      throw new Error("Vector must not be empty.");
+    }
+
+    for (const value of vector) {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error("Vector contains an invalid numeric value.");
+      }
+    }
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) {
+      return;
+    }
+
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("Vector search was cancelled.");
+  }
+}
+
+// ============================================================================
+// FILTERING
+// ============================================================================
+
+function matchesFilters(
+  record: ContextVectorRecord,
+  options: ContextVectorSearchOptions,
+): boolean {
+  if (
+    options.sourceTypes &&
+    options.sourceTypes.length > 0 &&
+    !options.sourceTypes.includes(record.sourceType)
+  ) {
+    return false;
+  }
+
+  if (
+    options.contentTypes &&
+    options.contentTypes.length > 0 &&
+    !options.contentTypes.includes(record.contentType)
+  ) {
+    return false;
+  }
+
+  if (options.sourceIds && options.sourceIds.length > 0) {
+    const sourceId = record.sourceId;
+
+    if (!sourceId || !options.sourceIds.includes(sourceId)) {
+      return false;
+    }
+  }
+
+  if (options.scope && !matchesScope(record.scope, options.scope)) {
+    return false;
+  }
+
+  if (options.metadata && !matchesMetadata(record.metadata, options.metadata)) {
+    return false;
+  }
+
+  return true;
+}
+
+function matchesScope(
+  actual: ContextScope | undefined,
+  requested: ContextScope,
+): boolean {
+  if (!actual) {
+    return false;
+  }
+
+  for (const [key, value] of Object.entries(requested)) {
+    if (actual[key] !== value) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function matchesMetadata(
+  actual: Readonly<Record<string, unknown>>,
+  requested: Readonly<Record<string, unknown>>,
+): boolean {
+  for (const [key, value] of Object.entries(requested)) {
+    if (actual[key] !== value) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// ============================================================================
+// VECTOR MATH
+// ============================================================================
+
+function cosineSimilarity(
+  left: readonly number[],
+  right: readonly number[],
+): number {
+  if (left.length !== right.length) {
+    return 0;
+  }
+
+  let dot = 0;
+
+  let leftMagnitude = 0;
+
+  let rightMagnitude = 0;
+
+  for (let index = 0; index < left.length; index += 1) {
+    const leftValue = left[index] ?? 0;
+
+    const rightValue = right[index] ?? 0;
+
+    dot += leftValue * rightValue;
+
+    leftMagnitude += leftValue * leftValue;
+
+    rightMagnitude += rightValue * rightValue;
+  }
+
+  if (leftMagnitude === 0 || rightMagnitude === 0) {
+    return 0;
+  }
+
+  return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
 }
