@@ -1,27 +1,54 @@
-// core/context/createContextEngine.ts
+// ============================================================================
+// FILE: core/context/createContextEngine.ts
+//
+// PURPOSE:
+// Composition root for the generic Context subsystem.
+//
+// IMPORTANT:
+// This file creates Context infrastructure only.
+//
+// It deliberately does NOT instantiate:
+// - CandidateEvidenceRetriever
+// - ConversationManager
+// - InterviewEngine
+// - VisionAnalyzer
+// - DocumentService
+//
+// Those domains connect to Context through their own boundaries/adapters.
+//
+// DEVELOPMENT NOTE:
+// MockEmbeddingService + InMemoryVectorStore are currently development
+// implementations. Production composition should replace them with concrete
+// persistent/real embedding implementations without changing ContextManager.
+// ============================================================================
 
 import { ContextManager } from "./ContextManager";
 
-import { DefaultDocumentParser } from "./DocumentParser";
+import { DefaultContextParser } from "./ingestion/ContextParser";
 
-import { DefaultChunker } from "./Chunker";
+import { DefaultChunker } from "./ingestion/Chunker";
 
-import { MockEmbeddingService } from "./EmbeddingService";
+import { MockEmbeddingService } from "./embeddings/EmbeddingService";
 
-import { InMemoryVectorStore } from "./VectorStore";
+import { InMemoryVectorStore } from "./storage/VectorStore";
 
-import { SemanticRetriever } from "./Retriever";
+import { SemanticRetriever } from "./retrieval/Retriever";
 
-import { ContextRanker } from "./ContextRanker";
+import { ContextRanker } from "./retrieval/ContextRanker";
 
-import { ContextCompressor } from "./ContextCompressor";
+import { ContextCompressor } from "./retrieval/ContextCompressor";
 
-import { CandidateEvidenceRetriever } from "../candidate/CandidateEvidenceRetriever";
+// ============================================================================
+// ENGINE
+// ============================================================================
 
 export interface ContextEngine {
   readonly manager: ContextManager;
-  readonly candidateEvidence: CandidateEvidenceRetriever;
 }
+
+// ============================================================================
+// FACTORY
+// ============================================================================
 
 export function createContextEngine(): ContextEngine {
   const embeddings = new MockEmbeddingService(384);
@@ -30,6 +57,13 @@ export function createContextEngine(): ContextEngine {
 
   const retriever = new SemanticRetriever(embeddings, vectorStore);
 
+  /**
+   * Generic Context ranking.
+   *
+   * No candidate/interview-specific priorities are encoded here.
+   *
+   * Higher-level orchestration can inject policy when required.
+   */
   const ranker = new ContextRanker();
 
   const compressor = new ContextCompressor({
@@ -37,17 +71,22 @@ export function createContextEngine(): ContextEngine {
   });
 
   const manager = new ContextManager({
-    parser: new DefaultDocumentParser(),
+    parser: new DefaultContextParser(),
+
     chunker: new DefaultChunker(),
+
     embeddings,
+
     vectorStore,
+
     retriever,
+
     ranker,
+
     compressor,
   });
 
   return {
     manager,
-    candidateEvidence: new CandidateEvidenceRetriever(manager),
   };
 }
