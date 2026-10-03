@@ -22,7 +22,7 @@
 // - simple document adapters
 // ============================================================================
 
-import type { ContextInput, ContextItem } from "../contracts/contextTypes";
+import type { ContextInput, ContextItem } from "../contracts/ContextTypes";
 
 // ============================================================================
 // CONTRACT

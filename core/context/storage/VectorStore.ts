@@ -22,7 +22,7 @@ import type {
   ContextContentType,
   ContextScope,
   ContextSourceType,
-} from "../contracts/contextTypes";
+} from "../contracts/ContextTypes";
 
 import type {
   ContextStore,

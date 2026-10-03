@@ -28,7 +28,7 @@ import type {
   ContextContentType,
   ContextScope,
   ContextSource,
-} from "../contracts/contextTypes";
+} from "../contracts/ContextTypes";
 
 // ============================================================================
 // METADATA

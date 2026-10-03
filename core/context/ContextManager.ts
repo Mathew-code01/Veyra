@@ -33,16 +33,25 @@
 //          ↓
 //     vector storage
 //          ↓
-//     retrieval/ranking/compression
+//     retrieval / ranking / compression
 //
 // core/context MUST NOT import source-domain implementations.
+//
+// Documents connect through:
+//     core/documents/ContextDocumentIndexer
+//          ↓
+//     ContextManager.indexPreparedContext()
+//
+// ContextManager does not parse, normalize, or rechunk prepared
+// source-domain content.
 // ============================================================================
 
 import type {
+  ContextChunk,
   ContextInput,
   ContextItem,
   PreparedContext,
-} from "./contracts/contextTypes";
+} from "./contracts/ContextTypes";
 
 import type {
   ContextQuery,
@@ -55,7 +64,10 @@ import type { Chunk, Chunker } from "./ingestion/Chunker";
 
 import type { ContextParser } from "./ingestion/ContextParser";
 
-import type { EmbeddingService } from "./embeddings/EmbeddingService";
+import type {
+  EmbeddingResult,
+  EmbeddingService,
+} from "./embeddings/EmbeddingService";
 
 import type {
   ContextStore,
@@ -172,8 +184,17 @@ export class ContextManager {
   /**
    * Generic Context ingestion path.
    *
-   * Use this when the caller provides text and wants Context to perform
+   * Use this when the caller provides raw text and wants Context to perform
    * generic parsing/chunking.
+   *
+   * Typical consumers:
+   * - conversation
+   * - memory
+   * - web result
+   * - tool output
+   * - generated content
+   * - application state
+   * - generic context
    */
   public async index(
     input: ContextInput,
@@ -218,7 +239,7 @@ export class ContextManager {
   /**
    * Prepared Context ingestion path.
    *
-   * This is the important boundary used by source-specific adapters.
+   * This is the source-adapter boundary.
    *
    * Example:
    *
@@ -228,17 +249,19 @@ export class ContextManager {
    *          ↓
    *     indexPreparedContext()
    *
-   * Documents have already parsed/normalized/chunked their data.
+   * The source subsystem has already performed its own:
    *
-   * Therefore this method DOES NOT:
+   *     parsing
+   *     normalization
+   *     domain-specific chunking
    *
-   *     parse
-   *     normalize
-   *     rechunk
+   * Therefore this method does NOT parse, normalize, or rechunk.
    *
-   * It only performs:
+   * It performs:
    *
    *     prepared chunks
+   *          ↓
+   *     canonical ContextChunk conversion
    *          ↓
    *     embeddings
    *          ↓
@@ -257,33 +280,59 @@ export class ContextManager {
 
     this.throwIfAborted(options.signal);
 
-    const embeddingResult =
-      chunks.length > 0
+    /**
+     * Convert the internal generic Chunker representation into the
+     * canonical ContextChunk contract.
+     *
+     * This is intentionally done before embedding so that the rest of the
+     * Context pipeline operates on one canonical representation.
+     */
+    const contextChunks = chunks.map((chunk, index) =>
+      this.toContextChunk(context, chunk, index),
+    );
+
+    this.throwIfAborted(options.signal);
+
+    /**
+     * Important:
+     *
+     * The empty case must still be represented as an EmbeddingResult.
+     *
+     * Otherwise TypeScript infers:
+     *
+     *     EmbeddingResult | { embeddings: never[] }
+     *
+     * and properties such as model/dimensions become unavailable.
+     */
+    const embeddingResult: EmbeddingResult =
+      contextChunks.length > 0
         ? await this.embeddings.embed(
-            chunks.map((chunk) => chunk.text),
+            contextChunks.map((chunk) => chunk.text),
             {
               signal: options.signal,
             },
           )
         : {
             embeddings: [],
+            model: "none",
+            dimensions: 0,
           };
 
     this.throwIfAborted(options.signal);
 
-    if (embeddingResult.embeddings.length !== chunks.length) {
+    if (embeddingResult.embeddings.length !== contextChunks.length) {
       throw new Error(
         `Embedding count mismatch for context "${context.id}". ` +
-          `Expected ${chunks.length}, received ${embeddingResult.embeddings.length}.`,
+          `Expected ${contextChunks.length}, received ${embeddingResult.embeddings.length}.`,
       );
     }
 
     const records: ContextVectorRecord[] = [];
 
-    for (let index = 0; index < chunks.length; index += 1) {
+    for (let index = 0; index < contextChunks.length; index += 1) {
       this.throwIfAborted(options.signal);
 
-      const chunk = chunks[index];
+      const chunk = contextChunks[index];
 
       if (!chunk) {
         throw new Error(`Missing prepared context chunk at index ${index}.`);
@@ -339,10 +388,11 @@ export class ContextManager {
     this.throwIfAborted(options.signal);
 
     /**
-     * Embeddings are generated BEFORE the previous representation is removed.
+     * Embeddings are generated BEFORE the previous representation is
+     * removed.
      *
-     * This avoids destroying an existing searchable representation when
-     * embedding generation fails.
+     * This prevents an embedding failure from destroying an existing
+     * searchable representation.
      */
     await this.vectorStore.deleteByContext(context.id);
 
@@ -354,12 +404,16 @@ export class ContextManager {
 
     this.throwIfAborted(options.signal);
 
+    /**
+     * Store the canonical Context representation only after the searchable
+     * representation has successfully been replaced.
+     */
     this.contexts.set(context.id, context);
 
     return {
       context,
 
-      chunks,
+      chunks: contextChunks,
     };
   }
 
@@ -485,6 +539,107 @@ export class ContextManager {
   }
 
   // ==========================================================================
+  // CHUNK CONVERSION
+  // ==========================================================================
+
+  /**
+   * Convert the internal Chunker representation into the canonical
+   * ContextChunk contract.
+   *
+   * The Chunker intentionally remains a lower-level ingestion utility.
+   * ContextChunk is the stable representation exposed by Context.
+   */
+  private toContextChunk(
+    context: ContextItem,
+    chunk: Chunk,
+    index: number,
+  ): ContextChunk {
+    const chunkIndex = this.readRequiredNumberMetadata(
+      chunk,
+      "chunkIndex",
+      index,
+    );
+
+    const startOffset = this.readRequiredNumberMetadata(
+      chunk,
+      "startOffset",
+      0,
+    );
+
+    const endOffset = this.readRequiredNumberMetadata(
+      chunk,
+      "endOffset",
+      startOffset + chunk.text.length,
+    );
+
+    const tokenEstimate = this.readRequiredNumberMetadata(
+      chunk,
+      "tokenEstimate",
+      Math.max(1, Math.ceil(chunk.text.trim().length / 4)),
+    );
+
+    return {
+      id: chunk.id,
+
+      contextId: context.id,
+
+      text: chunk.text,
+
+      index: chunkIndex,
+
+      startOffset,
+
+      endOffset,
+
+      tokenEstimate,
+
+      source: context.source,
+
+      scope: context.scope,
+
+      contentType: context.contentType,
+
+      metadata: {
+        ...context.metadata,
+
+        ...chunk.metadata,
+
+        contextId: context.id,
+
+        sourceType: context.source.type,
+
+        sourceId: context.source.id,
+
+        sourceName: context.source.name ?? context.name,
+
+        contentType: context.contentType,
+
+        chunkIndex,
+
+        startOffset,
+
+        endOffset,
+
+        tokenEstimate,
+      },
+    };
+  }
+
+  private readRequiredNumberMetadata(
+    chunk: Chunk,
+    key: string,
+    fallback: number,
+  ): number {
+    const value = chunk.metadata[key];
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+
+    return fallback;
+  }
+
+  // ==========================================================================
   // VALIDATION
   // ==========================================================================
 
@@ -525,6 +680,14 @@ export class ContextManager {
 
     if (!context.text.trim()) {
       throw new Error(`Context "${context.id}" contains no usable text.`);
+    }
+
+    if (typeof context.createdAt !== "string" || !context.createdAt.trim()) {
+      throw new Error(`Context "${context.id}" must have createdAt.`);
+    }
+
+    if (typeof context.updatedAt !== "string" || !context.updatedAt.trim()) {
+      throw new Error(`Context "${context.id}" must have updatedAt.`);
     }
   }
 
@@ -575,6 +738,10 @@ export class ContextManager {
       seenIds.add(chunk.id);
     }
   }
+
+  // ==========================================================================
+  // CANCELLATION
+  // ==========================================================================
 
   private throwIfAborted(signal?: AbortSignal): void {
     if (!signal?.aborted) {

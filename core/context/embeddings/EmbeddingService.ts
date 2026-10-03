@@ -2,139 +2,205 @@
 // FILE: core/context/embeddings/EmbeddingService.ts
 //
 // PURPOSE:
-// Generic embedding abstraction for Context.
+// Generic embedding abstraction for Veyra Context.
 //
-// Context does not care whether embeddings come from:
-// - local model
-// - cloud model
-// - ONNX
-// - llama.cpp
-// - another embedding provider
+// ARCHITECTURAL RULE:
+// This service is source-agnostic.
 //
-// The implementation is injected.
+// It does not know about:
+// - documents
+// - vision
+// - audio
+// - conversation
+// - candidate
+// - interview
+//
+// It only converts text into embedding vectors.
+//
+// Embeddings are immutable values at the Context boundary.
 // ============================================================================
 
+// ============================================================================
+// OPTIONS
+// ============================================================================
+
+export interface EmbeddingOptions {
+  /**
+   * Optional cancellation signal.
+   */
+  readonly signal?: AbortSignal;
+}
+
+// ============================================================================
+// RESULT
+// ============================================================================
+
+/**
+ * Result returned by an embedding provider.
+ *
+ * The outer array corresponds to the supplied texts.
+ *
+ * Each individual embedding vector is readonly because callers should not
+ * mutate provider-generated vectors after creation.
+ */
 export interface EmbeddingResult {
   readonly embeddings: readonly (readonly number[])[];
 
-  readonly dimensions: number;
+  /**
+   * Provider/model identifier used to generate the embeddings.
+   */
+  readonly model: string;
 
-  readonly model?: string;
+  /**
+   * Vector dimensionality.
+   */
+  readonly dimensions: number;
 }
 
+// ============================================================================
+// SERVICE
+// ============================================================================
+
 export interface EmbeddingService {
+  /**
+   * Generate embeddings for multiple texts.
+   *
+   * The result order MUST match the input order.
+   */
   embed(
     texts: readonly string[],
-    options?: {
-      readonly signal?: AbortSignal;
-    },
+    options?: EmbeddingOptions,
   ): Promise<EmbeddingResult>;
 
+  /**
+   * Generate one embedding vector.
+   */
   embedOne(
     text: string,
-    options?: {
-      readonly signal?: AbortSignal;
-    },
+    options?: EmbeddingOptions,
   ): Promise<readonly number[]>;
 }
 
 // ============================================================================
-// DEVELOPMENT IMPLEMENTATION
+// MOCK IMPLEMENTATION
 // ============================================================================
 
 /**
- * Deterministic development embedding implementation.
+ * Deterministic development/test embedding implementation.
  *
- * This is NOT intended to provide production semantic quality.
+ * IMPORTANT:
+ * This is a development implementation.
  *
- * It exists so Context can be composed/tested without requiring an
- * external embedding provider.
+ * It exists so the Context pipeline can be exercised without requiring
+ * an external embedding provider.
+ *
+ * Production deployments should replace it with a real embedding service.
  */
 export class MockEmbeddingService implements EmbeddingService {
-  public constructor(private readonly dimensions = 384) {
+  public readonly model: string;
+
+  public readonly dimensions: number;
+
+  public constructor(dimensions = 384, model = "mock-embedding") {
     if (!Number.isSafeInteger(dimensions) || dimensions <= 0) {
       throw new RangeError(
         "Embedding dimensions must be a positive safe integer.",
       );
     }
+
+    if (typeof model !== "string" || !model.trim()) {
+      throw new Error("Embedding model must be a non-empty string.");
+    }
+
+    this.dimensions = dimensions;
+
+    this.model = model.trim();
   }
 
   public async embed(
     texts: readonly string[],
-    options: {
-      readonly signal?: AbortSignal;
-    } = {},
+    options: EmbeddingOptions = {},
   ): Promise<EmbeddingResult> {
+    this.throwIfAborted(options.signal);
+
     if (!Array.isArray(texts)) {
-      throw new TypeError("Embedding input must be an array.");
+      throw new TypeError("Embedding input must be an array of strings.");
     }
 
-    const embeddings: readonly number[][] = texts.map((text) => {
+    const embeddings: Array<readonly number[]> = [];
+
+    for (let index = 0; index < texts.length; index += 1) {
       this.throwIfAborted(options.signal);
 
+      const text = texts[index];
+
       if (typeof text !== "string") {
-        throw new TypeError("Embedding text must be a string.");
+        throw new TypeError(
+          `Embedding input at index ${index} must be a string.`,
+        );
       }
 
-      return this.createEmbedding(text);
-    });
-
-    this.throwIfAborted(options.signal);
+      embeddings.push(await this.embedOne(text, options));
+    }
 
     return {
       embeddings,
 
-      dimensions: this.dimensions,
+      model: this.model,
 
-      model: "mock-embedding",
+      dimensions: this.dimensions,
     };
   }
 
   public async embedOne(
     text: string,
-    options: {
-      readonly signal?: AbortSignal;
-    } = {},
+    options: EmbeddingOptions = {},
   ): Promise<readonly number[]> {
-    const result = await this.embed([text], options);
+    this.throwIfAborted(options.signal);
 
-    const embedding = result.embeddings[0];
-
-    if (!embedding) {
-      throw new Error("Embedding service returned no embedding.");
+    if (typeof text !== "string") {
+      throw new TypeError("Embedding text must be a string.");
     }
 
-    return embedding;
-  }
+    /**
+     * Deterministic normalized representation.
+     *
+     * The mock embedding is intentionally simple and is NOT intended to
+     * provide meaningful semantic similarity.
+     */
+    const normalized = text.trim();
 
-  private createEmbedding(text: string): readonly number[] {
     const vector = new Array<number>(this.dimensions).fill(0);
 
-    if (!text) {
+    if (!normalized) {
       return vector;
     }
 
-    for (let index = 0; index < text.length; index += 1) {
-      const code = text.charCodeAt(index);
+    /**
+     * Lightweight deterministic hashing.
+     *
+     * Multiple passes distribute stable values across the requested
+     * dimensionality.
+     */
+    let seed = 2166136261;
 
-      const position = Math.abs((code * 31 + index * 17) % this.dimensions);
+    for (let index = 0; index < normalized.length; index += 1) {
+      seed ^= normalized.charCodeAt(index);
 
-      vector[position] += ((code % 13) + 1) / 13;
+      seed = Math.imul(seed, 16777619);
     }
 
-    let magnitude = 0;
+    for (let index = 0; index < this.dimensions; index += 1) {
+      this.throwIfAborted(options.signal);
 
-    for (const value of vector) {
-      magnitude += value * value;
+      seed = Math.imul(seed ^ (index + 1), 16777619);
+
+      const unsigned = seed >>> 0;
+
+      vector[index] = (unsigned / 4294967295) * 2 - 1;
     }
 
-    magnitude = Math.sqrt(magnitude);
-
-    if (magnitude === 0) {
-      return vector;
-    }
-
-    return vector.map((value) => value / magnitude);
+    return vector;
   }
 
   private throwIfAborted(signal?: AbortSignal): void {

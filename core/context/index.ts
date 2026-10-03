@@ -1,12 +1,54 @@
-// core/context/index.ts
+// ============================================================================
+// FILE: core/context/index.ts
+//
+// PURPOSE:
+// Public barrel for the generic Context subsystem.
+// ============================================================================
 
+// ============================================================================
+// CONTRACTS
+// ============================================================================
+
+export * from "./contracts/contextTypes";
+
+export * from "./contracts/ContextQuery";
+
+export * from "./contracts/ContextStore";
+
+// ============================================================================
+// INGESTION
+// ============================================================================
+
+export * from "./ingestion/ContextParser";
+
+export * from "./ingestion/Chunker";
+
+// ============================================================================
+// EMBEDDINGS
+// ============================================================================
+
+export * from "./embeddings/EmbeddingService";
+
+// ============================================================================
+// RETRIEVAL
+// ============================================================================
+
+export * from "./retrieval/Retriever";
+
+export * from "./retrieval/ContextRanker";
+
+export * from "./retrieval/ContextCompressor";
+
+// ============================================================================
+// STORAGE
+// ============================================================================
+
+export * from "./storage/VectorStore";
+
+// ============================================================================
+// MANAGER
+// ============================================================================
 
 export * from "./ContextManager";
-export * from "./DocumentParser";
-export * from "./Chunker";
-export * from "./EmbeddingService";
-export * from "./VectorStore";
-export * from "./Retriever";
-export * from "./ContextRanker";
-export * from "./ContextCompressor";
+
 export * from "./createContextEngine";

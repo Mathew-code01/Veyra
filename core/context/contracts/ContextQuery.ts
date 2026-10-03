@@ -17,7 +17,7 @@ import type {
   ContextContentType,
   ContextScope,
   ContextSourceType,
-} from "./contextTypes";
+} from "./ContextTypes";
 
 // ============================================================================
 // QUERY
