@@ -1,267 +1,139 @@
 // ============================================================================
-// FILE: core/context/DocumentParser.ts
+// FILE: core/context/ingestion/ContextParser.ts
+//
 // PURPOSE:
-// Generic context-content normalization/parsing.
+// Generic Context input validation/normalization.
 //
 // IMPORTANT:
-// This file is NOT a file-format parser.
+// This is NOT a PDF/DOCX/Markdown parser.
 //
-// It does NOT parse:
-//   - PDF
-//   - DOCX
-//   - HTML files
-//   - Markdown files
+// Document parsing belongs to core/documents.
 //
-// Those responsibilities belong to core/documents.
+// This parser only converts already-available textual information into the
+// generic ContextItem representation.
 //
-// This parser accepts already-available textual context and converts it
-// into a stable representation for the context/RAG layer.
-//
-// Context can originate from:
-//   - documents
-//   - conversations
-//   - memories
-//   - web results
-//   - tools
-//   - generated content
-//   - application state
+// Possible callers:
+// - conversation
+// - memory
+// - web
+// - tool
+// - generated content
+// - application state
+// - simple document adapters
 // ============================================================================
 
-export type ContextSourceType =
-  | "document"
-  | "conversation"
-  | "memory"
-  | "web"
-  | "tool"
-  | "generated"
-  | "application"
-  | "unknown";
+import type { ContextInput, ContextItem } from "../contracts/contextTypes";
 
-/**
- * Semantic content classifications used by the context layer.
- *
- * These are NOT file formats.
- */
-export type ContextContentType =
-  | "resume"
-  | "cover-letter"
-  | "job-description"
-  | "project"
-  | "experience"
-  | "skills"
-  | "story"
-  | "company-research"
-  | "conversation"
-  | "memory"
-  | "web-result"
-  | "tool-result"
-  | "generated"
-  | "generic";
+// ============================================================================
+// CONTRACT
+// ============================================================================
 
-/**
- * Backwards-compatible alias.
- *
- * Existing context consumers importing DocumentType do not
- * immediately need to change.
- */
-export type DocumentType = ContextContentType;
-
-export interface DocumentMetadata {
-  readonly type?: ContextContentType;
-
-  readonly sourceType?: ContextSourceType;
-
-  readonly candidateId?: string;
-
-  readonly source?: string;
-
-  readonly mimeType?: string;
-
-  readonly fileName?: string;
-
-  readonly documentName?: string;
-
-  readonly createdAt?: string;
-
-  readonly updatedAt?: string;
-
-  readonly tags?: readonly string[];
-
-  readonly [key: string]: unknown;
+export interface ContextParser {
+  parse(input: ContextInput): ContextItem;
 }
 
-/**
- * Generic context input.
- *
- * The context layer expects text that is already available.
- */
-export interface DocumentInput {
-  readonly id: string;
+// ============================================================================
+// IMPLEMENTATION
+// ============================================================================
 
-  readonly name: string;
-
-  readonly type?: ContextContentType;
-
-  readonly sourceType?: ContextSourceType;
-
-  readonly text?: string;
-
-  /**
-   * Optional binary data for compatibility with older callers.
-   *
-   * The context parser deliberately does not attempt to understand
-   * arbitrary binary formats.
-   */
-  readonly buffer?: Uint8Array;
-
-  readonly metadata?: DocumentMetadata;
-}
-
-/**
- * Canonical context representation.
- */
-export interface ParsedDocument {
-  readonly id: string;
-
-  readonly name: string;
-
-  readonly type: ContextContentType;
-
-  readonly sourceType: ContextSourceType;
-
-  readonly text: string;
-
-  readonly metadata: DocumentMetadata;
-}
-
-/**
- * Parser contract for context content.
- */
-export interface DocumentParser {
-  parse(input: DocumentInput): ParsedDocument;
-}
-
-/**
- * Default generic context parser.
- *
- * It performs validation and lightweight text cleanup.
- *
- * It deliberately does not parse file formats.
- */
-export class DefaultDocumentParser implements DocumentParser {
-  public parse(input: DocumentInput): ParsedDocument {
+export class DefaultContextParser implements ContextParser {
+  public parse(input: ContextInput): ContextItem {
     this.validateInput(input);
 
-    const text = normalizeContextText(input.text ?? "");
+    const now = new Date().toISOString();
 
-    if (!text) {
-      throw new Error(
-        `Context item "${input.name}" does not contain usable text.`,
-      );
-    }
+    const createdAt = input.createdAt ?? now;
 
-    const type = input.type ?? inferContextContentType(input.sourceType);
-
-    const sourceType = input.sourceType ?? inferSourceType(input.metadata);
-
-    const metadata: DocumentMetadata = {
-      ...input.metadata,
-
-      type,
-
-      sourceType,
-
-      documentName: input.metadata?.documentName ?? input.name,
-    };
+    const updatedAt = input.updatedAt ?? createdAt;
 
     return {
       id: input.id.trim(),
 
       name: input.name.trim(),
 
-      type,
+      contentType: input.contentType,
 
-      sourceType,
+      source: {
+        ...input.source,
 
-      text,
+        type: input.source.type,
 
-      metadata,
+        id: input.source.id?.trim() || undefined,
+
+        name: input.source.name?.trim() || undefined,
+
+        uri: input.source.uri?.trim() || undefined,
+      },
+
+      scope: input.scope,
+
+      text: input.text,
+
+      metadata: {
+        ...(input.metadata ?? {}),
+      },
+
+      createdAt,
+
+      updatedAt,
     };
   }
 
-  private validateInput(input: DocumentInput): void {
+  private validateInput(input: ContextInput): void {
     if (!input) {
       throw new Error("Context input is required.");
     }
 
     if (typeof input.id !== "string" || !input.id.trim()) {
-      throw new Error("Context item ID is required.");
+      throw new Error("Context input requires a non-empty ID.");
     }
 
     if (typeof input.name !== "string" || !input.name.trim()) {
-      throw new Error("Context item name is required.");
+      throw new Error(`Context "${input.id}" requires a non-empty name.`);
     }
 
-    /**
-     * Binary content belongs to core/documents or another
-     * specialized ingestion subsystem.
-     *
-     * Do not silently interpret arbitrary bytes as text.
-     */
-    if (input.buffer !== undefined && input.text === undefined) {
+    if (typeof input.contentType !== "string" || !input.contentType.trim()) {
+      throw new Error(`Context "${input.id}" requires a content type.`);
+    }
+
+    if (!input.source || typeof input.source !== "object") {
+      throw new Error(`Context "${input.id}" requires source provenance.`);
+    }
+
+    if (typeof input.source.type !== "string" || !input.source.type.trim()) {
+      throw new Error(`Context "${input.id}" requires a source type.`);
+    }
+
+    if (typeof input.text !== "string") {
+      throw new Error(`Context "${input.id}" must contain text.`);
+    }
+
+    if (!input.text.trim()) {
+      throw new Error(`Context "${input.id}" contains no usable text.`);
+    }
+
+    if (input.createdAt !== undefined && !isValidDateString(input.createdAt)) {
       throw new Error(
-        `Context item "${input.name}" contains binary data but no extracted text. ` +
-          "Binary/file parsing must be performed by the appropriate ingestion layer before context parsing.",
+        `Context "${input.id}" contains an invalid createdAt timestamp.`,
+      );
+    }
+
+    if (input.updatedAt !== undefined && !isValidDateString(input.updatedAt)) {
+      throw new Error(
+        `Context "${input.id}" contains an invalid updatedAt timestamp.`,
       );
     }
   }
 }
 
-/**
- * Lightweight normalization suitable for context content.
- *
- * This intentionally does not perform aggressive semantic normalization.
- */
-function normalizeContextText(text: string): string {
-  return text
-    .replace(/\uFEFF/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/\u0000/g, "")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+// ============================================================================
+// HELPERS
+// ============================================================================
 
-function inferSourceType(metadata?: DocumentMetadata): ContextSourceType {
-  if (metadata?.sourceType) {
-    return metadata.sourceType;
+function isValidDateString(value: string): boolean {
+  if (!value.trim()) {
+    return false;
   }
 
-  return "unknown";
-}
-
-function inferContextContentType(
-  sourceType?: ContextSourceType,
-): ContextContentType {
-  switch (sourceType) {
-    case "conversation":
-      return "conversation";
-
-    case "memory":
-      return "memory";
-
-    case "web":
-      return "web-result";
-
-    case "tool":
-      return "tool-result";
-
-    case "generated":
-      return "generated";
-
-    default:
-      return "generic";
-  }
+  return Number.isFinite(Date.parse(value));
 }
