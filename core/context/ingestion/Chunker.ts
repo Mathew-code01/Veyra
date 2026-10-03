@@ -1,146 +1,116 @@
 // ============================================================================
-// FILE: core/context/Chunker.ts
+// FILE: core/context/ingestion/Chunker.ts
+//
 // PURPOSE:
-// Generic text chunking for the context/RAG subsystem.
+// Generic text chunking for the Context/RAG subsystem.
 //
-// IMPORTANT:
-// This chunker is intentionally independent of core/documents.
-//
-// It can chunk:
+// THIS COMPONENT CAN CHUNK:
 // - documents
 // - conversations
+// - transcripts
 // - memories
 // - web results
 // - tool output
 // - generated content
-// - arbitrary application context
+// - application state
+// - arbitrary Context
 //
-// It does NOT:
+// IT DOES NOT:
 // - parse PDF/DOCX
-// - classify files
+// - classify documents
 // - normalize document metadata
 // - generate embeddings
 // - store vectors
-// - depend on DocumentError
+// - depend on another core domain
+// ============================================================================
+
+import type {
+  ContextContentType,
+  ContextScope,
+  ContextSource,
+} from "../contracts/contextTypes";
+
+// ============================================================================
+// METADATA
 // ============================================================================
 
 export interface ChunkMetadata {
-  /**
-   * Generic context identity.
-   */
   readonly contextId: string;
 
-  /**
-   * Optional compatibility/source field for document-backed context.
-   */
-  readonly documentId?: string;
+  readonly sourceType: ContextSource["type"];
 
-  readonly documentName?: string;
+  readonly sourceId?: string;
 
-  readonly type?: string;
+  readonly sourceName?: string;
 
-  readonly sourceType?: string;
+  readonly contentType: ContextContentType;
 
-  readonly candidateId?: string;
-
-  readonly source?: string;
+  readonly scope?: ContextScope;
 
   readonly chunkIndex: number;
 
-  /**
-   * UTF-16 start offset in the exact source text supplied
-   * to the chunker.
-   */
   readonly startOffset: number;
 
-  /**
-   * UTF-16 exclusive end offset in the exact source text supplied
-   * to the chunker.
-   */
   readonly endOffset: number;
 
-  /**
-   * Character count of the returned chunk text.
-   */
   readonly characterCount: number;
 
-  /**
-   * Approximate token count.
-   */
   readonly tokenEstimate: number;
 
   readonly [key: string]: unknown;
 }
 
+// ============================================================================
+// CHUNK
+// ============================================================================
+
 export interface Chunk {
   readonly id: string;
 
-  /**
-   * Generic context identity.
-   */
   readonly contextId: string;
-
-  /**
-   * Optional document identity for document-backed context.
-   */
-  readonly documentId?: string;
 
   readonly text: string;
 
   readonly metadata: ChunkMetadata;
 }
 
+// ============================================================================
+// OPTIONS
+// ============================================================================
+
 export interface ChunkOptions {
-  /**
-   * Maximum number of UTF-16 code units per chunk.
-   */
   readonly maxCharacters?: number;
 
-  /**
-   * Number of UTF-16 code units to overlap.
-   */
   readonly overlapCharacters?: number;
 
-  /**
-   * Minimum desired chunk length.
-   */
   readonly minCharacters?: number;
 
-  /**
-   * Prefer paragraph boundaries when possible.
-   */
   readonly preserveParagraphs?: boolean;
 
-  /**
-   * Prefer sentence boundaries when possible.
-   */
   readonly preserveSentences?: boolean;
 
-  /**
-   * Maximum number of iterations allowed for safety.
-   */
   readonly maxIterations?: number;
 
-  /**
-   * Optional cancellation signal.
-   */
   readonly signal?: AbortSignal;
 }
+
+// ============================================================================
+// CONTRACT
+// ============================================================================
 
 export interface Chunker {
   chunk(
     contextId: string,
     text: string,
-    metadata?: Readonly<Record<string, unknown>>,
+    metadata: Readonly<Record<string, unknown>>,
     options?: ChunkOptions,
   ): readonly Chunk[];
 }
 
-/**
- * Generic cancellation error for the context subsystem.
- *
- * Deliberately does not depend on core/documents.
- */
+// ============================================================================
+// ERRORS
+// ============================================================================
+
 export class ContextChunkingAbortedError extends Error {
   public readonly cause?: unknown;
 
@@ -155,6 +125,10 @@ export class ContextChunkingAbortedError extends Error {
   }
 }
 
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
 const DEFAULT_MAX_CHARACTERS = 1200;
 
 const DEFAULT_OVERLAP_CHARACTERS = 180;
@@ -165,14 +139,10 @@ const DEFAULT_PRESERVE_PARAGRAPHS = true;
 
 const DEFAULT_PRESERVE_SENTENCES = true;
 
-/**
- * Approximate token estimator.
- *
- * This is intentionally approximate.
- *
- * A tokenizer-specific implementation should be used when a
- * model-specific token budget is required.
- */
+// ============================================================================
+// TOKEN ESTIMATION
+// ============================================================================
+
 export function estimateTokens(text: string): number {
   const normalized = text.trim();
 
@@ -182,6 +152,10 @@ export function estimateTokens(text: string): number {
 
   return Math.max(1, Math.ceil(normalized.length / 4));
 }
+
+// ============================================================================
+// IDENTIFIERS
+// ============================================================================
 
 function createChunkId(
   contextId: string,
@@ -198,13 +172,6 @@ function createChunkId(
 }
 
 function createStableHash(value: string): string {
-  /**
-   * FNV-1a 32-bit.
-   *
-   * Used only for deterministic identifiers.
-   *
-   * It must NOT be treated as a cryptographic checksum.
-   */
   let hash = 2166136261;
 
   for (let index = 0; index < value.length; index += 1) {
@@ -216,11 +183,15 @@ function createStableHash(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+// ============================================================================
+// DEFAULT IMPLEMENTATION
+// ============================================================================
+
 export class DefaultChunker implements Chunker {
   public chunk(
     contextId: string,
     text: string,
-    metadata: Readonly<Record<string, unknown>> = {},
+    metadata: Readonly<Record<string, unknown>>,
     options: ChunkOptions = {},
   ): readonly Chunk[] {
     this.validateContextId(contextId);
@@ -272,14 +243,32 @@ export class DefaultChunker implements Chunker {
 
     validateMaxIterations(maxIterations);
 
-    const documentId =
-      typeof metadata.documentId === "string" && metadata.documentId.trim()
-        ? metadata.documentId
+    const sourceType =
+      typeof metadata.sourceType === "string" && metadata.sourceType.trim()
+        ? metadata.sourceType
+        : "unknown";
+
+    const contentType =
+      typeof metadata.contentType === "string" && metadata.contentType.trim()
+        ? metadata.contentType
+        : "generic";
+
+    const sourceId =
+      typeof metadata.sourceId === "string" && metadata.sourceId.trim()
+        ? metadata.sourceId
         : undefined;
+
+    const sourceName =
+      typeof metadata.sourceName === "string" && metadata.sourceName.trim()
+        ? metadata.sourceName
+        : undefined;
+
+    const scope = isRecord(metadata.scope) ? metadata.scope : undefined;
 
     const chunks: Chunk[] = [];
 
     let start = 0;
+
     let iteration = 0;
 
     while (start < text.length) {
@@ -328,80 +317,96 @@ export class DefaultChunker implements Chunker {
         if (chunkText.length < minCharacters && chunks.length > 0) {
           const previous = chunks[chunks.length - 1];
 
-          const mergedStart = previous.metadata.startOffset;
+          if (previous) {
+            const mergedStart = previous.metadata.startOffset;
 
-          const mergedEnd = exactRange.end;
+            const mergedEnd = exactRange.end;
 
-          const mergedLength = mergedEnd - mergedStart;
+            const mergedLength = mergedEnd - mergedStart;
 
-          /**
-           * Never silently violate maxCharacters.
-           *
-           * If merging would make the previous chunk too large,
-           * keep the small final chunk instead.
-           */
-          if (mergedLength <= maxCharacters) {
-            const mergedText = text.slice(mergedStart, mergedEnd).trim();
+            if (mergedLength <= maxCharacters) {
+              const mergedText = text.slice(mergedStart, mergedEnd);
 
-            const mergedIndex = previous.metadata.chunkIndex;
+              chunks[chunks.length - 1] = {
+                ...previous,
 
-            const mergedMetadata: ChunkMetadata = {
-              ...previous.metadata,
-              contextId,
-              documentId,
-              chunkIndex: mergedIndex,
-              startOffset: mergedStart,
-              endOffset: mergedEnd,
-              characterCount: mergedText.length,
-              tokenEstimate: estimateTokens(mergedText),
-            };
+                text: mergedText,
 
-            chunks[chunks.length - 1] = {
-              ...previous,
-              id: createChunkId(
-                contextId,
-                mergedIndex,
-                mergedStart,
+                metadata: {
+                  ...previous.metadata,
+
+                  endOffset: mergedEnd,
+
+                  characterCount: mergedText.length,
+
+                  tokenEstimate: estimateTokens(mergedText),
+                },
+              };
+
+              start = this.calculateNextStart(
                 mergedEnd,
-                mergedText,
-              ),
-              contextId,
-              documentId,
-              text: mergedText,
-              metadata: mergedMetadata,
-            };
-          } else {
-            this.pushChunk(
-              chunks,
-              contextId,
-              documentId,
-              chunkText,
-              exactRange.start,
-              exactRange.end,
-              metadata,
-            );
+                overlapCharacters,
+                text.length,
+              );
+
+              continue;
+            }
           }
-        } else {
-          this.pushChunk(
-            chunks,
+        }
+
+        const index = chunks.length;
+
+        const chunkMetadata: ChunkMetadata = {
+          ...metadata,
+
+          contextId,
+
+          sourceType: sourceType as ChunkMetadata["sourceType"],
+
+          sourceId,
+
+          sourceName,
+
+          contentType: contentType as ChunkMetadata["contentType"],
+
+          scope,
+
+          chunkIndex: index,
+
+          startOffset: exactRange.start,
+
+          endOffset: exactRange.end,
+
+          characterCount: chunkText.length,
+
+          tokenEstimate: estimateTokens(chunkText),
+        };
+
+        chunks.push({
+          id: createChunkId(
             contextId,
-            documentId,
-            chunkText,
+            index,
             exactRange.start,
             exactRange.end,
-            metadata,
-          );
-        }
+            chunkText,
+          ),
+
+          contextId,
+
+          text: chunkText,
+
+          metadata: chunkMetadata,
+        });
       }
 
-      if (end >= text.length) {
-        break;
-      }
-
-      const nextStart = Math.max(start + 1, end - overlapCharacters);
+      const nextStart = this.calculateNextStart(
+        end,
+        overlapCharacters,
+        text.length,
+      );
 
       if (nextStart <= start) {
-        throw new Error("Chunker failed to advance the input cursor.");
+        throw new Error("Chunker failed to make forward progress.");
       }
 
       start = nextStart;
@@ -410,54 +415,18 @@ export class DefaultChunker implements Chunker {
     return chunks;
   }
 
-  private pushChunk(
-    chunks: Chunk[],
-    contextId: string,
-    documentId: string | undefined,
-    chunkText: string,
-    startOffset: number,
-    endOffset: number,
-    metadata: Readonly<Record<string, unknown>>,
-  ): void {
-    const chunkIndex = chunks.length;
+  private calculateNextStart(
+    end: number,
+    overlap: number,
+    textLength: number,
+  ): number {
+    if (end >= textLength) {
+      return textLength;
+    }
 
-    const tokenEstimate = estimateTokens(chunkText);
+    const next = Math.max(0, end - overlap);
 
-    const chunkMetadata: ChunkMetadata = {
-      ...metadata,
-
-      contextId,
-
-      documentId,
-
-      chunkIndex,
-
-      startOffset,
-
-      endOffset,
-
-      characterCount: chunkText.length,
-
-      tokenEstimate,
-    };
-
-    chunks.push({
-      id: createChunkId(
-        contextId,
-        chunkIndex,
-        startOffset,
-        endOffset,
-        chunkText,
-      ),
-
-      contextId,
-
-      documentId,
-
-      text: chunkText,
-
-      metadata: chunkMetadata,
-    });
+    return next < end ? next : end;
   }
 
   private findBoundary(
@@ -470,42 +439,39 @@ export class DefaultChunker implements Chunker {
       readonly preserveSentences: boolean;
     },
   ): number {
-    const section = text.slice(start, hardEnd);
-
-    const minimumRelativePosition = minimumBoundary - start;
-
     if (options.preserveParagraphs) {
-      const paragraphBreak = section.lastIndexOf("\n\n");
+      const paragraphBoundary = findLastBoundary(
+        text,
+        start,
+        hardEnd,
+        minimumBoundary,
+        (character) =>
+          character === "\n" &&
+          text[Math.max(start, text.lastIndexOf("\n", hardEnd - 1))] === "\n",
+      );
 
-      if (paragraphBreak >= minimumRelativePosition) {
-        return start + paragraphBreak + 2;
+      if (paragraphBoundary > start) {
+        return paragraphBoundary;
       }
     }
 
     if (options.preserveSentences) {
-      const markers = [". ", "? ", "! ", ";\n", "\n"];
+      for (let index = hardEnd - 1; index >= minimumBoundary; index -= 1) {
+        const character = text[index];
 
-      let best = -1;
+        if (character === "." || character === "!" || character === "?") {
+          const nextCharacter = text[index + 1];
 
-      for (const marker of markers) {
-        const index = section.lastIndexOf(marker);
-
-        if (index >= minimumRelativePosition) {
-          best = Math.max(best, index + marker.length);
+          if (nextCharacter === undefined || /\s/.test(nextCharacter)) {
+            return index + 1;
+          }
         }
-      }
-
-      if (best >= 0) {
-        return start + best;
       }
     }
 
-    /**
-     * Fall back to a whitespace boundary.
-     */
-    for (let index = section.length - 1; index >= 0; index -= 1) {
-      if (/\s/u.test(section[index]) && start + index >= minimumBoundary) {
-        return start + index + 1;
+    for (let index = hardEnd - 1; index >= minimumBoundary; index -= 1) {
+      if (/\s/.test(text[index] ?? "")) {
+        return index + 1;
       }
     }
 
@@ -520,46 +486,37 @@ export class DefaultChunker implements Chunker {
     readonly start: number;
     readonly end: number;
   } {
-    let actualStart = start;
-    let actualEnd = end;
+    let trimmedStart = start;
 
-    while (actualStart < actualEnd && /\s/u.test(text[actualStart])) {
-      actualStart += 1;
+    let trimmedEnd = end;
+
+    while (trimmedStart < trimmedEnd && /\s/.test(text[trimmedStart] ?? "")) {
+      trimmedStart += 1;
     }
 
-    while (actualEnd > actualStart && /\s/u.test(text[actualEnd - 1])) {
-      actualEnd -= 1;
+    while (trimmedEnd > trimmedStart && /\s/.test(text[trimmedEnd - 1] ?? "")) {
+      trimmedEnd -= 1;
     }
 
     return {
-      start: actualStart,
-      end: actualEnd,
+      start: trimmedStart,
+
+      end: trimmedEnd,
     };
   }
 
-  private adjustStartForSurrogatePair(text: string, start: number): number {
-    if (start <= 0 || start >= text.length) {
-      return start;
+  private adjustStartForSurrogatePair(text: string, position: number): number {
+    if (position > 0 && position < text.length) {
+      const previous = text.charCodeAt(position - 1);
+
+      const current = text.charCodeAt(position);
+
+      if (isHighSurrogate(previous) && isLowSurrogate(current)) {
+        return position + 1;
+      }
     }
 
-    const previous = text.charCodeAt(start - 1);
-
-    const current = text.charCodeAt(start);
-
-    /**
-     * If start points at a low surrogate whose preceding
-     * code unit is a high surrogate, move backwards.
-     */
-    if (
-      previous >= 0xd800 &&
-      previous <= 0xdbff &&
-      current >= 0xdc00 &&
-      current <= 0xdfff
-    ) {
-      return start - 1;
-    }
-
-    return start;
+    return position;
   }
 
   private adjustEndForSurrogatePair(
@@ -567,26 +524,14 @@ export class DefaultChunker implements Chunker {
     start: number,
     end: number,
   ): number {
-    if (end <= start || end >= text.length) {
-      return end;
-    }
+    if (end > start && end < text.length) {
+      const previous = text.charCodeAt(end - 1);
 
-    const previous = text.charCodeAt(end - 1);
+      const current = text.charCodeAt(end);
 
-    const next = text.charCodeAt(end);
-
-    /**
-     * High surrogate immediately followed by low surrogate.
-     *
-     * Move the boundary forward so the pair remains intact.
-     */
-    if (
-      previous >= 0xd800 &&
-      previous <= 0xdbff &&
-      next >= 0xdc00 &&
-      next <= 0xdfff
-    ) {
-      return end + 1;
+      if (isHighSurrogate(previous) && isLowSurrogate(current)) {
+        return end - 1;
+      }
     }
 
     return end;
@@ -594,7 +539,7 @@ export class DefaultChunker implements Chunker {
 
   private validateContextId(contextId: string): void {
     if (typeof contextId !== "string" || !contextId.trim()) {
-      throw new Error("contextId is required.");
+      throw new Error("Chunker requires a non-empty context ID.");
     }
   }
 
@@ -607,24 +552,24 @@ export class DefaultChunker implements Chunker {
   }
 }
 
-function calculateDefaultMaxIterations(
-  textLength: number,
-  maxCharacters: number,
-  overlapCharacters: number,
-): number {
-  const effectiveAdvance = Math.max(1, maxCharacters - overlapCharacters);
+// ============================================================================
+// HELPERS
+// ============================================================================
 
-  const estimatedIterations = Math.ceil(textLength / effectiveAdvance);
-
-  const calculated = Math.max(1000, estimatedIterations * 4);
-
-  if (!Number.isSafeInteger(calculated)) {
-    throw new RangeError(
-      "Calculated chunking iteration limit exceeds the safe integer range.",
-    );
+function normalizePositiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive safe integer.`);
   }
 
-  return calculated;
+  return value;
+}
+
+function normalizeNonNegativeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative safe integer.`);
+  }
+
+  return value;
 }
 
 function validateMaxIterations(value: number): void {
@@ -633,32 +578,42 @@ function validateMaxIterations(value: number): void {
   }
 }
 
-function normalizePositiveInteger(value: number, field: string): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new RangeError(`${field} must be a finite number greater than zero.`);
-  }
+function calculateDefaultMaxIterations(
+  textLength: number,
+  maxCharacters: number,
+  overlap: number,
+): number {
+  const effectiveStep = Math.max(1, maxCharacters - overlap);
 
-  const normalized = Math.floor(value);
-
-  if (normalized <= 0 || !Number.isSafeInteger(normalized)) {
-    throw new RangeError(`${field} must be a positive safe integer.`);
-  }
-
-  return normalized;
+  return Math.ceil(textLength / effectiveStep) * 4 + 100;
 }
 
-function normalizeNonNegativeInteger(value: number, field: string): number {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new RangeError(
-      `${field} must be a finite number greater than or equal to zero.`,
-    );
+function findLastBoundary(
+  text: string,
+  start: number,
+  end: number,
+  minimum: number,
+  predicate: (character: string) => boolean,
+): number {
+  for (let index = end - 1; index >= minimum; index -= 1) {
+    const character = text[index];
+
+    if (character !== undefined && predicate(character)) {
+      return index + 1;
+    }
   }
 
-  const normalized = Math.floor(value);
+  return start;
+}
 
-  if (!Number.isSafeInteger(normalized)) {
-    throw new RangeError(`${field} must be a safe integer.`);
-  }
+function isHighSurrogate(value: number): boolean {
+  return value >= 0xd800 && value <= 0xdbff;
+}
 
-  return normalized;
+function isLowSurrogate(value: number): boolean {
+  return value >= 0xdc00 && value <= 0xdfff;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
