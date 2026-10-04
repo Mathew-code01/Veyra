@@ -77,3 +77,4 @@ export interface DocumentAIAnalyzer {
     options: DocumentAIAnalyzerOptions,
   ): Promise<DocumentAnalysis>;
 }
+
