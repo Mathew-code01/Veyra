@@ -1,5 +1,6 @@
 // ============================================================================
 // FILE: core/audio/AudioTranscriptionPipeline.ts
+//
 // PURPOSE:
 // Production audio transcription orchestration.
 //
@@ -13,12 +14,14 @@
 //       ↓
 //   AudioTranscriptPublisher
 //       ↓
-//   AudioConversationBridge
-//       ↓
-//   ConversationManager
-//
-// This is the runtime connection between the audio transcription domain
-// and the conversation domain.
+//   shared AudioTranscriptSegment
+//       ├──────────────────────────────┐
+//       │                              │
+//       ▼                              ▼
+//   Conversation                 AudioContextPublisher
+//       │                              │
+//       ▼                              ▼
+// ConversationManager            ContextManager
 //
 // IMPORTANT:
 //
@@ -30,13 +33,61 @@
 // - implement conversation analysis
 // - implement conversation memory
 // - implement AI inference
+// - implement Context embeddings
+// - implement vector storage
 //
 // Each subsystem remains responsible for its own domain.
+//
+// ARCHITECTURAL BOUNDARIES:
+//
+//     core/audio
+//          ↓
+//     shared/types/audio
+//          ↓
+//     core/conversation
+//
+// and independently:
+//
+//     core/audio
+//          ↓
+//     shared/types/audio
+//          ↓
+//     AudioContextPublisher
+//          ↓
+//     core/context
+//
+// core/context never imports core/audio.
 // ============================================================================
 
 import type { UUID } from "../../shared/types/common";
 
 import type { ConversationAnalysis } from "../../shared/types/conversation";
+
+import type { ContextScope } from "../context/contracts/ContextTypes";
+
+import type { AudioTranscriptSegment } from "../../shared/types/audio";
+
+// ============================================================================
+// IMPORTANT ARCHITECTURAL TYPE IMPORT
+// ============================================================================
+//
+// AudioTranscriptionPipeline exposes the existing audio → conversation
+// boundary through getConversationBridge().
+//
+// The bridge itself belongs to core/conversation, not core/audio.
+//
+// Therefore this is a TYPE-ONLY dependency:
+//
+//     core/audio
+//          ↓
+//     AudioConversationBridge
+//          ↓
+//     core/conversation
+//
+// This does not move conversation logic into the audio subsystem.
+// ============================================================================
+
+import type { AudioConversationBridge } from "../conversation/adapters/AudioConversationBridge";
 
 import {
   TranscriptionEngine,
@@ -56,6 +107,12 @@ import {
   type AudioTranscriptPublisherOptions,
   type PublishedAudioTranscript,
 } from "./AudioTranscriptPublisher";
+
+import {
+  AudioContextPublisher,
+  type AudioContextPublisherOptions,
+  type PublishedAudioContext,
+} from "./AudioContextPublisher";
 
 // ============================================================================
 // OPTIONS
@@ -78,9 +135,32 @@ export interface AudioTranscriptionPipelineOptions extends AudioTranscriptPublis
    * Optional session start time.
    *
    * If supplied, TranscriptAssembler relative timestamps are converted
-   * into authoritative absolute timestamps.
+   * into authoritative relative timestamps from the session start.
    */
   readonly sessionStartedAt?: number;
+
+  /**
+   * Optional Context Manager.
+   *
+   * When supplied, finalized shared audio transcript segments are indexed
+   * into the generic Context subsystem.
+   *
+   * The ContextManager is intentionally injected rather than constructed
+   * inside the audio subsystem.
+   */
+  readonly contextManager?: AudioContextPublisherOptions["contextManager"];
+
+  /**
+   * Optional Context scope inherited from the active application flow.
+   *
+   * The active audio sessionId is always added automatically.
+   */
+  readonly contextScope?: ContextScope;
+
+  /**
+   * Additional Context metadata for audio transcript records.
+   */
+  readonly contextMetadata?: Readonly<Record<string, unknown>>;
 }
 
 // ============================================================================
@@ -91,7 +171,7 @@ export interface AudioTranscriptionPipelineCallbacks {
   /**
    * Called whenever a partial transcription is produced.
    *
-   * Partial results never enter conversation memory.
+   * Partial results never enter conversation memory or Context.
    */
   readonly onPartial?: (
     snapshot: TranscriptSnapshot,
@@ -99,10 +179,19 @@ export interface AudioTranscriptionPipelineCallbacks {
   ) => void;
 
   /**
-   * Called when a finalized transcript enters the conversation boundary.
+   * Called when a finalized transcript enters the shared audio boundary
+   * and is then forwarded to conversation.
    */
   readonly onFinal?: (
     published: PublishedAudioTranscript,
+    snapshot: TranscriptSnapshot,
+  ) => void;
+
+  /**
+   * Called when a finalized transcript is successfully indexed into Context.
+   */
+  readonly onContextIndexed?: (
+    published: PublishedAudioContext,
     snapshot: TranscriptSnapshot,
   ) => void;
 
@@ -129,8 +218,24 @@ export interface AudioTranscriptionPipelineResult {
 
   readonly snapshot: TranscriptSnapshot;
 
+  /**
+   * Shared audio transcript publications.
+   *
+   * These are the existing audio → shared → conversation results.
+   */
   readonly published: readonly PublishedAudioTranscript[];
 
+  /**
+   * Context indexing results.
+   *
+   * These are the new audio → shared → Context results.
+   */
+  readonly contextPublished: readonly PublishedAudioContext[];
+
+  /**
+   * Conversation analyses generated by the existing audio → conversation
+   * Stage B bridge.
+   */
   readonly analyses: readonly ConversationAnalysis[];
 }
 
@@ -144,6 +249,8 @@ export class AudioTranscriptionPipeline {
   private readonly assembler: TranscriptAssembler;
 
   private readonly publisher: AudioTranscriptPublisher;
+
+  private readonly contextPublisher?: AudioContextPublisher;
 
   private readonly sessionStartedAt?: number;
 
@@ -164,7 +271,28 @@ export class AudioTranscriptionPipeline {
 
     this.assembler = options.assembler ?? new TranscriptAssembler();
 
+    // =========================================================================
+    // Existing audio → shared → conversation path.
+    // =========================================================================
     this.publisher = new AudioTranscriptPublisher(options);
+
+    // =========================================================================
+    // New audio → shared → Context path.
+    //
+    // Context is injected from the composition layer.
+    //
+    // We do not construct ContextManager here because ContextManager owns
+    // embeddings, vector storage, retrieval and ranking infrastructure.
+    // =========================================================================
+    if (options.contextManager) {
+      this.contextPublisher = new AudioContextPublisher({
+        contextManager: options.contextManager,
+
+        scope: options.contextScope,
+
+        metadata: options.contextMetadata,
+      });
+    }
 
     this.sessionStartedAt = validateOptionalTimestamp(
       options.sessionStartedAt,
@@ -179,13 +307,14 @@ export class AudioTranscriptionPipeline {
   /**
    * Run streaming transcription for one audio session.
    *
-   * The provider may emit multiple partial results.
+   * Provider partials update the internal transcript snapshot only.
    *
-   * Partial results update the assembler's visible snapshot but do not
-   * enter conversation memory.
+   * They are NOT:
    *
-   * The resolved TranscriptionResult is treated as authoritative and
-   * is committed exactly once.
+   * - sent to conversation memory
+   * - indexed into Context
+   *
+   * The resolved TranscriptionResult is authoritative.
    */
   public async transcribeStream(
     sessionId: UUID,
@@ -196,42 +325,72 @@ export class AudioTranscriptionPipeline {
 
     const published: PublishedAudioTranscript[] = [];
 
+    const contextPublished: PublishedAudioContext[] = [];
+
     try {
       const result = await this.engine.transcribeStream(request, (partial) => {
         this.handlePartial(partial, sessionId, callbacks);
       });
 
-      /*
-       * Some providers return the final result without emitting a final
-       * partial event.
-       *
-       * Therefore the resolved TranscriptionResult is authoritative.
-       *
-       * addFinal() updates the assembler and returns a snapshot.
-       * It does NOT return a TranscriptEntry.
-       */
+      // =======================================================================
+      // The resolved transcription result is authoritative.
+      //
+      // We intentionally do not use a provider final-partial event as the
+      // source of truth.
+      // =======================================================================
+
       this.assembler.addFinal(
         result,
         this.getRelativeStartTime(result),
         this.getRelativeEndTime(result),
       );
 
-      /*
-       * Consume only finalized entries that have not already been
-       * consumed by a downstream integration.
-       *
-       * This is the important Stage A → Stage B handoff.
-       */
+      // =======================================================================
+      // Consume only newly finalized entries.
+      // =======================================================================
+
       const finalEntries = this.assembler.takeFinalEntries();
 
       const snapshot = this.assembler.getSnapshot();
+
+      // =======================================================================
+      // Existing Stage B:
+      //
+      // TranscriptEntry
+      //      ↓
+      // AudioTranscriptPublisher
+      //      ↓
+      // shared AudioTranscriptSegment
+      //      ↓
+      // AudioConversationBridge
+      // =======================================================================
 
       const finalPublished = this.publishFinalEntries(finalEntries, sessionId);
 
       published.push(...finalPublished);
 
+      // =======================================================================
+      // New Context path:
+      //
+      // PublishedAudioTranscript.segment
+      //      ↓
+      // shared AudioTranscriptSegment
+      //      ↓
+      // AudioContextPublisher
+      //      ↓
+      // ContextManager
+      // =======================================================================
+
+      const finalContextPublished = await this.publishToContext(finalPublished);
+
+      contextPublished.push(...finalContextPublished);
+
       for (const item of finalPublished) {
         callbacks.onFinal?.(item, snapshot);
+      }
+
+      for (const item of finalContextPublished) {
+        callbacks.onContextIndexed?.(item, snapshot);
       }
 
       callbacks.onComplete?.(result, snapshot);
@@ -249,6 +408,8 @@ export class AudioTranscriptionPipeline {
         snapshot,
 
         published: Object.freeze(published.slice()),
+
+        contextPublished: Object.freeze(contextPublished.slice()),
 
         analyses: Object.freeze(analyses),
       };
@@ -268,8 +429,13 @@ export class AudioTranscriptionPipeline {
   /**
    * Run one non-streaming transcription request.
    *
-   * The resulting transcription is finalized and immediately forwarded
-   * into conversation analysis.
+   * The resulting transcription is finalized and forwarded through:
+   *
+   *     audio → shared → conversation
+   *
+   * and, when configured:
+   *
+   *     audio → shared → Context
    */
   public async transcribe(
     sessionId: UUID,
@@ -281,29 +447,42 @@ export class AudioTranscriptionPipeline {
     try {
       const result = await this.engine.transcribe(request);
 
-      /*
-       * addFinal() updates the assembler.
-       *
-       * It returns TranscriptSnapshot, so we deliberately do not treat
-       * its return value as a TranscriptEntry.
-       */
+      // =======================================================================
+      // Add the authoritative final result.
+      // =======================================================================
+
       this.assembler.addFinal(
         result,
         this.getRelativeStartTime(result),
         this.getRelativeEndTime(result),
       );
 
-      /*
-       * Consume only newly finalized entries.
-       */
+      // =======================================================================
+      // Consume only newly finalized entries.
+      // =======================================================================
+
       const finalEntries = this.assembler.takeFinalEntries();
 
       const snapshot = this.assembler.getSnapshot();
 
+      // =======================================================================
+      // Existing Stage B.
+      // =======================================================================
+
       const published = this.publishFinalEntries(finalEntries, sessionId);
+
+      // =======================================================================
+      // New Context connection.
+      // =======================================================================
+
+      const contextPublished = await this.publishToContext(published);
 
       for (const item of published) {
         callbacks.onFinal?.(item, snapshot);
+      }
+
+      for (const item of contextPublished) {
+        callbacks.onContextIndexed?.(item, snapshot);
       }
 
       callbacks.onComplete?.(result, snapshot);
@@ -321,6 +500,8 @@ export class AudioTranscriptionPipeline {
         snapshot,
 
         published,
+
+        contextPublished,
 
         analyses: Object.freeze(analyses),
       };
@@ -346,12 +527,12 @@ export class AudioTranscriptionPipeline {
       return;
     }
 
-    /*
-     * The final event is handled from the resolved
-     * TranscriptionResult.
-     *
-     * Therefore only non-final events are assembled here.
-     */
+    // =========================================================================
+    // Final provider events are deliberately ignored here.
+    //
+    // The resolved TranscriptionResult remains authoritative.
+    // =========================================================================
+
     if (partial.isFinal) {
       return;
     }
@@ -366,24 +547,23 @@ export class AudioTranscriptionPipeline {
 
     callbacks.onPartial?.(snapshot, partial);
 
-    /*
-     * sessionId is intentionally accepted by this method because the
-     * callback belongs to the active audio session.
-     *
-     * Conversation publication does not happen here.
-     */
+    // =========================================================================
+    // Session identity is represented by the pipeline's active session.
+    //
+    // It is intentionally not written into conversation or Context from
+    // partial events.
+    // =========================================================================
+
     void sessionId;
   }
 
   // ==========================================================================
-  // FINAL PUBLICATION
+  // EXISTING SHARED AUDIO PUBLICATION
   // ==========================================================================
 
   /**
-   * Publish finalized internal transcript entries into the shared
-   * audio transcript boundary.
-   *
-   * Only finalized, non-empty entries are accepted.
+   * Publish finalized internal transcript entries through the existing
+   * audio → shared → conversation boundary.
    */
   private publishFinalEntries(
     entries: readonly TranscriptEntry[],
@@ -398,6 +578,47 @@ export class AudioTranscriptionPipeline {
     }
 
     return this.publisher.publishMany(finalized, sessionId);
+  }
+
+  // ==========================================================================
+  // NEW CONTEXT PUBLICATION
+  // ==========================================================================
+
+  /**
+   * Publish finalized shared audio transcript segments into Context.
+   *
+   * IMPORTANT:
+   *
+   * This method consumes the shared representation returned by
+   * AudioTranscriptPublisher.
+   *
+   * It does NOT reconstruct AudioTranscriptSegment from TranscriptEntry.
+   *
+   * This ensures the shared layer remains the canonical boundary.
+   */
+  private async publishToContext(
+    published: readonly PublishedAudioTranscript[],
+  ): Promise<readonly PublishedAudioContext[]> {
+    if (!this.contextPublisher) {
+      return Object.freeze([]);
+    }
+
+    if (published.length === 0) {
+      return Object.freeze([]);
+    }
+
+    const segments: AudioTranscriptSegment[] = published
+      .map((item) => item.segment)
+      .filter(
+        (segment): segment is AudioTranscriptSegment =>
+          segment.isFinal && segment.text.trim().length > 0,
+      );
+
+    if (segments.length === 0) {
+      return Object.freeze([]);
+    }
+
+    return this.contextPublisher.publishMany(segments);
   }
 
   // ==========================================================================
@@ -419,10 +640,15 @@ export class AudioTranscriptionPipeline {
   }
 
   /**
-   * Clear all pipeline state associated with one session.
+   * Clear transient pipeline state associated with one session.
    *
-   * TranscriptAssembler.clear() also resets the finalized-entry
-   * consumption cursor.
+   * IMPORTANT:
+   *
+   * This does NOT remove Context records.
+   *
+   * Once an audio transcript has entered Context it represents searchable
+   * contextual knowledge and should remain there until the owning
+   * Context lifecycle explicitly removes it.
    */
   public clearSession(sessionId: UUID): void {
     if (this.activeSessionId === sessionId) {
@@ -438,12 +664,33 @@ export class AudioTranscriptionPipeline {
     return this.assembler.getSnapshot();
   }
 
-  public getConversationBridge(): AudioTranscriptPublisher["getBridge"] extends (
-    ...args: never[]
-  ) => infer TResult
-    ? TResult
-    : never {
+  /**
+   * Existing conversation bridge.
+   *
+   * The bridge belongs to core/conversation.
+   *
+   * AudioTranscriptionPipeline only exposes the boundary that is already
+   * owned by AudioTranscriptPublisher.
+   */
+  public getConversationBridge(): AudioConversationBridge {
     return this.publisher.getBridge();
+  }
+
+  /**
+   * Context manager used by the audio Context adapter.
+   *
+   * Returns undefined when Context integration was not configured.
+   */
+  public getContextManager():
+    ReturnType<AudioContextPublisher["getContextManager"]> | undefined {
+    return this.contextPublisher?.getContextManager();
+  }
+
+  /**
+   * Explicit Context integration state.
+   */
+  public isContextIntegrationEnabled(): boolean {
+    return this.contextPublisher !== undefined;
   }
 
   // ==========================================================================
@@ -463,12 +710,11 @@ export class AudioTranscriptionPipeline {
   }
 
   private getRelativeStartTime(result: TranscriptionResult): number {
-    /*
-     * A transcription result currently does not expose an authoritative
+    /**
+     * TranscriptionResult currently does not expose an authoritative
      * start timestamp.
      *
-     * The pipeline therefore starts the result at zero relative to the
-     * current transcription window.
+     * Therefore the transcription window begins at zero relative time.
      */
     void result;
 
