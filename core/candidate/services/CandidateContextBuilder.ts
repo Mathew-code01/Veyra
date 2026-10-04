@@ -1,25 +1,15 @@
 // ============================================================================
 // FILE: core/candidate/services/CandidateContextBuilder.ts
 // PURPOSE:
-// Builds a deterministic CandidateContext from candidate-domain records.
+// Builds the complete deterministic CandidateContext from structured
+// candidate records plus externally-ingested Candidate evidence.
 //
-// IMPORTANT:
-// This service does NOT:
-// - call an LLM
-// - call AIManager
-// - call ContextManager
-// - perform embeddings
-// - perform semantic retrieval
-// - generate interview answers
-//
-// Its responsibility is only to transform structured candidate records into
-// normalized candidate evidence and a readable candidate context.
+// Candidate remains independent from DocumentService, ContextManager, AI,
+// embeddings, and retrieval implementations.
 // ============================================================================
 
 import type { CandidateContext } from "../contracts/CandidateContext";
-
 import type { CandidateEvidence } from "../contracts/CandidateEvidence";
-
 import type {
   CandidateExperience,
   CandidateProfile,
@@ -27,11 +17,9 @@ import type {
   CandidateSkill,
   CandidateStory,
 } from "../contracts/CandidateTypes";
-
+import type { CandidateEvidenceStore } from "../contracts/CandidateEvidenceStore";
 import { CandidateError } from "../errors/CandidateError";
-
 import { CandidateValidator } from "../validation/CandidateValidator";
-
 import type { CandidateProfileStore } from "../stores/CandidateProfileStore";
 import type { ExperienceStore } from "../stores/ExperienceStore";
 import type { ProjectStore } from "../stores/ProjectStore";
@@ -44,30 +32,22 @@ export interface CandidateContextBuilderOptions {
   readonly projectStore: ProjectStore;
   readonly skillStore: SkillStore;
   readonly storyStore: StoryStore;
-
+  readonly evidenceStore?: CandidateEvidenceStore;
   readonly validator?: CandidateValidator;
 }
 
 export interface BuildCandidateContextRequest {
   readonly candidateId: string;
-
-  /**
-   * Optional cancellation support.
-   */
   readonly signal?: AbortSignal;
 }
 
 export class CandidateContextBuilder {
   private readonly profileStore: CandidateProfileStore;
-
   private readonly experienceStore: ExperienceStore;
-
   private readonly projectStore: ProjectStore;
-
   private readonly skillStore: SkillStore;
-
   private readonly storyStore: StoryStore;
-
+  private readonly evidenceStore?: CandidateEvidenceStore;
   private readonly validator: CandidateValidator;
 
   public constructor(options: CandidateContextBuilderOptions) {
@@ -76,7 +56,7 @@ export class CandidateContextBuilder {
     this.projectStore = options.projectStore;
     this.skillStore = options.skillStore;
     this.storyStore = options.storyStore;
-
+    this.evidenceStore = options.evidenceStore;
     this.validator = options.validator ?? new CandidateValidator();
   }
 
@@ -84,36 +64,39 @@ export class CandidateContextBuilder {
     request: BuildCandidateContextRequest,
   ): Promise<CandidateContext> {
     this.validator.validateCandidateId(request.candidateId);
-
     const candidateId = request.candidateId.trim();
 
     this.throwIfCancelled(request.signal, candidateId);
 
     try {
-      const [profile, experiences, projects, skills, stories] =
-        await Promise.all([
-          this.profileStore.get(candidateId),
-          this.experienceStore.list(candidateId),
-          this.projectStore.list(candidateId),
-          this.skillStore.list(candidateId),
-          this.storyStore.list(candidateId),
-        ]);
+      const [
+        profile,
+        experiences,
+        projects,
+        skills,
+        stories,
+        externalEvidence,
+      ] = await Promise.all([
+        this.profileStore.get(candidateId),
+        this.experienceStore.list(candidateId),
+        this.projectStore.list(candidateId),
+        this.skillStore.list(candidateId),
+        this.storyStore.list(candidateId),
+        this.evidenceStore?.list(candidateId) ?? Promise.resolve([]),
+      ]);
 
       this.throwIfCancelled(request.signal, candidateId);
 
       if (profile === undefined) {
         throw CandidateError.notFound(
           `Candidate profile '${candidateId}' was not found.`,
-          {
-            stage: "profile",
-            candidateId,
-          },
+          { stage: "profile", candidateId },
         );
       }
 
       this.validateRecords(profile, experiences, projects, skills, stories);
 
-      const evidence = this.buildEvidence(
+      const structuredEvidence = this.buildEvidence(
         profile,
         experiences,
         projects,
@@ -121,15 +104,18 @@ export class CandidateContextBuilder {
         stories,
       );
 
+      const evidence = this.mergeEvidence(
+        structuredEvidence,
+        externalEvidence,
+        candidateId,
+      );
+
       const validation = this.validator.validateEvidenceCollection(evidence);
 
       if (!validation.valid) {
         throw CandidateError.contextBuildFailure(
           "Candidate context contains invalid evidence.",
-          {
-            candidateId,
-            reasons: validation.reasons,
-          },
+          { candidateId, reasons: validation.reasons },
         );
       }
 
@@ -139,14 +125,13 @@ export class CandidateContextBuilder {
         projects,
         skills,
         stories,
+        externalEvidence,
       );
 
       if (!text.trim()) {
         throw CandidateError.contextBuildFailure(
           "Candidate context produced empty text.",
-          {
-            candidateId,
-          },
+          { candidateId },
         );
       }
 
@@ -157,6 +142,8 @@ export class CandidateContextBuilder {
         generatedAt: new Date().toISOString(),
         metadata: Object.freeze({
           evidenceCount: evidence.length,
+          structuredEvidenceCount: structuredEvidence.length,
+          externalEvidenceCount: externalEvidence.length,
           experienceCount: experiences.length,
           projectCount: projects.length,
           skillCount: skills.length,
@@ -170,10 +157,7 @@ export class CandidateContextBuilder {
 
       throw CandidateError.contextBuildFailure(
         "Failed to build candidate context.",
-        {
-          candidateId,
-          cause: error,
-        },
+        { candidateId, cause: error },
       );
     }
   }
@@ -189,7 +173,6 @@ export class CandidateContextBuilder {
 
     for (const experience of experiences) {
       this.validator.validateExperience(experience);
-
       this.validator.validateRecordOwnership(
         profile.id,
         experience.candidateId,
@@ -200,7 +183,6 @@ export class CandidateContextBuilder {
 
     for (const project of projects) {
       this.validator.validateProject(project);
-
       this.validator.validateRecordOwnership(
         profile.id,
         project.candidateId,
@@ -211,7 +193,6 @@ export class CandidateContextBuilder {
 
     for (const skill of skills) {
       this.validator.validateSkill(skill);
-
       this.validator.validateRecordOwnership(
         profile.id,
         skill.candidateId,
@@ -222,7 +203,6 @@ export class CandidateContextBuilder {
 
     for (const story of stories) {
       this.validator.validateStory(story);
-
       this.validator.validateRecordOwnership(
         profile.id,
         story.candidateId,
@@ -230,6 +210,43 @@ export class CandidateContextBuilder {
         story.id,
       );
     }
+  }
+
+  private mergeEvidence(
+    structured: readonly CandidateEvidence[],
+    external: readonly CandidateEvidence[],
+    candidateId: string,
+  ): readonly CandidateEvidence[] {
+    const merged = [...structured];
+
+    for (const item of external) {
+      const validation = this.validator.validateEvidence(item);
+
+      if (!validation.valid) {
+        throw CandidateError.contextBuildFailure(
+          `External candidate evidence '${item.id}' is invalid.`,
+          {
+            stage: "evidence",
+            candidateId,
+            recordId: item.id,
+            reasons: validation.reasons,
+          },
+        );
+      }
+
+      this.validator.validateRecordOwnership(
+        candidateId,
+        item.candidateId,
+        "evidence",
+        item.id,
+      );
+
+      if (!merged.some((existing) => existing.id === item.id)) {
+        merged.push(item);
+      }
+    }
+
+    return Object.freeze(merged);
   }
 
   private buildEvidence(
@@ -252,8 +269,62 @@ export class CandidateContextBuilder {
           text: profileText,
           verified: false,
           confidence: 0.8,
+          metadata: { source: "candidate_profile" },
+        }),
+      );
+    }
+
+    for (const [index, education] of profile.education.entries()) {
+      const parts = [education.institution];
+      if (education.degree) parts.push(education.degree);
+      if (education.fieldOfStudy) parts.push(education.fieldOfStudy);
+      if (education.startDate || education.endDate) {
+        parts.push(
+          `${education.startDate ?? "unknown"} - ${
+            education.endDate ?? "present"
+          }`,
+        );
+      }
+
+      evidence.push(
+        this.createEvidence({
+          id: `education:${profile.id}:${index}`,
+          candidateId: profile.id,
+          type: "education",
+          text: [
+            parts.join(" | "),
+            education.description
+              ? `Description: ${education.description}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          verified: false,
+          confidence: 0.8,
+          metadata: { source: "candidate_profile", sourceKind: "education" },
+        }),
+      );
+    }
+
+    for (const [index, certification] of profile.certifications.entries()) {
+      const parts = [certification.name];
+      if (certification.issuer) parts.push(certification.issuer);
+      if (certification.issueDate)
+        parts.push(`Issued ${certification.issueDate}`);
+      if (certification.expiryDate)
+        parts.push(`Expires ${certification.expiryDate}`);
+
+      evidence.push(
+        this.createEvidence({
+          id: `certification:${profile.id}:${index}`,
+          candidateId: profile.id,
+          type: "certification",
+          text: parts.join(" | "),
+          verified: false,
+          confidence: 0.8,
           metadata: {
             source: "candidate_profile",
+            sourceKind: "certification",
           },
         }),
       );
@@ -342,9 +413,7 @@ export class CandidateContextBuilder {
       metadata:
         input.metadata === undefined
           ? undefined
-          : Object.freeze({
-              ...input.metadata,
-            }),
+          : Object.freeze({ ...input.metadata }),
     });
   }
 
@@ -354,50 +423,47 @@ export class CandidateContextBuilder {
     projects: readonly CandidateProject[],
     skills: readonly CandidateSkill[],
     stories: readonly CandidateStory[],
+    externalEvidence: readonly CandidateEvidence[],
   ): string {
-    const sections: string[] = [];
-
-    sections.push(
+    const sections: string[] = [
       "CANDIDATE FACTS",
-      "The following information represents candidate-domain records. Do not invent unsupported candidate experience.",
+      "The following information represents candidate-domain records and ingested evidence. Do not invent unsupported candidate experience.",
       "",
-    );
+    ];
 
     const profileText = this.buildProfileText(profile);
+    if (profileText) sections.push("PROFILE", profileText, "");
 
-    if (profileText) {
-      sections.push("PROFILE", profileText, "");
-    }
-
-    if (experiences.length > 0) {
+    if (experiences.length) {
       sections.push("EXPERIENCE");
-
-      for (const experience of experiences) {
-        sections.push(this.formatExperience(experience), "");
-      }
+      for (const item of experiences)
+        sections.push(this.formatExperience(item), "");
     }
 
-    if (projects.length > 0) {
+    if (projects.length) {
       sections.push("PROJECTS");
-
-      for (const project of projects) {
-        sections.push(this.formatProject(project), "");
-      }
+      for (const item of projects) sections.push(this.formatProject(item), "");
     }
 
-    if (skills.length > 0) {
+    if (skills.length) {
       sections.push("SKILLS");
-
-      for (const skill of skills) {
-        sections.push(this.formatSkill(skill), "");
-      }
+      for (const item of skills) sections.push(this.formatSkill(item), "");
     }
 
-    if (stories.length > 0) {
+    if (stories.length) {
       sections.push("STORIES");
+      for (const item of stories) sections.push(this.formatStory(item), "");
+    }
 
-      for (const story of stories) {
-        sections.push(this.formatStory(story), "");
+    if (externalEvidence.length) {
+      sections.push("EXTERNAL EVIDENCE");
+      for (const item of externalEvidence) {
+        sections.push(
+          `[${item.type}] ${item.text}`,
+          `Verified: ${item.verified ? "yes" : "no"} | Confidence: ${item.confidence}`,
+          item.sourceId ? `Source: ${item.sourceId}` : "",
+          "",
+        );
       }
     }
 
@@ -405,36 +471,18 @@ export class CandidateContextBuilder {
   }
 
   private buildProfileText(profile: CandidateProfile): string {
-    const lines: string[] = [];
+    const lines: string[] = [`Name: ${profile.fullName}`];
 
-    lines.push(`Name: ${profile.fullName}`);
+    if (profile.headline) lines.push(`Headline: ${profile.headline}`);
+    if (profile.summary) lines.push(`Summary: ${profile.summary}`);
+    if (profile.location) lines.push(`Location: ${profile.location}`);
 
-    if (profile.headline) {
-      lines.push(`Headline: ${profile.headline}`);
-    }
-
-    if (profile.summary) {
-      lines.push(`Summary: ${profile.summary}`);
-    }
-
-    if (profile.location) {
-      lines.push(`Location: ${profile.location}`);
-    }
-
-    if (profile.education.length > 0) {
+    if (profile.education.length) {
       lines.push("Education:");
-
-      for (const education of profile.education) {
+      for (const [index, education] of profile.education.entries()) {
         const parts = [education.institution];
-
-        if (education.degree) {
-          parts.push(education.degree);
-        }
-
-        if (education.fieldOfStudy) {
-          parts.push(education.fieldOfStudy);
-        }
-
+        if (education.degree) parts.push(education.degree);
+        if (education.fieldOfStudy) parts.push(education.fieldOfStudy);
         if (education.startDate || education.endDate) {
           parts.push(
             `${education.startDate ?? "unknown"} - ${
@@ -442,33 +490,20 @@ export class CandidateContextBuilder {
             }`,
           );
         }
-
         lines.push(`- ${parts.join(" | ")}`);
-
-        if (education.description) {
-          lines.push(`  ${education.description}`);
-        }
+        if (education.description) lines.push(`  ${education.description}`);
       }
     }
 
-    if (profile.certifications.length > 0) {
+    if (profile.certifications.length) {
       lines.push("Certifications:");
-
-      for (const certification of profile.certifications) {
+      for (const [index, certification] of profile.certifications.entries()) {
         const parts = [certification.name];
-
-        if (certification.issuer) {
-          parts.push(certification.issuer);
-        }
-
-        if (certification.issueDate) {
+        if (certification.issuer) parts.push(certification.issuer);
+        if (certification.issueDate)
           parts.push(`Issued ${certification.issueDate}`);
-        }
-
-        if (certification.expiryDate) {
+        if (certification.expiryDate)
           parts.push(`Expires ${certification.expiryDate}`);
-        }
-
         lines.push(`- ${parts.join(" | ")}`);
       }
     }
@@ -477,14 +512,8 @@ export class CandidateContextBuilder {
   }
 
   private formatExperience(experience: CandidateExperience): string {
-    const lines: string[] = [];
-
-    lines.push(`${experience.title} at ${experience.company}`);
-
-    if (experience.location) {
-      lines.push(`Location: ${experience.location}`);
-    }
-
+    const lines = [`${experience.title} at ${experience.company}`];
+    if (experience.location) lines.push(`Location: ${experience.location}`);
     if (experience.startDate || experience.endDate || experience.current) {
       lines.push(
         `Period: ${experience.startDate ?? "unknown"} - ${
@@ -492,119 +521,68 @@ export class CandidateContextBuilder {
         }`,
       );
     }
-
-    if (experience.description) {
+    if (experience.description)
       lines.push(`Description: ${experience.description}`);
-    }
-
-    if (experience.technologies.length > 0) {
+    if (experience.technologies.length) {
       lines.push(`Technologies: ${experience.technologies.join(", ")}`);
     }
-
-    if (experience.achievements.length > 0) {
-      lines.push("Achievements:");
-
-      for (const achievement of experience.achievements) {
-        lines.push(`- ${achievement}`);
-      }
+    if (experience.achievements.length) {
+      lines.push(
+        "Achievements:",
+        ...experience.achievements.map((v) => `- ${v}`),
+      );
     }
-
     return lines.join("\n").trim();
   }
 
   private formatProject(project: CandidateProject): string {
-    const lines: string[] = [];
-
-    lines.push(project.name);
-
-    if (project.role) {
-      lines.push(`Role: ${project.role}`);
-    }
-
+    const lines = [project.name];
+    if (project.role) lines.push(`Role: ${project.role}`);
     lines.push(`Description: ${project.description}`);
-
-    if (project.technologies.length > 0) {
+    if (project.technologies.length) {
       lines.push(`Technologies: ${project.technologies.join(", ")}`);
     }
-
-    if (project.responsibilities.length > 0) {
-      lines.push("Responsibilities:");
-
-      for (const responsibility of project.responsibilities) {
-        lines.push(`- ${responsibility}`);
-      }
+    if (project.responsibilities.length) {
+      lines.push(
+        "Responsibilities:",
+        ...project.responsibilities.map((v) => `- ${v}`),
+      );
     }
-
-    if (project.achievements.length > 0) {
-      lines.push("Achievements:");
-
-      for (const achievement of project.achievements) {
-        lines.push(`- ${achievement}`);
-      }
+    if (project.achievements.length) {
+      lines.push("Achievements:", ...project.achievements.map((v) => `- ${v}`));
     }
-
-    if (project.challenges.length > 0) {
-      lines.push("Challenges:");
-
-      for (const challenge of project.challenges) {
-        lines.push(`- ${challenge}`);
-      }
+    if (project.challenges.length) {
+      lines.push("Challenges:", ...project.challenges.map((v) => `- ${v}`));
     }
-
-    if (project.solutions.length > 0) {
-      lines.push("Solutions:");
-
-      for (const solution of project.solutions) {
-        lines.push(`- ${solution}`);
-      }
+    if (project.solutions.length) {
+      lines.push("Solutions:", ...project.solutions.map((v) => `- ${v}`));
     }
-
-    if (project.outcomes.length > 0) {
-      lines.push("Outcomes:");
-
-      for (const outcome of project.outcomes) {
-        lines.push(`- ${outcome}`);
-      }
+    if (project.outcomes.length) {
+      lines.push("Outcomes:", ...project.outcomes.map((v) => `- ${v}`));
     }
-
     return lines.join("\n").trim();
   }
 
   private formatSkill(skill: CandidateSkill): string {
     const parts = [skill.name];
-
-    if (skill.category) {
-      parts.push(`Category: ${skill.category}`);
-    }
-
-    if (skill.level) {
-      parts.push(`Level: ${skill.level}`);
-    }
-
+    if (skill.category) parts.push(`Category: ${skill.category}`);
+    if (skill.level) parts.push(`Level: ${skill.level}`);
     if (skill.yearsOfExperience !== undefined) {
       parts.push(`Years of experience: ${skill.yearsOfExperience}`);
     }
-
     return parts.join(" | ");
   }
 
   private formatStory(story: CandidateStory): string {
-    const lines: string[] = [];
-
-    lines.push(`Story: ${story.title}`);
-    lines.push(`Situation: ${story.situation}`);
-    lines.push(`Task: ${story.task}`);
-    lines.push(`Action: ${story.action}`);
-    lines.push(`Result: ${story.result}`);
-
-    if (story.skills.length > 0) {
-      lines.push(`Skills: ${story.skills.join(", ")}`);
-    }
-
-    if (story.topics.length > 0) {
-      lines.push(`Topics: ${story.topics.join(", ")}`);
-    }
-
+    const lines = [
+      `Story: ${story.title}`,
+      `Situation: ${story.situation}`,
+      `Task: ${story.task}`,
+      `Action: ${story.action}`,
+      `Result: ${story.result}`,
+    ];
+    if (story.skills.length) lines.push(`Skills: ${story.skills.join(", ")}`);
+    if (story.topics.length) lines.push(`Topics: ${story.topics.join(", ")}`);
     return lines.join("\n").trim();
   }
 
@@ -612,8 +590,6 @@ export class CandidateContextBuilder {
     signal: AbortSignal | undefined,
     candidateId: string,
   ): void {
-    if (signal?.aborted) {
-      throw CandidateError.cancelled(candidateId);
-    }
+    if (signal?.aborted) throw CandidateError.cancelled(candidateId);
   }
 }
