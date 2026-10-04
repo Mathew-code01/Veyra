@@ -1,3 +1,4 @@
+
 // ============================================================================
 // FILE: core/documents/analysis/AIManagerDocumentAnalyzer.ts
 //
@@ -7,17 +8,25 @@
 // ARCHITECTURE:
 //
 // ProcessedDocument
-//       ↓
+//       │
+//       ▼
 // AIManagerDocumentAnalyzer
-//       ↓
-// AIManager.generate(providerName, request)
-//       ↓
-// registered AI provider
-//       ↓
-// AI response
-//       ↓
-// validated DocumentAnalysisOutput
-//       ↓
+//       │
+//       │ builds generic AIRequest
+//       ▼
+// core/ai/AIManager
+//       │
+//       ├── LocalModelProvider
+//       │
+//       └── CloudAIProvider
+//               │
+//               ▼
+//          AIResponse
+//       │
+//       ▼
+// documentAnalysisOutputSchema
+//       │
+//       ▼
 // DocumentAnalysis
 //
 // IMPORTANT:
@@ -25,21 +34,35 @@
 // This class does NOT:
 // - parse files
 // - normalize files
+// - chunk documents
 // - store documents
 // - manage candidates
 // - manage context
-// - select cloud providers
-// - perform routing
+// - select providers
+// - implement cloud transport
+// - implement local model runtimes
+// - implement global AI routing
 //
 // Provider selection remains explicit.
-// Routing belongs to the higher AI orchestration layer.
+//
+// Higher-level AI orchestration may select the provider before calling this
+// analyzer.
+//
+// The analyzer converts document-domain input into a generic AIRequest and
+// converts the generic AIResponse back into the document-domain
+// DocumentAnalysis artifact.
 // ============================================================================
 
 import { randomUUID } from "node:crypto";
 
-import type { AIRequest } from "../../../shared/types/ai";
+import type {
+  AIProvider,
+  AIRequest,
+} from "../../../shared/types/ai";
 
-import { documentAnalysisOutputSchema } from "../../../shared/validation/documentSchemas";
+import {
+  documentAnalysisOutputSchema,
+} from "../../../shared/validation/documentSchemas";
 
 import type {
   DocumentAnalysis,
@@ -78,7 +101,7 @@ interface AnalysisBatch {
 interface AIAnalysisResult {
   readonly output: DocumentAnalysisOutput;
 
-  readonly provider: string;
+  readonly provider: AIProvider;
 
   readonly model: string;
 }
@@ -111,15 +134,38 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
     } = {},
   ) {
     if (!aiManager) {
-      throw new Error("AIManager is required by AIManagerDocumentAnalyzer.");
+      throw new Error(
+        "AIManager is required by AIManagerDocumentAnalyzer.",
+      );
     }
 
     this.aiManager = aiManager;
 
     this.defaultBatchMaxCharacters =
-      options.defaultBatchMaxCharacters ?? DEFAULT_BATCH_MAX_CHARACTERS;
+      options.defaultBatchMaxCharacters ??
+      DEFAULT_BATCH_MAX_CHARACTERS;
 
-    this.defaultMaxTokens = options.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
+    this.defaultMaxTokens =
+      options.defaultMaxTokens ??
+      DEFAULT_MAX_TOKENS;
+
+    if (
+      !Number.isInteger(this.defaultBatchMaxCharacters) ||
+      this.defaultBatchMaxCharacters <= 0
+    ) {
+      throw new Error(
+        "defaultBatchMaxCharacters must be a positive integer.",
+      );
+    }
+
+    if (
+      !Number.isInteger(this.defaultMaxTokens) ||
+      this.defaultMaxTokens <= 0
+    ) {
+      throw new Error(
+        "defaultMaxTokens must be a positive integer.",
+      );
+    }
   }
 
   // ==========================================================================
@@ -131,35 +177,58 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
     options: DocumentAIAnalyzerOptions,
   ): Promise<DocumentAnalysis> {
     if (!document) {
-      throw new Error("A processed document is required for AI analysis.");
+      throw new Error(
+        "A processed document is required for AI analysis.",
+      );
     }
 
     if (!options) {
-      throw new Error("Document AI analysis options are required.");
+      throw new Error(
+        "Document AI analysis options are required.",
+      );
     }
 
     const providerName = options.providerName.trim();
 
     if (!providerName) {
-      throw new Error("A document AI provider is required.");
+      throw new Error(
+        "A document AI provider is required.",
+      );
     }
 
     this.throwIfAborted(options.signal);
 
     const batchMaxCharacters =
-      options.batchMaxCharacters ?? this.defaultBatchMaxCharacters;
+      options.batchMaxCharacters ??
+      this.defaultBatchMaxCharacters;
 
-    if (!Number.isInteger(batchMaxCharacters) || batchMaxCharacters <= 0) {
-      throw new Error("batchMaxCharacters must be a positive integer.");
+    if (
+      !Number.isInteger(batchMaxCharacters) ||
+      batchMaxCharacters <= 0
+    ) {
+      throw new Error(
+        "batchMaxCharacters must be a positive integer.",
+      );
     }
 
-    const maxTokens = options.maxTokens ?? this.defaultMaxTokens;
+    const maxTokens =
+      options.maxTokens ??
+      this.defaultMaxTokens;
 
-    if (!Number.isInteger(maxTokens) || maxTokens <= 0) {
-      throw new Error("maxTokens must be a positive integer.");
+    if (
+      !Number.isInteger(maxTokens) ||
+      maxTokens <= 0
+    ) {
+      throw new Error(
+        "maxTokens must be a positive integer.",
+      );
     }
 
-    const batches = this.createBatches(document, batchMaxCharacters);
+    const batches =
+      this.createBatches(
+        document,
+        batchMaxCharacters,
+      );
 
     if (batches.length === 0) {
       throw new Error(
@@ -172,12 +241,17 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
     for (const batch of batches) {
       this.throwIfAborted(options.signal);
 
-      const result = await this.analyzeBatch(document, batch, {
-        providerName,
-        model: options.model,
-        maxTokens,
-        signal: options.signal,
-      });
+      const result =
+        await this.analyzeBatch(
+          document,
+          batch,
+          {
+            providerName,
+            model: options.model,
+            maxTokens,
+            signal: options.signal,
+          },
+        );
 
       partialResults.push(result);
     }
@@ -189,40 +263,56 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
     if (partialResults.length === 1) {
       finalResult = partialResults[0];
     } else {
-      finalResult = await this.consolidateResults(document, partialResults, {
-        providerName,
-        model: options.model,
-        maxTokens,
-        signal: options.signal,
-      });
+      finalResult =
+        await this.consolidateResults(
+          document,
+          partialResults,
+          {
+            providerName,
+            model: options.model,
+            maxTokens,
+            signal: options.signal,
+          },
+        );
     }
 
     this.throwIfAborted(options.signal);
 
-    const format = toSharedDocumentFormat(document.type);
+    const format =
+      toSharedDocumentFormat(
+        document.type,
+      );
 
     const analysis: DocumentAnalysis = {
       analysisId: randomUUID(),
 
       documentId: document.identity.id,
 
-      documentType: finalResult.output.documentType,
+      documentType:
+        finalResult.output.documentType,
 
       format,
 
-      provider: finalResult.provider,
+      provider:
+        finalResult.provider,
 
-      model: finalResult.model,
+      model:
+        finalResult.model,
 
-      analyzedAt: new Date().toISOString(),
+      analyzedAt:
+        new Date().toISOString(),
 
-      summary: finalResult.output.summary,
+      summary:
+        finalResult.output.summary,
 
-      facts: finalResult.output.facts,
+      facts:
+        finalResult.output.facts,
 
-      keywords: finalResult.output.keywords,
+      keywords:
+        finalResult.output.keywords,
 
-      warnings: finalResult.output.warnings ?? [],
+      warnings:
+        finalResult.output.warnings ?? [],
     };
 
     return analysis;
@@ -236,7 +326,7 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
     document: ProcessedDocument,
     batch: AnalysisBatch,
     options: {
-      readonly providerName: string;
+      readonly providerName: AIProvider;
 
       readonly model?: string;
 
@@ -245,16 +335,25 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
       readonly signal?: AbortSignal;
     },
   ): Promise<AIAnalysisResult> {
-    const sourceText = batch.chunks
-      .map((chunk) => `[SOURCE CHUNK: ${chunk.sourceChunkId}]\n${chunk.text}`)
-      .join("\n\n");
+    const sourceText =
+      batch.chunks
+        .map(
+          (chunk) =>
+            [
+              `[SOURCE CHUNK: ${chunk.sourceChunkId}]`,
+              chunk.text,
+            ].join("\n"),
+        )
+        .join("\n\n");
 
     const request: AIRequest = {
       requestId: randomUUID(),
 
-      provider: options.providerName,
+      provider:
+        options.providerName,
 
-      model: options.model,
+      model:
+        options.model,
 
       mode: "general",
 
@@ -262,20 +361,27 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
         {
           role: "system",
 
-          content: DOCUMENT_ANALYSIS_SYSTEM_PROMPT,
+          content:
+            DOCUMENT_ANALYSIS_SYSTEM_PROMPT,
         },
 
         {
           role: "user",
 
-          content: this.buildBatchPrompt(document, sourceText, batch),
+          content:
+            this.buildBatchPrompt(
+              document,
+              sourceText,
+              batch,
+            ),
         },
       ],
 
       options: {
         temperature: 0,
 
-        maxTokens: options.maxTokens,
+        maxTokens:
+          options.maxTokens,
 
         responseFormat: "json",
 
@@ -284,7 +390,8 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
 
           operation: "document-analysis",
 
-          documentId: document.identity.id,
+          documentId:
+            document.identity.id,
         },
       },
 
@@ -295,18 +402,23 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
 
         operation: "document-analysis",
 
-        documentId: document.identity.id,
+        documentId:
+          document.identity.id,
       },
 
-      signal: options.signal,
+      signal:
+        options.signal,
     };
 
-    const response = await this.aiManager.generate(
-      options.providerName,
-      request,
-    );
+    const response =
+      await this.aiManager.generate(
+        options.providerName,
+        request,
+      );
 
-    this.throwIfAborted(options.signal);
+    this.throwIfAborted(
+      options.signal,
+    );
 
     if (response.type === "embedding") {
       throw new Error(
@@ -314,14 +426,19 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
       );
     }
 
-    const output = this.parseAnalysisOutput(response.text);
+    const output =
+      this.parseAnalysisOutput(
+        response.text,
+      );
 
     return {
       output,
 
-      provider: response.metadata.provider,
+      provider:
+        response.metadata.provider,
 
-      model: response.metadata.model,
+      model:
+        response.metadata.model,
     };
   }
 
@@ -333,7 +450,7 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
     document: ProcessedDocument,
     partialResults: readonly AIAnalysisResult[],
     options: {
-      readonly providerName: string;
+      readonly providerName: AIProvider;
 
       readonly model?: string;
 
@@ -342,18 +459,24 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
       readonly signal?: AbortSignal;
     },
   ): Promise<AIAnalysisResult> {
-    const partialJson = partialResults.map((result, index) => ({
-      batch: index + 1,
+    const partialJson =
+      partialResults.map(
+        (result, index) => ({
+          batch: index + 1,
 
-      output: result.output,
-    }));
+          output:
+            result.output,
+        }),
+      );
 
     const request: AIRequest = {
       requestId: randomUUID(),
 
-      provider: options.providerName,
+      provider:
+        options.providerName,
 
-      model: options.model,
+      model:
+        options.model,
 
       mode: "general",
 
@@ -361,7 +484,8 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
         {
           role: "system",
 
-          content: DOCUMENT_ANALYSIS_CONSOLIDATION_SYSTEM_PROMPT,
+          content:
+            DOCUMENT_ANALYSIS_CONSOLIDATION_SYSTEM_PROMPT,
         },
 
         {
@@ -376,7 +500,11 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
 
             "PARTIAL DOCUMENT ANALYSES:",
 
-            JSON.stringify(partialJson, null, 2),
+            JSON.stringify(
+              partialJson,
+              null,
+              2,
+            ),
           ].join("\n"),
         },
       ],
@@ -384,16 +512,19 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
       options: {
         temperature: 0,
 
-        maxTokens: options.maxTokens,
+        maxTokens:
+          options.maxTokens,
 
         responseFormat: "json",
 
         metadata: {
           subsystem: "documents",
 
-          operation: "document-analysis-consolidation",
+          operation:
+            "document-analysis-consolidation",
 
-          documentId: document.identity.id,
+          documentId:
+            document.identity.id,
         },
       },
 
@@ -402,20 +533,26 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
       metadata: {
         subsystem: "documents",
 
-        operation: "document-analysis-consolidation",
+        operation:
+          "document-analysis-consolidation",
 
-        documentId: document.identity.id,
+        documentId:
+          document.identity.id,
       },
 
-      signal: options.signal,
+      signal:
+        options.signal,
     };
 
-    const response = await this.aiManager.generate(
-      options.providerName,
-      request,
-    );
+    const response =
+      await this.aiManager.generate(
+        options.providerName,
+        request,
+      );
 
-    this.throwIfAborted(options.signal);
+    this.throwIfAborted(
+      options.signal,
+    );
 
     if (response.type === "embedding") {
       throw new Error(
@@ -423,14 +560,19 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
       );
     }
 
-    const output = this.parseAnalysisOutput(response.text);
+    const output =
+      this.parseAnalysisOutput(
+        response.text,
+      );
 
     return {
       output,
 
-      provider: response.metadata.provider,
+      provider:
+        response.metadata.provider,
 
-      model: response.metadata.model,
+      model:
+        response.metadata.model,
     };
   }
 
@@ -447,16 +589,20 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
         ? document.chunks
         : [
             {
-              id: document.identity.id,
+              id:
+                `${document.identity.id}:source`,
 
-              documentId: document.identity.id,
+              documentId:
+                document.identity.id,
 
               index: 0,
 
-              text: document.text,
+              text:
+                document.text,
 
               source: {
-                documentId: document.identity.id,
+                documentId:
+                  document.identity.id,
               },
             } satisfies DocumentChunk,
           ];
@@ -468,7 +614,8 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
     let currentCharacters = 0;
 
     for (const chunk of sourceChunks) {
-      const text = chunk.text.trim();
+      const text =
+        chunk.text.trim();
 
       if (!text) {
         continue;
@@ -478,22 +625,30 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
        * A normal document chunk should already be bounded by the
        * document chunker.
        *
-       * If one chunk is larger than the AI batch size, we split
-       * that chunk for transport while retaining the ORIGINAL
+       * If one chunk is larger than the AI batch size, split that
+       * chunk only for AI transport while retaining the ORIGINAL
        * chunk ID as provenance.
        */
       const parts =
-        text.length > maxCharacters ? splitText(text, maxCharacters) : [text];
+        text.length > maxCharacters
+          ? splitText(
+              text,
+              maxCharacters,
+            )
+          : [text];
 
       for (const part of parts) {
         if (
           currentChunks.length > 0 &&
-          currentCharacters + part.length > maxCharacters
+          currentCharacters + part.length >
+            maxCharacters
         ) {
           batches.push({
-            chunks: currentChunks,
+            chunks:
+              currentChunks,
 
-            characterCount: currentCharacters,
+            characterCount:
+              currentCharacters,
           });
 
           currentChunks = [];
@@ -502,20 +657,25 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
         }
 
         currentChunks.push({
-          sourceChunkId: chunk.id,
+          sourceChunkId:
+            chunk.id,
 
-          text: part,
+          text:
+            part,
         });
 
-        currentCharacters += part.length;
+        currentCharacters +=
+          part.length;
       }
     }
 
     if (currentChunks.length > 0) {
       batches.push({
-        chunks: currentChunks,
+        chunks:
+          currentChunks,
 
-        characterCount: currentCharacters,
+        characterCount:
+          currentCharacters,
       });
     }
 
@@ -558,23 +718,32 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
 
       JSON.stringify(
         {
-          summary: "A concise factual summary.",
+          summary:
+            "A concise factual summary.",
 
-          documentType: "resume",
+          documentType:
+            "resume",
 
           facts: [
             {
-              category: "experience",
+              category:
+                "experience",
 
-              fact: "A fact explicitly supported by the document.",
+              fact:
+                "A fact explicitly supported by the document.",
 
-              confidence: 0.95,
+              confidence:
+                0.95,
 
-              sourceChunkIds: ["source-chunk-id"],
+              sourceChunkIds: [
+                "source-chunk-id",
+              ],
             },
           ],
 
-          keywords: ["keyword"],
+          keywords: [
+            "keyword",
+          ],
 
           warnings: [],
         },
@@ -588,36 +757,48 @@ export class AIManagerDocumentAnalyzer implements DocumentAIAnalyzer {
   // OUTPUT VALIDATION
   // ==========================================================================
 
-  private parseAnalysisOutput(text: string): DocumentAnalysisOutput {
-    const cleaned = cleanJsonResponse(text);
+  private parseAnalysisOutput(
+    text: string,
+  ): DocumentAnalysisOutput {
+    const cleaned =
+      cleanJsonResponse(text);
 
     let parsed: unknown;
 
     try {
-      parsed = JSON.parse(cleaned);
+      parsed =
+        JSON.parse(cleaned);
     } catch (error) {
       throw new Error(
         `Document AI analysis returned invalid JSON: ${
-          error instanceof Error ? error.message : String(error)
+          error instanceof Error
+            ? error.message
+            : String(error)
         }`,
       );
     }
 
-    return documentAnalysisOutputSchema.parse(parsed);
+    return documentAnalysisOutputSchema.parse(
+      parsed,
+    );
   }
 
   // ==========================================================================
   // CANCELLATION
   // ==========================================================================
 
-  private throwIfAborted(signal?: AbortSignal): void {
+  private throwIfAborted(
+    signal?: AbortSignal,
+  ): void {
     if (!signal?.aborted) {
       return;
     }
 
     throw signal.reason instanceof Error
       ? signal.reason
-      : new Error("Document AI analysis was cancelled.");
+      : new Error(
+          "Document AI analysis was cancelled.",
+        );
   }
 }
 
@@ -676,51 +857,99 @@ Rules:
 // HELPERS
 // ============================================================================
 
-function cleanJsonResponse(text: string): string {
-  const trimmed = text.trim();
+function cleanJsonResponse(
+  text: string,
+): string {
+  const trimmed =
+    text.trim();
 
-  if (trimmed.startsWith("```json")) {
+  if (
+    trimmed.startsWith(
+      "```json",
+    )
+  ) {
     return trimmed
-      .slice("```json".length)
-      .replace(/```\s*$/u, "")
+      .slice(
+        "```json".length,
+      )
+      .replace(
+        /```\s*$/u,
+        "",
+      )
       .trim();
   }
 
-  if (trimmed.startsWith("```")) {
+  if (
+    trimmed.startsWith("```")
+  ) {
     return trimmed
       .slice(3)
-      .replace(/```\s*$/u, "")
+      .replace(
+        /```\s*$/u,
+        "",
+      )
       .trim();
   }
 
   return trimmed;
 }
 
-function splitText(text: string, maxCharacters: number): readonly string[] {
+function splitText(
+  text: string,
+  maxCharacters: number,
+): readonly string[] {
   const parts: string[] = [];
 
   let offset = 0;
 
-  while (offset < text.length) {
-    const end = Math.min(offset + maxCharacters, text.length);
+  while (
+    offset < text.length
+  ) {
+    const end =
+      Math.min(
+        offset + maxCharacters,
+        text.length,
+      );
 
     let boundary = end;
 
-    if (end < text.length) {
-      const whitespace = text.lastIndexOf(" ", end);
+    if (
+      end < text.length
+    ) {
+      const whitespace =
+        text.lastIndexOf(
+          " ",
+          end,
+        );
 
-      if (whitespace > offset + Math.floor(maxCharacters * 0.5)) {
-        boundary = whitespace;
+      if (
+        whitespace >
+        offset +
+          Math.floor(
+            maxCharacters * 0.5,
+          )
+      ) {
+        boundary =
+          whitespace;
       }
     }
 
-    const part = text.slice(offset, boundary).trim();
+    const part =
+      text
+        .slice(
+          offset,
+          boundary,
+        )
+        .trim();
 
     if (part) {
       parts.push(part);
     }
 
-    offset = boundary > offset ? boundary : end;
+    offset =
+      boundary > offset
+        ? boundary
+        : end;
   }
 
   return parts;
@@ -728,7 +957,13 @@ function splitText(text: string, maxCharacters: number): readonly string[] {
 
 function toSharedDocumentFormat(
   type: CoreDocumentType,
-): "pdf" | "docx" | "txt" | "md" | "json" | "unknown" {
+):
+  | "pdf"
+  | "docx"
+  | "txt"
+  | "md"
+  | "json"
+  | "unknown" {
   switch (type) {
     case "pdf":
       return "pdf";

@@ -1,21 +1,58 @@
+
 // ============================================================================
 // FILE: core/documents/analysis/DocumentAIAnalyzer.ts
 //
 // PURPOSE:
 // Defines the document semantic-analysis boundary.
 //
-// DocumentService knows only this abstraction.
+// ARCHITECTURE:
 //
-// It does not know:
+// DocumentService
+//       │
+//       ▼
+// DocumentAIAnalyzer
+//       │
+//       ▼
+// AIManagerDocumentAnalyzer
+//       │
+//       ▼
+// core/ai/AIManager
+//       │
+//       ├── LocalModelProvider
+//       └── CloudAIProvider
+//
+// IMPORTANT:
+//
+// DocumentAIAnalyzer is a DOCUMENT-domain abstraction.
+//
+// It does NOT know:
 // - AIManager
 // - Gemini
 // - Ollama
 // - Mistral
+// - Groq
+// - Cerebras
 // - cloud transport
-// - local model runtime
+// - local model runtimes
+// - candidate storage
+// - context storage
+// - routing implementation
 //
-// This keeps document processing independent from AI execution.
+// Provider selection is supplied by the composition/orchestration layer.
+//
+// The analyzer transforms:
+//
+//     ProcessedDocument
+//
+// into:
+//
+//     DocumentAnalysis
+//
+// DocumentAnalysis is a DERIVED semantic artifact.
+// The original ProcessedDocument remains authoritative.
 // ============================================================================
+
+import type { AIProvider } from "../../../shared/types/ai";
 
 import type { DocumentAnalysis } from "../../../shared/types/documents";
 
@@ -32,31 +69,45 @@ export interface DocumentAIAnalyzerOptions {
    * Examples:
    *
    * local
+   * ollama
    * gemini
    * mistral
    * groq
+   * cerebras
+   * custom-provider
+   *
+   * The document subsystem does not select the provider.
    */
-  readonly providerName: string;
+  readonly providerName: AIProvider;
 
   /**
    * Optional explicit model.
+   *
+   * When omitted, the selected provider may use its configured default
+   * model.
    */
   readonly model?: string;
 
   /**
-   * Maximum characters supplied to one semantic-analysis request.
+   * Maximum number of source characters supplied to one semantic-analysis
+   * request.
    *
-   * This controls batching, not document chunking.
+   * This controls AI request batching.
+   *
+   * It does NOT replace DocumentChunker.
    */
   readonly batchMaxCharacters?: number;
 
   /**
-   * Maximum output tokens requested from the AI.
+   * Maximum output tokens requested from the AI provider.
    */
   readonly maxTokens?: number;
 
   /**
    * Caller-owned cancellation signal.
+   *
+   * The document pipeline owns cancellation.
+   * The analyzer only observes it.
    */
   readonly signal?: AbortSignal;
 }
@@ -69,12 +120,17 @@ export interface DocumentAIAnalyzer {
   /**
    * Analyze an already processed document.
    *
-   * This method MUST treat the ProcessedDocument as the source
-   * material and return a derived DocumentAnalysis artifact.
+   * The analyzer MUST:
+   *
+   * 1. Treat ProcessedDocument as authoritative source material.
+   * 2. Produce a derived DocumentAnalysis artifact.
+   * 3. Preserve source chunk provenance where available.
+   * 4. Never mutate the ProcessedDocument.
+   * 5. Never own provider routing.
+   * 6. Never persist candidate/context state directly.
    */
   analyze(
     document: ProcessedDocument,
     options: DocumentAIAnalyzerOptions,
   ): Promise<DocumentAnalysis>;
 }
-

@@ -1,12 +1,15 @@
 // ============================================================================
 // FILE: core/documents/DocumentService.ts
+//
 // PURPOSE:
 // Public application service for the document subsystem.
 //
 // RESPONSIBILITY:
-// Coordinates document ingestion from source -> processed document.
+// Coordinates document ingestion from source -> processed document and,
+// when configured, semantic AI analysis of the completed document.
 //
-// PIPELINE:
+// DETERMINISTIC PIPELINE:
+//
 //   validate
 //      ↓
 //   classify
@@ -23,18 +26,54 @@
 //      ↓
 //   optional context publishing
 //
-// IMPORTANT:
+// OPTIONAL AI ENRICHMENT:
+//
+//   ProcessedDocument
+//        ↓
+//   DocumentAIAnalyzer
+//        ↓
+//   AIManagerDocumentAnalyzer
+//        ↓
+//   AIManager
+//        ↓
+//   Local / Cloud AI provider
+//        ↓
+//   DocumentAnalysis
+//
+// IMPORTANT ARCHITECTURE:
+//
 // DocumentService does NOT:
-//   - call LLMs
+//   - depend directly on AIManager
+//   - depend directly on LocalModelProvider
+//   - depend directly on CloudAIProvider
+//   - call LLM SDKs
 //   - generate embeddings directly
 //   - perform retrieval
 //   - query vector databases
-//   - perform AI reasoning
+//   - perform AI reasoning itself
+//   - depend directly on ContextManager
+//
+// AI is connected through the DocumentAIAnalyzer port.
 //
 // Context publishing is performed through the injected
 // DocumentContextSink boundary.
 //
-// DocumentService therefore does not depend directly on ContextManager.
+// Dependency direction:
+//
+//   Documents
+//       ↓
+//   DocumentAIAnalyzer
+//       ↓
+//   AI execution
+//
+// rather than:
+//
+//   Documents
+//       ↓
+//   AIManager
+//       ↓
+//   Documents
+//
 // ============================================================================
 
 import { DocumentError, DocumentErrorCode } from "./DocumentError";
@@ -77,16 +116,28 @@ import type { DocumentStore } from "./storage/DocumentStore";
 
 import type { DocumentContextSink } from "./DocumentContextSink";
 
+import type {
+  DocumentAIAnalyzer,
+  DocumentAIAnalyzerOptions,
+} from "./analysis/DocumentAIAnalyzer";
+
+import type { DocumentAnalysis } from "../../shared/types/documents";
+
+// ============================================================================
+// PARSER CONTRACT
+// ============================================================================
+
 /**
  * Parser contract used by the document service.
  *
  * Individual parsers are intentionally injected.
  *
  * This prevents DocumentService from depending directly on:
- * - pdf libraries
- * - docx libraries
- * - html parsers
- * - markdown parsers
+ *
+ * - PDF libraries
+ * - DOCX libraries
+ * - HTML parsers
+ * - Markdown parsers
  * - etc.
  */
 export interface DocumentParserAdapter {
@@ -99,6 +150,10 @@ export interface DocumentParserAdapter {
     },
   ): Promise<ParsedDocument>;
 }
+
+// ============================================================================
+// PARSER REGISTRY
+// ============================================================================
 
 /**
  * Registry for document parsers.
@@ -151,6 +206,10 @@ export class DefaultDocumentParserRegistry implements DocumentParserRegistry {
   }
 }
 
+// ============================================================================
+// INDEX SINK
+// ============================================================================
+
 /**
  * Optional index sink.
  *
@@ -166,6 +225,58 @@ export interface DocumentIndexSink {
     },
   ): Promise<void>;
 }
+
+// ============================================================================
+// DOCUMENT AI ANALYSIS DEPENDENCIES
+// ============================================================================
+
+/**
+ * Configuration for optional semantic document analysis.
+ *
+ * The analyzer is intentionally an abstraction.
+ *
+ * DocumentService therefore does not know whether analysis is performed by:
+ *
+ * - Ollama
+ * - llama.cpp
+ * - Gemini
+ * - Mistral
+ * - another cloud provider
+ * - a mock provider
+ *
+ * Provider/model selection remains outside DocumentService and is supplied
+ * through DocumentAIAnalyzerOptions.
+ */
+export interface DocumentAIAnalysisDependencies {
+  /**
+   * Adapter responsible for translating document analysis into the
+   * application's AI execution contract.
+   */
+  readonly analyzer: DocumentAIAnalyzer;
+
+  /**
+   * Provider/model and analysis limits.
+   */
+  readonly options: DocumentAIAnalyzerOptions;
+
+  /**
+   * When false or omitted:
+   *
+   *   document ingestion succeeds even if AI enrichment fails.
+   *
+   * When true:
+   *
+   *   AI analysis is part of the required document workflow and an
+   *   analysis failure fails the overall document operation.
+   *
+   * Recommended default: false.
+   */
+  readonly required?: boolean;
+}
+
+// ============================================================================
+// SERVICE DEPENDENCIES
+// ============================================================================
 
 export interface DocumentServiceDependencies {
   readonly validator?: DocumentValidator;
@@ -194,7 +305,26 @@ export interface DocumentServiceDependencies {
    *   ContextDocumentIndexer
    */
   readonly contextSink?: DocumentContextSink;
+
+  /**
+   * Optional semantic AI analysis.
+   *
+   * This is the document -> AI connection.
+   *
+   * DocumentService depends on DocumentAIAnalyzer only.
+   *
+   * A typical composition-root implementation is:
+   *
+   *   new AIManagerDocumentAnalyzer(aiManager)
+   *
+   * injected here.
+   */
+  readonly aiAnalysis?: DocumentAIAnalysisDependencies;
 }
+
+// ============================================================================
+// SERVICE RESULT
+// ============================================================================
 
 export interface DocumentServiceResult {
   readonly document: ProcessedDocument;
@@ -212,7 +342,27 @@ export interface DocumentServiceResult {
 
     readonly warnings: readonly string[];
   };
+
+  /**
+   * Semantic analysis generated from the processed document.
+   *
+   * Undefined means:
+   *
+   * - AI analysis was not configured, or
+   * - optional AI analysis failed and ingestion continued.
+   */
+  readonly analysis?: DocumentAnalysis;
+
+  /**
+   * Indicates that AI analysis was attempted but failed while remaining
+   * non-fatal to document ingestion.
+   */
+  readonly analysisWarning?: string;
 }
+
+// ============================================================================
+// DOCUMENT SERVICE
+// ============================================================================
 
 /**
  * Canonical document application service.
@@ -236,11 +386,34 @@ export class DocumentService {
 
   private readonly contextSink?: DocumentContextSink;
 
+  /**
+   * Optional semantic AI boundary.
+   *
+   * IMPORTANT:
+   *
+   * This is deliberately NOT AIManager.
+   *
+   * The document subsystem only knows that an analyzer can analyze a
+   * ProcessedDocument.
+   */
+  private readonly aiAnalysis?: DocumentAIAnalysisDependencies;
+
+  // --------------------------------------------------------------------------
+  // CONSTRUCTOR
+  // --------------------------------------------------------------------------
+
   public constructor(dependencies: DocumentServiceDependencies) {
     if (!dependencies) {
       throw new DocumentError(
         DocumentErrorCode.INVALID_INPUT,
         "DocumentService dependencies are required.",
+      );
+    }
+
+    if (!dependencies.parserRegistry) {
+      throw new DocumentError(
+        DocumentErrorCode.INVALID_INPUT,
+        "Document parser registry is required.",
       );
     }
 
@@ -261,10 +434,33 @@ export class DocumentService {
     this.indexSink = dependencies.indexSink;
 
     this.contextSink = dependencies.contextSink;
+
+    this.aiAnalysis = dependencies.aiAnalysis;
+
+    if (this.aiAnalysis && !this.aiAnalysis.analyzer) {
+      throw new DocumentError(
+        DocumentErrorCode.INVALID_INPUT,
+        "Document AI analyzer is required when AI analysis is configured.",
+      );
+    }
+
+    if (this.aiAnalysis && !this.aiAnalysis.options) {
+      throw new DocumentError(
+        DocumentErrorCode.INVALID_INPUT,
+        "Document AI analysis options are required when AI analysis is configured.",
+      );
+    }
   }
+
+  // ==========================================================================
+  // PROCESS
+  // ==========================================================================
 
   /**
    * Processes a document from source to ProcessedDocument.
+   *
+   * When semantic AI analysis is configured, the completed ProcessedDocument
+   * is passed through DocumentAIAnalyzer after deterministic ingestion.
    */
   public async process(
     request: DocumentProcessingRequest,
@@ -277,9 +473,9 @@ export class DocumentService {
 
     this.throwIfAborted(signal);
 
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // 1. VALIDATION
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
     this.emitProgress(
       request,
@@ -328,9 +524,9 @@ export class DocumentService {
       "Document validation completed.",
     );
 
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // 2. CLASSIFICATION
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
     this.emitProgress(
       request,
@@ -365,9 +561,9 @@ export class DocumentService {
 
     this.throwIfAborted(signal);
 
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // 3. PARSING
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
     this.emitProgress(
       request,
@@ -419,9 +615,9 @@ export class DocumentService {
       "Document parsing completed.",
     );
 
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // 4. NORMALIZATION
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
     this.emitProgress(
       request,
@@ -457,9 +653,9 @@ export class DocumentService {
       "Document normalization completed.",
     );
 
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // 5. CHUNKING
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
     let chunks: readonly DocumentChunk[] = [];
 
@@ -503,9 +699,9 @@ export class DocumentService {
 
     this.throwIfAborted(signal);
 
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // 6. INDEX PREPARATION
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
     this.emitProgress(
       request,
@@ -547,11 +743,11 @@ export class DocumentService {
       "Document index preparation completed.",
     );
 
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // 7. FINAL DOCUMENT
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
-    const warnings = [
+    const warnings: string[] = [
       ...validation.warnings,
       ...classification.warnings,
       ...(parsed.warnings ?? []),
@@ -585,9 +781,11 @@ export class DocumentService {
       warnings,
     };
 
-    // -----------------------------------------------------------------------
+    this.throwIfAborted(signal);
+
+    // ------------------------------------------------------------------------
     // 8. PERSIST DOCUMENT
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
     if (this.documentStore) {
       this.emitProgress(
@@ -621,9 +819,9 @@ export class DocumentService {
       );
     }
 
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // 9. WRITE INDEX
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
     if (this.indexSink) {
       try {
@@ -643,14 +841,14 @@ export class DocumentService {
 
     this.throwIfAborted(signal);
 
-    // -----------------------------------------------------------------------
-    // 10. PUBLISH TO GENERIC CONTEXT
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // 10. PUBLISH RAW DOCUMENT TO GENERIC CONTEXT
+    // ------------------------------------------------------------------------
 
     /**
-     * This is the actual document -> context connection.
+     * Document -> Context connection for the raw/indexed representation.
      *
-     * The ContextDocumentIndexer receives:
+     * ContextDocumentIndexer receives:
      *
      *   ProcessedDocument
      *          +
@@ -658,13 +856,12 @@ export class DocumentService {
      *
      * and translates them into generic context chunks.
      *
-     * ContextManager then owns:
+     * DocumentService itself never knows about:
      *
-     *   embeddings
-     *        ↓
-     *   vector store
-     *
-     * DocumentService itself never knows about either implementation.
+     *   - ContextManager
+     *   - embedding providers
+     *   - vector databases
+     *   - retrieval implementations
      */
     if (this.contextSink) {
       this.emitProgress(
@@ -700,9 +897,143 @@ export class DocumentService {
       );
     }
 
-    // -----------------------------------------------------------------------
-    // 11. COMPLETION
-    // -----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // 11. SEMANTIC AI ANALYSIS
+    // ------------------------------------------------------------------------
+
+    /**
+     * FINAL DOCUMENT -> AI CONNECTION
+     *
+     * The deterministic document pipeline is complete.
+     *
+     * We analyze the canonical ProcessedDocument rather than raw source data.
+     *
+     * Dependency direction:
+     *
+     *   DocumentService
+     *        ↓
+     *   DocumentAIAnalyzer
+     *        ↓
+     *   AIManagerDocumentAnalyzer
+     *        ↓
+     *   AIManager
+     *        ↓
+     *   AI provider
+     *
+     * DocumentService therefore remains independent of:
+     *
+     *   - Ollama
+     *   - llama.cpp
+     *   - Gemini
+     *   - Mistral
+     *   - cloud SDKs
+     *   - model managers
+     *   - provider-specific APIs
+     *
+     * The analyzer returns a DocumentAnalysis artifact.
+     *
+     * DocumentAnalysis is intentionally NOT merged into ProcessedDocument.
+     *
+     *   ProcessedDocument
+     *       =
+     *   canonical ingestion artifact
+     *
+     *   DocumentAnalysis
+     *       =
+     *   derived semantic artifact
+     */
+    let analysis: DocumentAnalysis | undefined;
+
+    let analysisWarning: string | undefined;
+
+    if (this.aiAnalysis) {
+      this.throwIfAborted(signal);
+
+      try {
+        /**
+         * Pass the same cancellation signal used by the document pipeline.
+         *
+         * This gives cancellation propagation:
+         *
+         *   DocumentService
+         *        ↓
+         *   AbortSignal
+         *        ↓
+         *   DocumentAIAnalyzer
+         *        ↓
+         *   AIManager
+         *        ↓
+         *   AI provider
+         */
+        analysis = await this.aiAnalysis.analyzer.analyze(document, {
+          ...this.aiAnalysis.options,
+
+          signal,
+        });
+      } catch (error) {
+        /**
+         * Cancellation is never converted into a warning.
+         *
+         * An explicit cancellation must terminate the operation.
+         */
+        if (signal?.aborted) {
+          this.throwIfAborted(signal);
+        }
+
+        /**
+         * If an analyzer already returned a DocumentError, preserve it.
+         *
+         * Otherwise translate the underlying AI/provider failure into
+         * the document-domain AI analysis error.
+         */
+        const aiError = DocumentError.is(error)
+          ? error
+          : DocumentError.from(error, DocumentErrorCode.AI_ANALYSIS_FAILED, {
+              ...this.errorDetails(
+                request.source,
+                DocumentProcessingStage.STORAGE,
+                classification.type,
+              ),
+            });
+
+        /**
+         * Required AI analysis means semantic analysis is part of the
+         * application's required workflow.
+         */
+        if (this.aiAnalysis.required === true) {
+          throw aiError;
+        }
+
+        /**
+         * Default/recommended behaviour:
+         *
+         *   document ingestion succeeds
+         *   +
+         *   AI enrichment remains best-effort
+         *
+         * This prevents a temporary:
+         *
+         *   - model failure
+         *   - provider failure
+         *   - network failure
+         *   - timeout
+         *   - cloud outage
+         *
+         * from destroying an otherwise valid document ingestion operation.
+         */
+        analysisWarning = aiError.message;
+
+        warnings.push(
+          `Document AI analysis was not completed: ${aiError.message}`,
+        );
+      }
+
+      this.throwIfAborted(signal);
+    }
+
+    // ------------------------------------------------------------------------
+    // 12. COMPLETION
+    // ------------------------------------------------------------------------
 
     const completedAt = new Date();
 
@@ -716,6 +1047,21 @@ export class DocumentService {
       }ms.`,
     );
 
+    /**
+     * IMPORTANT:
+     *
+     * ProcessedDocument remains the canonical ingestion artifact.
+     *
+     * DocumentAnalysis remains a separate derived artifact.
+     *
+     * Downstream consumers can independently consume the analysis:
+     *
+     *   DocumentAnalysis
+     *        ├──→ Context analysis sink
+     *        ├──→ Candidate evidence adapter
+     *        ├──→ persistence
+     *        └──→ UI/API
+     */
     return {
       document,
 
@@ -732,8 +1078,16 @@ export class DocumentService {
 
         warnings: classification.warnings,
       },
+
+      analysis,
+
+      analysisWarning,
     };
   }
+
+  // ==========================================================================
+  // REQUEST VALIDATION
+  // ==========================================================================
 
   private validateRequest(request: DocumentProcessingRequest): void {
     if (!request) {
@@ -763,6 +1117,10 @@ export class DocumentService {
       );
     }
   }
+
+  // ==========================================================================
+  // PROGRESS
+  // ==========================================================================
 
   private emitProgress(
     request: DocumentProcessingRequest,
@@ -794,6 +1152,10 @@ export class DocumentService {
     callback(progressEvent);
   }
 
+  // ==========================================================================
+  // CANCELLATION
+  // ==========================================================================
+
   private throwIfAborted(signal?: AbortSignal): void {
     if (!signal?.aborted) {
       return;
@@ -806,6 +1168,10 @@ export class DocumentService {
       signal.reason,
     );
   }
+
+  // ==========================================================================
+  // ERROR DETAILS
+  // ==========================================================================
 
   private errorDetails(
     source: DocumentSource,
