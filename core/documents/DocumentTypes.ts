@@ -50,6 +50,10 @@ export enum DocumentSourceType {
 /**
  * Processing lifecycle.
  */
+
+
+
+
 export enum DocumentProcessingStatus {
   PENDING = "pending",
   VALIDATING = "validating",
@@ -339,10 +343,34 @@ export interface DocumentProcessingOptions {
 /**
  * Top-level document processing request.
  */
+// ============================================================================
+// DOCUMENT PROCESSING REQUEST
+// ============================================================================
+
 export interface DocumentProcessingRequest {
+  /**
+   * Stable identifier of the document being processed.
+   */
+  readonly documentId: string;
+
+  /**
+   * Optional candidate owner.
+   *
+   * When present, semantic DocumentAnalysis can be published into the
+   * Candidate subsystem after successful AI analysis.
+   *
+   * When absent, the document remains a generic document and is not
+   * associated with Candidate.
+   */
+  readonly candidateId?: string;
+
+  /**
+   * Original document source.
+   */
   readonly source: DocumentSource;
 
+  /**
+   * Processing configuration.
+   */
   readonly options?: DocumentProcessingOptions;
-
-  readonly documentId?: string;
 }

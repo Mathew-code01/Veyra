@@ -40,6 +40,16 @@
 //        ↓
 //   DocumentAnalysis
 //
+// DOCUMENT -> CANDIDATE:
+//
+//   DocumentAnalysis
+//        ↓
+//   CandidateDocumentEvidencePort
+//        ↓
+//   CandidateDocumentEvidenceAdapter
+//        ↓
+//   CandidateEvidenceStore
+//
 // IMPORTANT ARCHITECTURE:
 //
 // DocumentService does NOT:
@@ -52,11 +62,17 @@
 //   - query vector databases
 //   - perform AI reasoning itself
 //   - depend directly on ContextManager
+//   - depend directly on CandidateService
+//   - depend directly on CandidateProfileStore
+//   - depend directly on CandidateEvidenceStore
 //
 // AI is connected through the DocumentAIAnalyzer port.
 //
 // Context publishing is performed through the injected
 // DocumentContextSink boundary.
+//
+// Candidate publishing is performed through the injected
+// CandidateDocumentEvidencePort boundary.
 //
 // Dependency direction:
 //
@@ -66,17 +82,27 @@
 //       ↓
 //   AI execution
 //
+// and:
+//
+//   Documents
+//       ↓
+//   CandidateDocumentEvidencePort
+//       ↓
+//   Candidate subsystem
+//
 // rather than:
 //
 //   Documents
 //       ↓
-//   AIManager
+//   CandidateService
 //       ↓
-//   Documents
+//   Candidate stores
 //
 // ============================================================================
 
 import { DocumentError, DocumentErrorCode } from "./DocumentError";
+
+import type { CandidateDocumentEvidencePort } from "../candidate/contracts/CandidateDocumentEvidence";
 
 import {
   DocumentProcessingStage,
@@ -312,14 +338,40 @@ export interface DocumentServiceDependencies {
    * This is the document -> AI connection.
    *
    * DocumentService depends on DocumentAIAnalyzer only.
-   *
-   * A typical composition-root implementation is:
-   *
-   *   new AIManagerDocumentAnalyzer(aiManager)
-   *
-   * injected here.
    */
   readonly aiAnalysis?: DocumentAIAnalysisDependencies;
+
+  /**
+   * Optional connection from DocumentAnalysis into Candidate.
+   *
+   * IMPORTANT:
+   *
+   * DocumentService does NOT depend on CandidateService,
+   * CandidateProfileStore, CandidateContextBuilder, or
+   * CandidateEvidenceStore.
+   *
+   * It only knows the Candidate-owned ingestion port.
+   *
+   * Candidate remains responsible for deciding how document
+   * facts become candidate evidence.
+   */
+  readonly candidateEvidence?: {
+    readonly port: CandidateDocumentEvidencePort;
+
+    /**
+     * When true:
+     *
+     *   Candidate ingestion failure fails the document workflow.
+     *
+     * When false/omitted:
+     *
+     *   Document ingestion succeeds and the Candidate connection
+     *   failure is returned as a warning.
+     *
+     * Recommended default: false.
+     */
+    readonly required?: boolean;
+  };
 }
 
 // ============================================================================
@@ -345,19 +397,34 @@ export interface DocumentServiceResult {
 
   /**
    * Semantic analysis generated from the processed document.
-   *
-   * Undefined means:
-   *
-   * - AI analysis was not configured, or
-   * - optional AI analysis failed and ingestion continued.
    */
   readonly analysis?: DocumentAnalysis;
 
   /**
-   * Indicates that AI analysis was attempted but failed while remaining
-   * non-fatal to document ingestion.
+   * Indicates that document AI analysis was attempted but failed
+   * while remaining non-fatal to document ingestion.
    */
   readonly analysisWarning?: string;
+
+  /**
+   * Result of publishing DocumentAnalysis into Candidate.
+   *
+   * Undefined means:
+   *
+   * - Candidate integration was not configured
+   * - no candidateId was supplied
+   * - AI analysis was unavailable
+   * - Candidate publishing was not reached
+   */
+  readonly candidateEvidence?: Awaited<
+    ReturnType<CandidateDocumentEvidencePort["ingest"]>
+  >;
+
+  /**
+   * Indicates that Candidate evidence publishing was attempted but
+   * remained non-fatal and failed.
+   */
+  readonly candidateEvidenceWarning?: string;
 }
 
 // ============================================================================
@@ -398,6 +465,19 @@ export class DocumentService {
    */
   private readonly aiAnalysis?: DocumentAIAnalysisDependencies;
 
+  /**
+   * Optional Candidate evidence connection.
+   *
+   * DocumentService only knows the Candidate-owned port.
+   *
+   * It does not know Candidate storage or Candidate orchestration.
+   */
+  private readonly candidateEvidence?: {
+    readonly port: CandidateDocumentEvidencePort;
+
+    readonly required?: boolean;
+  };
+
   // --------------------------------------------------------------------------
   // CONSTRUCTOR
   // --------------------------------------------------------------------------
@@ -437,6 +517,8 @@ export class DocumentService {
 
     this.aiAnalysis = dependencies.aiAnalysis;
 
+    this.candidateEvidence = dependencies.candidateEvidence;
+
     if (this.aiAnalysis && !this.aiAnalysis.analyzer) {
       throw new DocumentError(
         DocumentErrorCode.INVALID_INPUT,
@@ -450,6 +532,13 @@ export class DocumentService {
         "Document AI analysis options are required when AI analysis is configured.",
       );
     }
+
+    if (this.candidateEvidence && !this.candidateEvidence.port) {
+      throw new DocumentError(
+        DocumentErrorCode.INVALID_INPUT,
+        "Candidate evidence port is required when Candidate evidence integration is configured.",
+      );
+    }
   }
 
   // ==========================================================================
@@ -461,6 +550,10 @@ export class DocumentService {
    *
    * When semantic AI analysis is configured, the completed ProcessedDocument
    * is passed through DocumentAIAnalyzer after deterministic ingestion.
+   *
+   * When Candidate integration is configured and a candidateId is supplied,
+   * the resulting DocumentAnalysis is then published to Candidate through
+   * CandidateDocumentEvidencePort.
    */
   public async process(
     request: DocumentProcessingRequest,
@@ -596,13 +689,15 @@ export class DocumentService {
         signal,
       });
     } catch (error) {
-      throw DocumentError.from(error, DocumentErrorCode.PARSE_FAILED, {
-        ...this.errorDetails(
+      throw DocumentError.from(
+        error,
+        DocumentErrorCode.PARSE_FAILED,
+        this.errorDetails(
           request.source,
           DocumentProcessingStage.PARSING,
           classification.type,
         ),
-      });
+      );
     }
 
     this.throwIfAborted(signal);
@@ -634,13 +729,15 @@ export class DocumentService {
         signal,
       });
     } catch (error) {
-      throw DocumentError.from(error, DocumentErrorCode.NORMALIZATION_FAILED, {
-        ...this.errorDetails(
+      throw DocumentError.from(
+        error,
+        DocumentErrorCode.NORMALIZATION_FAILED,
+        this.errorDetails(
           request.source,
           DocumentProcessingStage.NORMALIZATION,
           classification.type,
         ),
-      });
+      );
     }
 
     this.throwIfAborted(signal);
@@ -679,13 +776,15 @@ export class DocumentService {
 
         chunks = this.chunker.chunk(normalized, chunkOptions);
       } catch (error) {
-        throw DocumentError.from(error, DocumentErrorCode.CHUNKING_FAILED, {
-          ...this.errorDetails(
+        throw DocumentError.from(
+          error,
+          DocumentErrorCode.CHUNKING_FAILED,
+          this.errorDetails(
             request.source,
             DocumentProcessingStage.CHUNKING,
             classification.type,
           ),
-        });
+        );
       }
 
       this.emitProgress(
@@ -724,13 +823,15 @@ export class DocumentService {
         indexingOptions,
       );
     } catch (error) {
-      throw DocumentError.from(error, DocumentErrorCode.INDEXING_FAILED, {
-        ...this.errorDetails(
+      throw DocumentError.from(
+        error,
+        DocumentErrorCode.INDEXING_FAILED,
+        this.errorDetails(
           request.source,
           DocumentProcessingStage.INDEXING,
           classification.type,
         ),
-      });
+      );
     }
 
     this.throwIfAborted(signal);
@@ -799,13 +900,15 @@ export class DocumentService {
       try {
         await this.documentStore.save(document);
       } catch (error) {
-        throw DocumentError.from(error, DocumentErrorCode.STORAGE_FAILED, {
-          ...this.errorDetails(
+        throw DocumentError.from(
+          error,
+          DocumentErrorCode.STORAGE_FAILED,
+          this.errorDetails(
             request.source,
             DocumentProcessingStage.STORAGE,
             classification.type,
           ),
-        });
+        );
       }
 
       this.throwIfAborted(signal);
@@ -829,13 +932,15 @@ export class DocumentService {
           signal,
         });
       } catch (error) {
-        throw DocumentError.from(error, DocumentErrorCode.INDEXING_FAILED, {
-          ...this.errorDetails(
+        throw DocumentError.from(
+          error,
+          DocumentErrorCode.INDEXING_FAILED,
+          this.errorDetails(
             request.source,
             DocumentProcessingStage.INDEXING,
             classification.type,
           ),
-        });
+        );
       }
     }
 
@@ -877,13 +982,15 @@ export class DocumentService {
           signal,
         });
       } catch (error) {
-        throw DocumentError.from(error, DocumentErrorCode.INDEXING_FAILED, {
-          ...this.errorDetails(
+        throw DocumentError.from(
+          error,
+          DocumentErrorCode.INDEXING_FAILED,
+          this.errorDetails(
             request.source,
             DocumentProcessingStage.INDEXING,
             classification.type,
           ),
-        });
+        );
       }
 
       this.throwIfAborted(signal);
@@ -1032,7 +1139,200 @@ export class DocumentService {
     }
 
     // ------------------------------------------------------------------------
-    // 12. COMPLETION
+    // 12. PUBLISH DOCUMENT ANALYSIS TO CANDIDATE
+    // ------------------------------------------------------------------------
+
+    /**
+     * DOCUMENT -> CANDIDATE CONNECTION
+     *
+     * At this point:
+     *
+     *   ProcessedDocument
+     *        +
+     *   DocumentAnalysis
+     *
+     * are available when AI analysis succeeded.
+     *
+     * Candidate receives ONLY the canonical semantic analysis artifact.
+     *
+     * Candidate then decides how the extracted facts become:
+     *
+     *   CandidateEvidence
+     *
+     * DocumentService does NOT:
+     *
+     * - write candidate stores
+     * - update candidate profiles
+     * - update candidate skills
+     * - update candidate experiences
+     * - build candidate context
+     * - perform candidate retrieval
+     *
+     * Dependency direction:
+     *
+     *   DocumentService
+     *        ↓
+     *   CandidateDocumentEvidencePort
+     *        ↓
+     *   CandidateDocumentEvidenceAdapter
+     *        ↓
+     *   CandidateEvidenceStore
+     *
+     * IMPORTANT:
+     *
+     * This connection happens AFTER semantic analysis.
+     *
+     * Therefore:
+     *
+     *   raw document
+     *        X
+     *
+     *   ProcessedDocument
+     *        X
+     *
+     *   Document chunks
+     *        X
+     *
+     * are NOT passed directly into Candidate.
+     *
+     * Candidate receives:
+     *
+     *   DocumentAnalysis
+     *
+     * This preserves the ownership boundary between Documents and Candidate.
+     */
+
+    let candidateEvidence:
+      Awaited<ReturnType<CandidateDocumentEvidencePort["ingest"]>> | undefined;
+
+    let candidateEvidenceWarning: string | undefined;
+
+    if (this.candidateEvidence && request.candidateId) {
+      this.throwIfAborted(signal);
+
+      /**
+       * Candidate ingestion requires a successful semantic analysis.
+       *
+       * If AI analysis was optional and failed, there is no canonical
+       * DocumentAnalysis artifact to publish.
+       *
+       * In that situation Candidate publishing is simply skipped.
+       */
+      if (analysis) {
+        try {
+          candidateEvidence = await this.candidateEvidence.port.ingest({
+            candidateId: request.candidateId,
+
+            analysis,
+
+            signal,
+          });
+
+          this.throwIfAborted(signal);
+        } catch (error) {
+          /*
+           * Cancellation must never be downgraded to a warning.
+           */
+          if (signal?.aborted) {
+            this.throwIfAborted(signal);
+          }
+
+          /*
+           * Candidate integration is downstream from document analysis.
+           *
+           * Therefore this is an integration/storage failure, NOT an
+           * AI-analysis failure.
+           *
+           * Preserve an existing DocumentError when possible.
+           * Otherwise translate the Candidate failure into the document
+           * domain's storage/integration failure.
+           */
+          const candidateError = DocumentError.is(error)
+            ? error
+            : DocumentError.from(error, DocumentErrorCode.STORAGE_FAILED, {
+                ...this.errorDetails(
+                  request.source,
+                  DocumentProcessingStage.STORAGE,
+                  classification.type,
+                ),
+
+                metadata: {
+                  candidateId: request.candidateId,
+
+                  documentId: analysis.documentId,
+
+                  analysisId: analysis.analysisId,
+
+                  integration: "candidate",
+                },
+              });
+
+          /*
+           * Required Candidate integration:
+           *
+           * The document workflow cannot be considered complete if
+           * Candidate evidence publication is mandatory.
+           */
+          if (this.candidateEvidence.required === true) {
+            throw candidateError;
+          }
+
+          /*
+           * Recommended default:
+           *
+           * Document ingestion remains successful even if Candidate
+           * enrichment temporarily fails.
+           *
+           * This protects document ingestion from:
+           *
+           * - Candidate storage failures
+           * - temporary persistence failures
+           * - Candidate validation failures
+           * - application startup ordering issues
+           */
+          candidateEvidenceWarning = candidateError.message;
+
+          warnings.push(
+            `Candidate evidence was not published: ${candidateError.message}`,
+          );
+        }
+
+        this.throwIfAborted(signal);
+      } else {
+        /*
+         * AI analysis was configured but no DocumentAnalysis artifact
+         * exists.
+         *
+         * We intentionally do NOT send the raw ProcessedDocument to
+         * Candidate as a fallback.
+         *
+         * Candidate ingestion is therefore skipped.
+         *
+         * If AI analysis itself already produced an analysisWarning,
+         * that warning explains why Candidate could not be enriched.
+         */
+        if (analysisWarning) {
+          candidateEvidenceWarning = `Candidate evidence was not published because document analysis was unavailable: ${analysisWarning}`;
+
+          warnings.push(candidateEvidenceWarning);
+        }
+      }
+    } else if (this.candidateEvidence && !request.candidateId) {
+      /*
+       * Candidate integration is configured, but this document was not
+       * associated with a candidate.
+       *
+       * This is not an error because DocumentService also processes
+       * generic non-candidate documents.
+       */
+      candidateEvidenceWarning =
+        "Candidate evidence integration is configured, but no candidateId was supplied for this document.";
+    }
+
+    this.throwIfAborted(signal);
+
+    // ------------------------------------------------------------------------
+    // 13. COMPLETION
     // ------------------------------------------------------------------------
 
     const completedAt = new Date();
@@ -1053,6 +1353,8 @@ export class DocumentService {
      * ProcessedDocument remains the canonical ingestion artifact.
      *
      * DocumentAnalysis remains a separate derived artifact.
+     *
+     * Candidate evidence remains owned by Candidate.
      *
      * Downstream consumers can independently consume the analysis:
      *
@@ -1082,6 +1384,10 @@ export class DocumentService {
       analysis,
 
       analysisWarning,
+
+      candidateEvidence,
+
+      candidateEvidenceWarning,
     };
   }
 
