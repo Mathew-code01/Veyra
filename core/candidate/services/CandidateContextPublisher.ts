@@ -134,7 +134,7 @@ export class CandidateContextPublisher {
       throw CandidateError.invalidRequest(
         "Candidate context publisher options are required.",
         {
-          stage: "context",
+          stage: "validation",
         },
       );
     }
@@ -184,7 +184,7 @@ export class CandidateContextPublisher {
       throw CandidateError.invalidRequest(
         "Candidate context publish request is required.",
         {
-          stage: "context",
+          stage: "validation",
         },
       );
     }
@@ -255,7 +255,13 @@ export class CandidateContextPublisher {
 
           name: `Candidate ${candidateId}`,
 
-          contentType: "text/plain",
+          /**
+           * ContextContentType uses the generic semantic content category,
+           * not an HTTP MIME type.
+           *
+           * "text/plain" is therefore intentionally NOT used here.
+           */
+          contentType: "generic",
 
           source: {
             type: "candidate",
@@ -310,7 +316,7 @@ export class CandidateContextPublisher {
         throw error;
       }
 
-      throw CandidateError.contextFailure(
+      throw CandidateError.contextBuildFailure(
         "Failed to publish candidate context.",
         {
           candidateId,
@@ -360,7 +366,7 @@ export class CandidateContextPublisher {
         throw error;
       }
 
-      throw CandidateError.contextFailure(
+      throw CandidateError.contextBuildFailure(
         "Failed to remove candidate context.",
         {
           candidateId: normalizedCandidateId,
@@ -386,7 +392,7 @@ export class CandidateContextPublisher {
       throw CandidateError.invalidRequest(
         "Candidate id is required for context publishing.",
         {
-          stage: "context",
+          stage: "validation",
         },
       );
     }
@@ -399,7 +405,7 @@ export class CandidateContextPublisher {
     candidateId: CandidateId,
   ): void {
     if (!candidateContext || typeof candidateContext !== "object") {
-      throw CandidateError.contextFailure(
+      throw CandidateError.contextBuildFailure(
         "Candidate context builder returned no context.",
         {
           candidateId,
@@ -411,7 +417,7 @@ export class CandidateContextPublisher {
       typeof candidateContext.candidateId !== "string" ||
       !candidateContext.candidateId.trim()
     ) {
-      throw CandidateError.contextFailure(
+      throw CandidateError.contextBuildFailure(
         "Candidate context is missing candidateId.",
         {
           candidateId,
@@ -433,7 +439,7 @@ export class CandidateContextPublisher {
       typeof candidateContext.text !== "string" ||
       !candidateContext.text.trim()
     ) {
-      throw CandidateError.contextFailure(
+      throw CandidateError.contextBuildFailure(
         "Candidate context contains no usable text.",
         {
           candidateId,
@@ -442,7 +448,7 @@ export class CandidateContextPublisher {
     }
 
     if (!Array.isArray(candidateContext.evidence)) {
-      throw CandidateError.contextFailure(
+      throw CandidateError.contextBuildFailure(
         "Candidate context evidence must be an array.",
         {
           candidateId,
@@ -455,7 +461,7 @@ export class CandidateContextPublisher {
       !candidateContext.generatedAt.trim() ||
       !Number.isFinite(Date.parse(candidateContext.generatedAt))
     ) {
-      throw CandidateError.contextFailure(
+      throw CandidateError.contextBuildFailure(
         "Candidate context generatedAt must be a valid date.",
         {
           candidateId,

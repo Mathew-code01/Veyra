@@ -1,4 +1,42 @@
+// ============================================================================
+// FILE: core/conversation/detectors/QuestionDetector.ts
+//
+// PURPOSE:
+// Detect whether a conversation segment contains a question and produce
+// generic conversational question analysis.
+//
+// ARCHITECTURAL RULE:
+//
+// Conversation answers:
+//
+//     "Is this a question?"
+//
+// It does NOT answer:
+//
+//     "Is this an interview question?"
+//     "Does the candidate need to answer?"
+//     "What interview category is this?"
+//
+// Those semantics belong to higher-level domains such as core/interview.
+//
+// IMPORTANT:
+//
+// The shared contract uses:
+//
+//     requiresResponse
+//
+// NOT:
+//
+//     requiresCandidateAnswer
+//
+// This keeps the Conversation subsystem domain-neutral.
+// ============================================================================
+
 import type { QuestionAnalysis } from "../../../shared/types/conversation";
+
+// ============================================================================
+// QUESTION STARTERS
+// ============================================================================
 
 const QUESTION_STARTERS = new Set([
   "what",
@@ -21,6 +59,10 @@ const QUESTION_STARTERS = new Set([
   "is",
 ]);
 
+// ============================================================================
+// QUESTION PATTERNS
+// ============================================================================
+
 const QUESTION_PATTERNS: readonly RegExp[] = [
   /\bcan you\b/i,
   /\bcould you\b/i,
@@ -41,7 +83,23 @@ const QUESTION_PATTERNS: readonly RegExp[] = [
   /\bhow do\b/i,
 ];
 
+// ============================================================================
+// DETECTOR
+// ============================================================================
+
 export class QuestionDetector {
+  /**
+   * Detects generic conversational question signals.
+   *
+   * Examples:
+   *
+   *     "What time is it?"
+   *     "Can you explain that?"
+   *     "Tell me about the project."
+   *     "I think this is correct."
+   *
+   * The detector deliberately does not assign interview semantics.
+   */
   detect(text: string): QuestionAnalysis {
     const normalizedText = text.replace(/\s+/g, " ").trim();
 
@@ -51,7 +109,7 @@ export class QuestionDetector {
         type: "unknown",
         normalizedText: "",
         confidence: 0,
-        requiresCandidateAnswer: false,
+        requiresResponse: false,
         explicitQuestionMark: false,
         questionSignals: [],
       };
@@ -61,7 +119,7 @@ export class QuestionDetector {
 
     const explicitQuestionMark = /[?؟]\s*$/.test(normalizedText);
 
-    const firstWord = lower.split(/\s+/)[0];
+    const firstWord = lower.split(/\s+/)[0] ?? "";
 
     const starterMatch = QUESTION_STARTERS.has(firstWord);
 
@@ -94,14 +152,18 @@ export class QuestionDetector {
 
     return {
       isQuestion,
-      type: isQuestion ? "unknown" : "unknown",
+      type: "unknown",
       normalizedText,
       confidence,
-      requiresCandidateAnswer: isQuestion,
+      requiresResponse: isQuestion,
       explicitQuestionMark,
       questionSignals: signals,
     };
   }
+
+  // ==========================================================================
+  // CONFIDENCE
+  // ==========================================================================
 
   private calculateConfidence(input: {
     readonly explicitQuestionMark: boolean;

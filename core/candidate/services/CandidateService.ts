@@ -1,16 +1,33 @@
 // ============================================================================
 // FILE: core/candidate/services/CandidateService.ts
+//
 // PURPOSE:
 // Application-facing Candidate facade.
 //
 // This is the boundary that answers:
-//   "What do we know about the candidate?"
+//
+//     "What do we know about the candidate?"
 //
 // It implements the shared CandidateServiceContract while keeping the
 // authoritative candidate domain inside core/candidate.
 //
-// It deliberately does not depend on DocumentService, ContextManager,
-// InterviewEngine, ConversationManager, AIManager, or model runtimes.
+// It deliberately does not depend on:
+//   - DocumentService
+//   - InterviewEngine
+//   - ConversationManager
+//   - AIManager
+//   - model runtimes
+//
+// Candidate may publish its canonical CandidateContext into the generic
+// Context subsystem through CandidateContextPublisher.
+//
+// IMPORTANT:
+//
+// Candidate owns candidate knowledge.
+//
+// Context owns generic indexing/retrieval.
+//
+// Therefore CandidateContextPublisher is the only bridge used here.
 // ============================================================================
 
 import type { CandidateContext } from "../contracts/CandidateContext";
@@ -30,6 +47,8 @@ import type { CandidateProfileStore } from "../stores/CandidateProfileStore";
 
 import { CandidateContextBuilder } from "./CandidateContextBuilder";
 
+import { CandidateContextPublisher } from "./CandidateContextPublisher";
+
 import { CandidateEvidenceRetriever } from "./CandidateEvidenceRetriever";
 
 import type {
@@ -43,19 +62,47 @@ import type { CandidateSummary } from "../../../shared/types/candidate";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// ============================================================================
+// OPTIONS
+// ============================================================================
+
 export interface CandidateServiceOptions {
   readonly profileStore: CandidateProfileStore;
 
   readonly contextBuilder: CandidateContextBuilder;
 
   readonly evidenceRetriever?: CandidateEvidenceRetriever;
+
+  /**
+   * Optional Candidate -> Context publisher.
+   *
+   * Candidate remains usable without Context integration.
+   *
+   * This is intentionally optional so Candidate does not become
+   * operationally dependent on Context during isolated domain tests.
+   */
+  readonly contextPublisher?: CandidateContextPublisher;
 }
+
+// ============================================================================
+// REQUESTS
+// ============================================================================
 
 export interface CandidateContextRequest {
   readonly candidateId: CandidateId;
 
   readonly signal?: AbortSignal;
 }
+
+export interface CandidatePublishContextRequest {
+  readonly candidateId: CandidateId;
+
+  readonly signal?: AbortSignal;
+}
+
+// ============================================================================
+// SERVICE
+// ============================================================================
 
 export class CandidateService implements CandidateServiceContract {
   private readonly profileStore: CandidateProfileStore;
@@ -64,13 +111,48 @@ export class CandidateService implements CandidateServiceContract {
 
   private readonly evidenceRetriever?: CandidateEvidenceRetriever;
 
+  private readonly contextPublisher?: CandidateContextPublisher;
+
   public constructor(options: CandidateServiceOptions) {
+    if (!options) {
+      throw CandidateError.invalidRequest(
+        "Candidate service options are required.",
+        {
+          stage: "validation",
+        },
+      );
+    }
+
+    if (!options.profileStore) {
+      throw CandidateError.invalidRequest(
+        "Candidate profile store is required.",
+        {
+          stage: "profile",
+        },
+      );
+    }
+
+    if (!options.contextBuilder) {
+      throw CandidateError.invalidRequest(
+        "Candidate context builder is required.",
+        {
+          stage: "context",
+        },
+      );
+    }
+
     this.profileStore = options.profileStore;
 
     this.contextBuilder = options.contextBuilder;
 
     this.evidenceRetriever = options.evidenceRetriever;
+
+    this.contextPublisher = options.contextPublisher;
   }
+
+  // ==========================================================================
+  // SHARED CONTRACT
+  // ==========================================================================
 
   /**
    * Shared cross-boundary operation.
@@ -117,19 +199,107 @@ export class CandidateService implements CandidateServiceContract {
     }
   }
 
+  // ==========================================================================
+  // CANDIDATE CONTEXT
+  // ==========================================================================
+
   /**
-   * Rich domain operation for Candidate-owned consumers.
+   * Builds the authoritative CandidateContext.
    *
-   * This does not change the shared contract.
+   * This is a Candidate-domain operation.
+   *
+   * It does NOT index anything into generic Context.
    */
   public async getContext(
     request: CandidateContextRequest,
   ): Promise<CandidateContext> {
     return this.contextBuilder.build({
       candidateId: request.candidateId,
+
       signal: request.signal,
     });
   }
+
+  /**
+   * Publishes the current canonical CandidateContext into Context.
+   *
+   * This is deliberately explicit.
+   *
+   * Reading candidate context must not unexpectedly cause:
+   *
+   *   - embeddings
+   *   - vector writes
+   *   - context replacement
+   *
+   * Therefore callers that change Candidate data can explicitly invoke:
+   *
+   *     candidateService.publishContext(...)
+   */
+  public async publishContext(
+    request: CandidatePublishContextRequest,
+  ): Promise<Awaited<ReturnType<CandidateContextPublisher["publish"]>>> {
+    const candidateId = this.normalizeContextCandidateId(request.candidateId);
+
+    if (request.signal?.aborted) {
+      throw CandidateError.cancelled(candidateId);
+    }
+
+    if (!this.contextPublisher) {
+      throw CandidateError.contextBuildFailure(
+        "Candidate context publishing is not configured.",
+        {
+          candidateId,
+          metadata: {
+            operation: "publish",
+            integration: "context",
+          },
+        },
+      );
+    }
+
+    return this.contextPublisher.publish({
+      candidateId,
+
+      signal: request.signal,
+    });
+  }
+
+  /**
+   * Removes the Candidate-owned Context representation.
+   *
+   * This is used when a candidate is permanently deleted or when the
+   * application intentionally removes candidate knowledge from generic
+   * Context.
+   */
+  public async removePublishedContext(
+    candidateId: CandidateId,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const normalizedCandidateId = this.normalizeContextCandidateId(candidateId);
+
+    if (signal?.aborted) {
+      throw CandidateError.cancelled(normalizedCandidateId);
+    }
+
+    if (!this.contextPublisher) {
+      throw CandidateError.contextBuildFailure(
+        "Candidate context publishing is not configured.",
+        {
+          candidateId: normalizedCandidateId,
+          metadata: {
+            operation: "remove",
+            integration: "context",
+          },
+        },
+      );
+    }
+
+    await this.contextPublisher.remove(normalizedCandidateId, signal);
+  }
+
+  // ==========================================================================
+  // EVIDENCE RETRIEVAL
+  // ==========================================================================
 
   /**
    * Candidate evidence retrieval operation.
@@ -149,6 +319,10 @@ export class CandidateService implements CandidateServiceContract {
     return this.evidenceRetriever.retrieve(request);
   }
 
+  // ==========================================================================
+  // COMPLETE CANDIDATE KNOWLEDGE
+  // ==========================================================================
+
   /**
    * Convenience operation for domain callers that need
    * the current complete candidate knowledge snapshot.
@@ -159,11 +333,42 @@ export class CandidateService implements CandidateServiceContract {
   ): Promise<readonly CandidateEvidence[]> {
     const context = await this.getContext({
       candidateId,
+
       signal,
     });
 
     return context.evidence;
   }
+
+  // ==========================================================================
+  // CONTEXT BOUNDARY VALIDATION
+  // ==========================================================================
+
+  /**
+   * CandidateContextPublisher operates on the internal CandidateId contract.
+   *
+   * Unlike the shared CandidateSummary boundary, this does not require
+   * re-validating the UUID transport contract here because the
+   * CandidateContextBuilder owns the authoritative Candidate validation.
+   *
+   * We still reject empty IDs before crossing into the Context integration.
+   */
+  private normalizeContextCandidateId(candidateId: CandidateId): CandidateId {
+    if (typeof candidateId !== "string" || !candidateId.trim()) {
+      throw CandidateError.invalidRequest(
+        "Candidate id is required for context publishing.",
+        {
+          stage: "validation",
+        },
+      );
+    }
+
+    return candidateId.trim();
+  }
+
+  // ==========================================================================
+  // SHARED BOUNDARY VALIDATION
+  // ==========================================================================
 
   private normalizeBoundaryCandidateId(candidateId: string): CandidateId {
     if (typeof candidateId !== "string" || !candidateId.trim()) {
@@ -187,6 +392,7 @@ export class CandidateService implements CandidateServiceContract {
         "Candidate id must be a valid UUID at the shared boundary.",
         {
           stage: "validation",
+
           candidateId: normalized,
         },
       );
@@ -195,12 +401,17 @@ export class CandidateService implements CandidateServiceContract {
     return normalized;
   }
 
+  // ==========================================================================
+  // SHARED SUMMARY
+  // ==========================================================================
+
   private toSharedSummary(profile: CandidateProfile): CandidateSummary {
     if (!UUID_PATTERN.test(profile.id.trim())) {
       throw CandidateError.invalidRequest(
         "Candidate profile id is not a valid UUID for the shared boundary.",
         {
           stage: "profile",
+
           candidateId: profile.id,
         },
       );
@@ -213,6 +424,7 @@ export class CandidateService implements CandidateServiceContract {
         "Candidate updatedAt is not a valid ISO date.",
         {
           stage: "profile",
+
           candidateId: profile.id,
         },
       );
