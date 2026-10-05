@@ -1,57 +1,37 @@
+
 // ============================================================================
 // FILE: shared/types/interviews.ts
 //
 // PURPOSE:
 // Canonical shared contracts for the Veyra Interview domain.
 //
-// ARCHITECTURAL RESPONSIBILITY:
+// ARCHITECTURE:
 //
-//     core/conversation
-//            ↓
 //     ConversationAnalysis
-//            ↓
-//     core/interview
-//            ↓
+//             ↓
+//     InterviewAnalysis
+//             ↓
 //     InterviewClassification
 //     InterviewTask
-//     InterviewAnalysis
+//     InterviewAnswerGuidance
 //
-// Interview answers/guidance are also represented here as transport-safe DTOs.
+// This file contains transport/domain contracts only.
 //
-// IMPORTANT:
-//
-// This file contains contracts only.
-//
-// It must NOT:
+// It MUST NOT:
 // - import core/interview
-// - import core/conversation implementations
-// - import core/candidate
-// - import core/context
-// - contain classification logic
-// - contain answer-generation logic
+// - import core/candidate implementations
+// - import core/context implementations
+// - perform classification
+// - generate answers
 // ============================================================================
 
 import type { ConversationAnalysis } from "./conversation";
-
 import type { InterviewType } from "../constants/interviewTypes";
 
 // ============================================================================
-// INTERVIEW CLASSIFICATION
+// CLASSIFICATION
 // ============================================================================
 
-/**
- * Classification of what kind of interview/task is currently happening.
- *
- * This is intentionally different from ConversationQuestionType.
- *
- * ConversationQuestionType answers:
- *
- *     "What conversational form does this question have?"
- *
- * InterviewType answers:
- *
- *     "What kind of interview/task is this?"
- */
 export interface InterviewClassification {
   readonly type: InterviewType;
 
@@ -61,15 +41,11 @@ export interface InterviewClassification {
 
   readonly signals: readonly string[];
 
-  /**
-   * The conversational question type that contributed to the
-   * classification, when available.
-   */
   readonly questionType?: ConversationAnalysis["question"]["type"];
 }
 
 // ============================================================================
-// ALTERNATIVE CLASSIFICATION
+// CLASSIFICATION ALTERNATIVE
 // ============================================================================
 
 export interface InterviewClassificationAlternative {
@@ -82,82 +58,32 @@ export interface InterviewClassificationAlternative {
 // INTERVIEW TASK
 // ============================================================================
 
-/**
- * Represents the concrete task currently being performed.
- *
- * Examples:
- *
- *     coding
- *     system_design
- *     behavioral
- *     product
- *     case
- */
 export interface InterviewTask {
-  /**
-   * Stable task identifier.
-   */
   readonly id: string;
 
-  /**
-   * High-level interview/task category.
-   */
   readonly type: InterviewType;
 
-  /**
-   * Original question or task text.
-   */
   readonly questionText: string;
 
-  /**
-   * Whether the task expects a response.
-   */
   readonly requiresResponse: boolean;
 
+  readonly confidence: number;
+
   /**
-   * Confidence that this task classification is correct.
+   * Stable originating conversation turn.
    */
-  readonly confidence: number;
-}
+  readonly conversationTurnId?: string;
 
-// ============================================================================
-// COMPLETE INTERVIEW ANALYSIS
-// ============================================================================
-
-/**
- * Complete interview-domain interpretation of the current conversation state.
- *
- * ConversationAnalysis remains the source of conversational truth.
- *
- * InterviewAnalysis adds interview-specific interpretation on top.
- */
-export interface InterviewAnalysis {
-  readonly classification: InterviewClassification;
-
-  readonly currentTask?: InterviewTask;
-
-  readonly conversation: ConversationAnalysis;
-
-  readonly confidence: number;
-
-  readonly signals: readonly string[];
+  /**
+   * Stable originating transcript segment.
+   */
+  readonly segmentId?: string;
 }
 
 // ============================================================================
 // ANSWER GUIDANCE
 // ============================================================================
 
-/**
- * Cross-boundary answer guidance.
- *
- * This does NOT represent the final generated answer.
- *
- * It represents structured guidance that may be consumed by:
- *
- *     core/ai
- *     desktop UI
- *     copilot presentation
- */
 export interface InterviewAnswerGuidance {
   readonly type: InterviewType;
 
@@ -189,15 +115,58 @@ export interface InterviewAnswerSection {
 }
 
 // ============================================================================
-// INTERVIEW ANALYSIS REQUEST
+// COMPLETE ANALYSIS
 // ============================================================================
 
-/**
- * Shared request used when another application layer asks Interview
- * to interpret an existing ConversationAnalysis.
- */
+export interface InterviewAnalysis {
+  readonly classification: InterviewClassification;
+
+  readonly currentTask?: InterviewTask;
+
+  readonly conversation: ConversationAnalysis;
+
+  readonly confidence: number;
+
+  readonly signals: readonly string[];
+
+  /**
+   * Optional deterministic answer structure.
+   *
+   * This is guidance, not a generated factual answer.
+   */
+  readonly answerGuidance?: InterviewAnswerGuidance;
+
+  /**
+   * Candidate identity used for contextual enrichment.
+   */
+  readonly candidateId?: string;
+
+  /**
+   * Context IDs that contributed to this analysis.
+   */
+  readonly contextIds?: readonly string[];
+}
+
+// ============================================================================
+// REQUEST
+// ============================================================================
+
 export interface InterviewAnalysisRequest {
   readonly conversation: ConversationAnalysis;
+
+  readonly candidateId?: string;
+
+  readonly signal?: AbortSignal;
+}
+
+// ============================================================================
+// TASK REQUEST
+// ============================================================================
+
+export interface InterviewTaskRequest {
+  readonly analysis: ConversationAnalysis;
+
+  readonly classification: InterviewClassification;
 
   readonly candidateId?: string;
 
