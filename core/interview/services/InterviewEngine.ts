@@ -1,115 +1,302 @@
-// core/interview/InterviewEngine.ts
 
-import { BehavioralEngine } from "./BehavioralEngine";
+// ============================================================================
+// FILE: core/interview/services/InterviewEngine.ts
+//
+// PURPOSE:
+// Main Interview application service.
+//
+// FLOW:
+//
+//     ConversationAnalysis
+//            ↓
+//     validation
+//            ↓
+//     classification
+//            ↓
+//     task engine
+//            ↓
+//     InterviewTask
+//            ↓
+//     AnswerBuilder
+//            ↓
+//     InterviewAnalysis
+//
+// This service does not own conversation state.
+// ============================================================================
 
-import { TechnicalEngine } from "./TechnicalEngine";
+import type {
+  InterviewAnalysis,
+  InterviewAnalysisRequest,
+} from "../../../shared/types/interviews";
 
-import { CodingEngine } from "./CodingEngine";
+import type { InterviewServiceContract } from "../../../shared/contracts/interview.contract";
 
-import { SystemDesignEngine } from "./SystemDesignEngine";
+import { InterviewError } from "../errors/InterviewError";
 
-import { ProductEngine } from "./ProductEngine";
+import { InterviewValidator } from "../validation/InterviewValidator";
 
-import { CaseEngine } from "./CaseEngine";
+import { InterviewClassifier } from "../classification/InterviewClassifier";
 
-import { CommunicationEngine } from "./CommunicationEngine";
+import { AnswerBuilder } from "../answer/AnswerBuilder";
 
-import { InterviewClassifier, type InterviewMode } from "./InterviewClassifier";
+import type { InterviewTaskEngine } from "../contracts/InterviewTaskEngine";
 
-import type { QuestionType } from "../conversation/QuestionClassifier";
+import { BehavioralEngine } from "../engines/BehavioralEngine";
+import { CaseEngine } from "../engines/CaseEngine";
+import { CodingEngine } from "../engines/CodingEngine";
+import { CommunicationEngine } from "../engines/CommunicationEngine";
+import { ExperienceEngine } from "../engines/ExperienceEngine";
+import { GeneralEngine } from "../engines/GeneralEngine";
+import { MotivationEngine } from "../engines/MotivationEngine";
+import { ProductEngine } from "../engines/ProductEngine";
+import { SituationalEngine } from "../engines/SituationalEngine";
+import { SystemDesignEngine } from "../engines/SystemDesignEngine";
+import { TechnicalEngine } from "../engines/TechnicalEngine";
 
-export interface InterviewAnalysisInput {
-  question: string;
-  questionType?: QuestionType;
-  candidateContext?: string;
+export interface InterviewEngineOptions {
+  readonly validator?: InterviewValidator;
+
+  readonly classifier?: InterviewClassifier;
+
+  readonly answerBuilder?: AnswerBuilder;
+
+  readonly taskEngines?: readonly InterviewTaskEngine[];
+
+  readonly candidateContextAvailable?: boolean;
 }
 
-export class InterviewEngine {
-  readonly classifier = new InterviewClassifier();
+export class InterviewEngine implements InterviewServiceContract {
+  private readonly validator: InterviewValidator;
 
-  readonly behavioral = new BehavioralEngine();
+  private readonly classifier: InterviewClassifier;
 
-  readonly technical = new TechnicalEngine();
+  private readonly answerBuilder: AnswerBuilder;
 
-  readonly coding = new CodingEngine();
+  private readonly taskEngines: readonly InterviewTaskEngine[];
 
-  readonly systemDesign = new SystemDesignEngine();
+  private readonly candidateContextAvailable: boolean;
 
-  readonly product = new ProductEngine();
+  public constructor(options: InterviewEngineOptions = {}) {
+    this.validator =
+      options.validator ?? new InterviewValidator();
 
-  readonly case = new CaseEngine();
+    this.classifier =
+      options.classifier ?? new InterviewClassifier();
 
-  readonly communication = new CommunicationEngine();
+    this.answerBuilder =
+      options.answerBuilder ??
+      new AnswerBuilder({
+        candidateContextAvailable:
+          options.candidateContextAvailable ?? false,
+      });
 
-  analyze(input: InterviewAnalysisInput) {
-    const questionType = input.questionType ?? "general";
+    this.taskEngines =
+      options.taskEngines ??
+      Object.freeze([
+        new BehavioralEngine(),
+        new CaseEngine(),
+        new CodingEngine(),
+        new CommunicationEngine(),
+        new ExperienceEngine(),
+        new GeneralEngine(),
+        new MotivationEngine(),
+        new ProductEngine(),
+        new SituationalEngine(),
+        new SystemDesignEngine(),
+        new TechnicalEngine(),
+      ]);
 
-    const classification = this.classifier.classify(questionType);
+    this.candidateContextAvailable =
+      options.candidateContextAvailable ?? false;
+  }
+
+  public async analyze(
+    request: InterviewAnalysisRequest,
+  ): Promise<{ readonly analysis: InterviewAnalysis }> {
+    const analysis = await this.execute(request);
 
     return {
-      classification,
-      result: this.runEngine(
-        classification.mode,
-        input.question,
-        input.candidateContext,
-      ),
+      analysis,
     };
   }
 
-  private runEngine(
-    mode: InterviewMode,
-    question: string,
-    candidateContext?: string,
-  ) {
-    switch (mode) {
-      case "behavioral":
-        return this.behavioral.analyze({
-          question,
-          candidateContext,
-        });
+  public async execute(
+    request: InterviewAnalysisRequest,
+  ): Promise<InterviewAnalysis> {
+    this.validateRequest(request);
 
-      case "technical":
-        return this.technical.analyze({
-          question,
-          candidateContext,
-        });
+    this.throwIfAborted(request.signal);
 
-      case "coding":
-        return this.coding.analyze({
-          problem: question,
-        });
+    try {
+      this.validator.validateConversation(request.conversation);
 
-      case "system-design":
-        return this.systemDesign.analyze({
-          question,
-        });
+      this.throwIfAborted(request.signal);
 
-      case "product":
-        return this.product.analyze({
-          question,
-        });
+      const classification = this.classifier.classify(
+        request.conversation,
+      );
 
-      case "case":
-        return this.case.analyze({
-          caseQuestion: question,
-        });
+      this.throwIfAborted(request.signal);
 
-      case "communication":
-        return this.communication.analyze({
-          question,
-        });
+      const engine = this.findEngine(classification.type);
 
-      default:
-        return {
-          mode,
-          prompt: [
-            "Answer the interview question directly.",
-            "",
-            question,
-            "",
-            candidateContext ? `Candidate context:\n${candidateContext}` : "",
-          ].join("\n"),
-        };
+      const currentTask = engine?.buildTask(
+        request.conversation,
+        classification,
+      );
+
+      this.throwIfAborted(request.signal);
+
+      const answerGuidance =
+        currentTask || request.conversation.question.isQuestion
+          ? this.answerBuilder.build(
+              request.conversation,
+              classification,
+            )
+          : undefined;
+
+      const confidence = this.calculateOverallConfidence(
+        request.conversation,
+        classification,
+        currentTask !== undefined,
+      );
+
+      const signals = this.buildSignals(
+        request.conversation,
+        classification,
+        currentTask !== undefined,
+      );
+
+      return Object.freeze({
+        classification,
+
+        currentTask,
+
+        conversation: request.conversation,
+
+        confidence,
+
+        signals,
+
+        answerGuidance,
+
+        candidateId: request.candidateId,
+
+        contextIds: request.candidateId
+          ? [`candidate:${request.candidateId}`]
+          : undefined,
+      });
+    } catch (error) {
+      if (error instanceof InterviewError) {
+        throw error;
+      }
+
+      throw InterviewError.engineFailure(
+        "Interview analysis failed.",
+        {
+          cause: error,
+
+          candidateId: request.candidateId,
+
+          sessionId: request.conversation.turn.id,
+        },
+      );
     }
+  }
+
+  private findEngine(
+    type: InterviewAnalysis["classification"]["type"],
+  ): InterviewTaskEngine | undefined {
+    return this.taskEngines.find((engine) =>
+      engine.type === type &&
+      engine.canHandle({
+        type,
+        confidence: 1,
+        alternatives: [],
+        signals: [],
+      }),
+    );
+  }
+
+  private calculateOverallConfidence(
+    conversation: InterviewAnalysisRequest["conversation"],
+    classification: InterviewAnalysis["classification"],
+    hasTask: boolean,
+  ): number {
+    const values = [
+      classification.confidence,
+      conversation.question.confidence,
+      conversation.intent.confidence,
+    ];
+
+    if (hasTask) {
+      values.push(0.9);
+    }
+
+    const average =
+      values.reduce((sum, value) => sum + value, 0) /
+      values.length;
+
+    return Math.max(0, Math.min(1, average));
+  }
+
+  private buildSignals(
+    conversation: InterviewAnalysisRequest["conversation"],
+    classification: InterviewAnalysis["classification"],
+    hasTask: boolean,
+  ): readonly string[] {
+    const signals = [
+      ...classification.signals,
+      `question:${conversation.question.isQuestion}`,
+      `intent:${conversation.intent.intent}`,
+      `task:${hasTask}`,
+    ];
+
+    if (conversation.followUp.isFollowUp) {
+      signals.push("conversation:follow-up");
+    }
+
+    if (conversation.clarification.isClarification) {
+      signals.push("conversation:clarification");
+    }
+
+    if (conversation.repetition.isRepeated) {
+      signals.push("conversation:repetition");
+    }
+
+    return signals;
+  }
+
+  private validateRequest(
+    request: InterviewAnalysisRequest,
+  ): void {
+    if (!request) {
+      throw InterviewError.invalidRequest(
+        "Interview analysis request is required.",
+      );
+    }
+
+    if (!request.conversation) {
+      throw InterviewError.invalidRequest(
+        "Conversation analysis is required.",
+      );
+    }
+
+    if (
+      request.candidateId !== undefined &&
+      !request.candidateId.trim()
+    ) {
+      throw InterviewError.invalidRequest(
+        "candidateId cannot be empty when supplied.",
+      );
+    }
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) {
+      return;
+    }
+
+    throw InterviewError.cancelled();
   }
 }

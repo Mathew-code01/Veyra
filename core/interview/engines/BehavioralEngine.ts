@@ -1,65 +1,36 @@
-// core/interview/BehavioralEngine.ts
 
+import type { ConversationAnalysis } from "../../../shared/types/conversation";
 import type {
-  AnswerGuidance,
-  InterviewEngineInput,
-} from "../../shared/types/interviews";
+  InterviewClassification,
+  InterviewTask,
+} from "../../../shared/types/interviews";
+import type { InterviewTaskEngine } from "../contracts/InterviewTaskEngine";
 
-export class BehavioralEngine {
-  generate(input: InterviewEngineInput): AnswerGuidance {
-    const question = input.analysis.turn.text;
+export class BehavioralEngine implements InterviewTaskEngine {
+  public readonly type = "behavioral" as const;
 
-    const story = input.candidateContext?.stories?.[0];
+  public canHandle(
+    classification: InterviewClassification,
+  ): boolean {
+    return classification.type === this.type;
+  }
+
+  public buildTask(
+    analysis: ConversationAnalysis,
+    classification: InterviewClassification,
+  ): InterviewTask | undefined {
+    if (!this.canHandle(classification) || !analysis.question.isQuestion) {
+      return undefined;
+    }
 
     return {
-      type: "behavioral",
-
-      headline: "Answer this with a concise STAR story.",
-
-      sections: [
-        {
-          id: "situation",
-          title: "Situation",
-          content:
-            story ?? "Briefly establish the relevant context and challenge.",
-          priority: "primary",
-        },
-        {
-          id: "task",
-          title: "Task",
-          content: "Explain your specific responsibility.",
-          priority: "primary",
-        },
-        {
-          id: "action",
-          title: "Action",
-          content:
-            "Focus on what you personally did, including decisions and reasoning.",
-          priority: "primary",
-        },
-        {
-          id: "result",
-          title: "Result",
-          content:
-            "Give a measurable result where possible and explain what you learned.",
-          priority: "primary",
-        },
-      ],
-
-      talkingPoints: [
-        "Keep the story specific.",
-        "Use first-person ownership.",
-        "Quantify the result where possible.",
-        "Avoid unnecessary background.",
-      ],
-
-      cautions: [
-        "Do not invent an experience.",
-        "Do not claim ownership of team work you did not perform.",
-      ],
-
-      confidence: 0.86,
-      sourceQuestion: question,
+      id: `interview-task:${analysis.turn.id}`,
+      type: this.type,
+      questionText: analysis.turn.text.trim(),
+      requiresResponse: analysis.question.requiresResponse,
+      confidence: classification.confidence,
+      conversationTurnId: analysis.turn.id,
+      segmentId: analysis.turn.segmentId,
     };
   }
 }

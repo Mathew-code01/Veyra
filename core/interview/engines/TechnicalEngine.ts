@@ -1,65 +1,36 @@
-// core/interview/TechnicalEngine.ts
 
+import type { ConversationAnalysis } from "../../../shared/types/conversation";
 import type {
-  AnswerGuidance,
-  InterviewEngineInput,
-} from "../../shared/types/interviews";
+  InterviewClassification,
+  InterviewTask,
+} from "../../../shared/types/interviews";
+import type { InterviewTaskEngine } from "../contracts/InterviewTaskEngine";
 
-export class TechnicalEngine {
-  generate(
-    input: InterviewEngineInput,
-  ): AnswerGuidance {
+export class TechnicalEngine implements InterviewTaskEngine {
+  public readonly type = "technical" as const;
+
+  public canHandle(
+    classification: InterviewClassification,
+  ): boolean {
+    return classification.type === this.type;
+  }
+
+  public buildTask(
+    analysis: ConversationAnalysis,
+    classification: InterviewClassification,
+  ): InterviewTask | undefined {
+    if (!this.canHandle(classification) || !analysis.question.isQuestion) {
+      return undefined;
+    }
+
     return {
-      type: "technical",
-
-      headline:
-        "Explain the concept, implementation and trade-offs.",
-
-      sections: [
-        {
-          id: "concept",
-          title: "Concept",
-          content:
-            "Start with a precise definition in one or two sentences.",
-          priority: "primary",
-        },
-        {
-          id: "implementation",
-          title: "Implementation",
-          content:
-            "Explain how it works internally or how you would implement it.",
-          priority: "primary",
-        },
-        {
-          id: "example",
-          title: "Example",
-          content:
-            "Give a concrete example relevant to the question.",
-          priority: "secondary",
-        },
-        {
-          id: "tradeoffs",
-          title: "Trade-offs",
-          content:
-            "Discuss advantages, limitations and when you would choose another approach.",
-          priority: "primary",
-        },
-      ],
-
-      talkingPoints: [
-        "Define the concept first.",
-        "Connect theory to implementation.",
-        "Use a concrete example.",
-        "Mention important trade-offs.",
-      ],
-
-      cautions: [
-        "Avoid unnecessary jargon.",
-        "Do not state uncertain implementation details as facts.",
-      ],
-
-      confidence: 0.85,
-      sourceQuestion: input.analysis.turn.text,
+      id: `interview-task:${analysis.turn.id}`,
+      type: this.type,
+      questionText: analysis.turn.text.trim(),
+      requiresResponse: analysis.question.requiresResponse,
+      confidence: classification.confidence,
+      conversationTurnId: analysis.turn.id,
+      segmentId: analysis.turn.segmentId,
     };
   }
 }

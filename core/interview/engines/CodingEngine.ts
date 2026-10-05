@@ -1,67 +1,36 @@
-// core/interview/CodingEngine.ts
 
+import type { ConversationAnalysis } from "../../../shared/types/conversation";
 import type {
-  AnswerGuidance,
-  InterviewEngineInput,
-} from "../../shared/types/interviews";
+  InterviewClassification,
+  InterviewTask,
+} from "../../../shared/types/interviews";
+import type { InterviewTaskEngine } from "../contracts/InterviewTaskEngine";
 
-export class CodingEngine {
-  generate(input: InterviewEngineInput): AnswerGuidance {
+export class CodingEngine implements InterviewTaskEngine {
+  public readonly type = "coding" as const;
+
+  public canHandle(
+    classification: InterviewClassification,
+  ): boolean {
+    return classification.type === this.type;
+  }
+
+  public buildTask(
+    analysis: ConversationAnalysis,
+    classification: InterviewClassification,
+  ): InterviewTask | undefined {
+    if (!this.canHandle(classification)) {
+      return undefined;
+    }
+
     return {
-      type: "coding",
-
-      headline: "Clarify the problem before proposing an algorithm.",
-
-      sections: [
-        {
-          id: "interpretation",
-          title: "Interpretation",
-          content:
-            "Restate the problem and identify inputs, outputs and constraints.",
-          priority: "primary",
-        },
-        {
-          id: "approach",
-          title: "Approach",
-          content: "Describe the algorithm and why it works.",
-          priority: "primary",
-        },
-        {
-          id: "implementation",
-          title: "Implementation",
-          content: "Translate the approach into clean, readable code.",
-          priority: "primary",
-        },
-        {
-          id: "complexity",
-          title: "Complexity",
-          content: "State time and space complexity and justify both.",
-          priority: "primary",
-        },
-        {
-          id: "edge-cases",
-          title: "Edge Cases",
-          content:
-            "Consider empty input, boundaries, duplicates and invalid cases where relevant.",
-          priority: "secondary",
-        },
-      ],
-
-      talkingPoints: [
-        "Clarify ambiguous requirements.",
-        "Start with a simple correct approach.",
-        "Explain the optimization.",
-        "Walk through a small example.",
-        "State complexity explicitly.",
-      ],
-
-      cautions: [
-        "Do not jump directly into code.",
-        "Verify edge cases before finalizing.",
-      ],
-
-      confidence: 0.9,
-      sourceQuestion: input.analysis.turn.text,
+      id: `interview-task:${analysis.turn.id}`,
+      type: this.type,
+      questionText: analysis.turn.text.trim(),
+      requiresResponse: true,
+      confidence: classification.confidence,
+      conversationTurnId: analysis.turn.id,
+      segmentId: analysis.turn.segmentId,
     };
   }
 }

@@ -1,62 +1,36 @@
-// core/interview/ProductEngine.ts
 
+import type { ConversationAnalysis } from "../../../shared/types/conversation";
 import type {
-  AnswerGuidance,
-  InterviewEngineInput,
-} from "../../shared/types/interviews";
+  InterviewClassification,
+  InterviewTask,
+} from "../../../shared/types/interviews";
+import type { InterviewTaskEngine } from "../contracts/InterviewTaskEngine";
 
-export class ProductEngine {
-  generate(input: InterviewEngineInput): AnswerGuidance {
+export class ProductEngine implements InterviewTaskEngine {
+  public readonly type = "product" as const;
+
+  public canHandle(
+    classification: InterviewClassification,
+  ): boolean {
+    return classification.type === this.type;
+  }
+
+  public buildTask(
+    analysis: ConversationAnalysis,
+    classification: InterviewClassification,
+  ): InterviewTask | undefined {
+    if (!this.canHandle(classification) || !analysis.question.isQuestion) {
+      return undefined;
+    }
+
     return {
-      type: "product",
-
-      headline:
-        "Frame the problem around users, outcomes and measurable impact.",
-
-      sections: [
-        {
-          id: "user",
-          title: "User",
-          content: "Identify the target user and their most important need.",
-          priority: "primary",
-        },
-        {
-          id: "problem",
-          title: "Problem",
-          content: "Define the problem and why it matters.",
-          priority: "primary",
-        },
-        {
-          id: "hypothesis",
-          title: "Hypothesis",
-          content: "Explain the proposed solution or product hypothesis.",
-          priority: "primary",
-        },
-        {
-          id: "metrics",
-          title: "Metrics",
-          content: "Define success metrics and guardrail metrics.",
-          priority: "primary",
-        },
-        {
-          id: "tradeoffs",
-          title: "Trade-offs",
-          content: "Discuss prioritization, constraints and alternatives.",
-          priority: "secondary",
-        },
-      ],
-
-      talkingPoints: [
-        "Start with the user.",
-        "Define the problem before the feature.",
-        "Prioritize based on impact.",
-        "Define measurable success.",
-      ],
-
-      cautions: ["Do not optimize a metric without considering user impact."],
-
-      confidence: 0.86,
-      sourceQuestion: input.analysis.turn.text,
+      id: `interview-task:${analysis.turn.id}`,
+      type: this.type,
+      questionText: analysis.turn.text.trim(),
+      requiresResponse: analysis.question.requiresResponse,
+      confidence: classification.confidence,
+      conversationTurnId: analysis.turn.id,
+      segmentId: analysis.turn.segmentId,
     };
   }
 }

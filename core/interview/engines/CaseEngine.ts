@@ -1,63 +1,36 @@
-// core/interview/CaseEngine.ts
 
+import type { ConversationAnalysis } from "../../../shared/types/conversation";
 import type {
-  AnswerGuidance,
-  InterviewEngineInput,
-} from "../../shared/types/interviews";
+  InterviewClassification,
+  InterviewTask,
+} from "../../../shared/types/interviews";
+import type { InterviewTaskEngine } from "../contracts/InterviewTaskEngine";
 
-export class CaseEngine {
-  generate(input: InterviewEngineInput): AnswerGuidance {
+export class CaseEngine implements InterviewTaskEngine {
+  public readonly type = "case" as const;
+
+  public canHandle(
+    classification: InterviewClassification,
+  ): boolean {
+    return classification.type === this.type;
+  }
+
+  public buildTask(
+    analysis: ConversationAnalysis,
+    classification: InterviewClassification,
+  ): InterviewTask | undefined {
+    if (!this.canHandle(classification) || !analysis.question.isQuestion) {
+      return undefined;
+    }
+
     return {
-      type: "case",
-
-      headline:
-        "Clarify the objective, establish a framework and test the highest-impact assumptions.",
-
-      sections: [
-        {
-          id: "clarification",
-          title: "Clarification",
-          content: "Confirm the objective, scope and success criteria.",
-          priority: "primary",
-        },
-        {
-          id: "framework",
-          title: "Framework",
-          content: "Break the problem into mutually useful analytical areas.",
-          priority: "primary",
-        },
-        {
-          id: "assumptions",
-          title: "Assumptions",
-          content: "State assumptions clearly and estimate where necessary.",
-          priority: "primary",
-        },
-        {
-          id: "analysis",
-          title: "Analysis",
-          content: "Analyze the largest drivers and test hypotheses.",
-          priority: "primary",
-        },
-        {
-          id: "recommendation",
-          title: "Recommendation",
-          content: "Give a clear recommendation supported by the analysis.",
-          priority: "primary",
-        },
-      ],
-
-      talkingPoints: [
-        "Clarify the objective.",
-        "Build a logical framework.",
-        "State assumptions.",
-        "Prioritize the biggest drivers.",
-        "Conclude with a recommendation.",
-      ],
-
-      cautions: ["Do not perform calculations without explaining assumptions."],
-
-      confidence: 0.84,
-      sourceQuestion: input.analysis.turn.text,
+      id: `interview-task:${analysis.turn.id}`,
+      type: this.type,
+      questionText: analysis.turn.text.trim(),
+      requiresResponse: analysis.question.requiresResponse,
+      confidence: classification.confidence,
+      conversationTurnId: analysis.turn.id,
+      segmentId: analysis.turn.segmentId,
     };
   }
 }

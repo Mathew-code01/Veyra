@@ -1,55 +1,35 @@
-// core/interview/CommunicationEngine.ts
-
+import type { ConversationAnalysis } from "../../../shared/types/conversation";
 import type {
-  AnswerGuidance,
-  InterviewEngineInput,
-} from "../../shared/types/interviews";
+  InterviewClassification,
+  InterviewTask,
+} from "../../../shared/types/interviews";
+import type { InterviewTaskEngine } from "../contracts/InterviewTaskEngine";
 
-export class CommunicationEngine {
-  generate(input: InterviewEngineInput): AnswerGuidance {
+export class CommunicationEngine implements InterviewTaskEngine {
+  public readonly type = "communication" as const;
+
+  public canHandle(
+    classification: InterviewClassification,
+  ): boolean {
+    return classification.type === this.type;
+  }
+
+  public buildTask(
+    analysis: ConversationAnalysis,
+    classification: InterviewClassification,
+  ): InterviewTask | undefined {
+    if (!this.canHandle(classification)) {
+      return undefined;
+    }
+
     return {
-      type: "communication",
-
-      headline: "Lead with the conclusion, then explain it clearly.",
-
-      sections: [
-        {
-          id: "answer",
-          title: "Direct Answer",
-          content: "Give the main answer before providing supporting detail.",
-          priority: "primary",
-        },
-        {
-          id: "reasoning",
-          title: "Reasoning",
-          content: "Explain the reasoning in a logical sequence.",
-          priority: "primary",
-        },
-        {
-          id: "example",
-          title: "Example",
-          content: "Use a concrete example where it improves understanding.",
-          priority: "secondary",
-        },
-        {
-          id: "summary",
-          title: "Summary",
-          content: "End with the key takeaway.",
-          priority: "secondary",
-        },
-      ],
-
-      talkingPoints: [
-        "Lead with the conclusion.",
-        "Use short logical sections.",
-        "Avoid unnecessary jargon.",
-        "Check that the explanation answers the actual question.",
-      ],
-
-      cautions: ["Do not over-explain simple concepts."],
-
-      confidence: 0.82,
-      sourceQuestion: input.analysis.turn.text,
+      id: `interview-task:${analysis.turn.id}`,
+      type: this.type,
+      questionText: analysis.turn.text.trim(),
+      requiresResponse: analysis.question.requiresResponse,
+      confidence: classification.confidence,
+      conversationTurnId: analysis.turn.id,
+      segmentId: analysis.turn.segmentId,
     };
   }
 }
