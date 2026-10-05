@@ -1,19 +1,25 @@
-import type { ConversationAnalysis } from "../types/conversation";
+// ============================================================================
+// FILE: shared/contracts/interview.contract.ts
+//
+// PURPOSE:
+// Public cross-boundary contract for core/interview.
+//
+// The implementation lives in:
+//     core/interview/services/InterviewEngine.ts
+//
+// ============================================================================
 
-import type { InterviewAnalysis } from "../types/interviews";
-
-export interface InterviewAnalysisRequest {
-  readonly conversation: ConversationAnalysis;
-
-  readonly signal?: AbortSignal;
-}
+import type {
+  InterviewAnalysis,
+  InterviewAnalysisRequest,
+} from "../types/interviews";
 
 export interface InterviewAnalysisResponse {
   readonly analysis: InterviewAnalysis;
 }
 
 /**
- * Cross-boundary contract exposed by core/interview.
+ * Cross-boundary Interview service.
  */
 export interface InterviewServiceContract {
   analyze(
