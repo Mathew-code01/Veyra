@@ -2,43 +2,84 @@
 // FILE: core/interview/services/InterviewIntelligence.ts
 //
 // PURPOSE:
-// Higher-level Interview orchestration.
+// Higher-level Interview orchestration boundary.
 //
 // ARCHITECTURE:
 //
 //     ConversationAnalysis
 //             │
 //             ▼
-//     InterviewEngine
+//       InterviewEngine
 //             │
-//             ├── InterviewClassification
-//             ├── InterviewTask
-//             └── AnswerGuidance
-//                     │
-//                     ▼
-//             InterviewIntelligence
-//               │           │
-//               ▼           ▼
-//        CandidateService  ContextManager
-//               │           │
-//               └─────┬─────┘
-//                     ▼
-//               PromptService
-//                     │
-//                     ▼
-//                 AIRequest
+//             ▼
+//      InterviewAnalysis
+//             │
+//        ┌────┴────┐
+//        ▼         ▼
+// CandidateService ContextManager
+//        │         │
+//        └────┬────┘
+//             ▼
+//       InterviewIntelligence
+//             │
+//             ▼
+//        PromptService
+//             │
+//             ▼
+//      PromptInstructionSet
+//             │
+//             ▼
+//       AIRequest
+//             │
+//             ▼
+//          core/ai
 //
 // IMPORTANT:
 //
-// InterviewIntelligence is the connection point between:
-// - Interview
-// - Candidate
-// - Context
-// - Prompts
+// InterviewIntelligence is the orchestration boundary between:
 //
-// It does NOT execute AI itself.
+//     Interview
+//     Candidate
+//     Context
+//     Prompts
 //
-// The caller may take the resulting AIRequest and pass it to core/ai.
+// It DOES NOT:
+//
+// - execute AI
+// - select providers
+// - route models
+// - implement retries
+// - implement cloud transport
+// - implement local runtimes
+//
+// core/ai owns AI execution.
+//
+// The resulting AIResponse is expected to travel back to the higher-level
+// caller, which may then associate it with this InterviewIntelligence result.
+//
+// COMPLETE FLOW:
+//
+//     ConversationAnalysis
+//             ↓
+//     InterviewEngine
+//             ↓
+//     InterviewAnalysis
+//             ↓
+//     CandidateService
+//             ↓
+//     ContextManager
+//             ↓
+//     PromptService
+//             ↓
+//     PromptInstructionSet
+//             ↓
+//     AIRequest
+//             ↓
+//     core/ai
+//             ↓
+//     AIResponse
+//             ↓
+//     Interview application / copilot / UI
 // ============================================================================
 
 import type { CandidateServiceContract } from "../../../shared/contracts/candidate.contract";
@@ -50,7 +91,7 @@ import type {
   InterviewAnalysisRequest,
 } from "../../../shared/types/interviews";
 
-import type { AIRequest } from "../../../shared/types/ai";
+import type { AIRequest, AIResponse } from "../../../shared/types/ai";
 
 import type { ContextManager } from "../../context/ContextManager";
 
@@ -72,13 +113,55 @@ import { InterviewError } from "../errors/InterviewError";
 // ============================================================================
 
 export interface InterviewIntelligenceOptions {
+  /**
+   * Deterministic Interview domain engine.
+   *
+   * This determines what is happening in the interview.
+   */
   readonly interviewEngine?: InterviewEngine;
 
+  /**
+   * Candidate subsystem.
+   *
+   * Provides verified candidate information.
+   */
   readonly candidateService?: CandidateServiceContract;
 
+  /**
+   * Generic Veyra context subsystem.
+   *
+   * Provides supporting contextual evidence.
+   */
   readonly contextManager?: ContextManager;
 
+  /**
+   * Prompt subsystem.
+   *
+   * Converts already-resolved Interview/Candidate/Context information into
+   * deterministic AI instructions.
+   */
   readonly promptService?: PromptService;
+}
+
+// ============================================================================
+// CONTEXT RESULT
+// ============================================================================
+
+export interface InterviewIntelligenceContext {
+  /**
+   * Query sent to ContextManager.
+   */
+  readonly query: string;
+
+  /**
+   * Compressed context returned by ContextManager.
+   */
+  readonly text: string;
+
+  /**
+   * IDs of the context records used.
+   */
+  readonly contextIds: readonly string[];
 }
 
 // ============================================================================
@@ -87,54 +170,84 @@ export interface InterviewIntelligenceOptions {
 
 export interface InterviewIntelligenceResult {
   /**
-   * Deterministic Interview understanding.
+   * Deterministic understanding of the interview.
+   *
+   * Produced by InterviewEngine.
    */
   readonly analysis: InterviewAnalysis;
 
   /**
-   * Verified candidate information, when available.
+   * Verified candidate information.
+   *
+   * Produced by CandidateService.
    */
   readonly candidate?: CandidateSummary;
 
   /**
-   * Retrieved context, when available.
+   * Retrieved supporting context.
+   *
+   * Produced by ContextManager.
    */
-  readonly context?: {
-    readonly query: string;
-
-    readonly text: string;
-
-    readonly contextIds: readonly string[];
-  };
+  readonly context?: InterviewIntelligenceContext;
 
   /**
    * Final prompt instructions.
+   *
+   * Produced by PromptService.
+   *
+   * This is the direct result of prompt construction.
    */
   readonly prompt?: PromptInstructionSet;
 
   /**
-   * AI-ready request.
+   * Canonical AI request.
    *
-   * This is still NOT executed here.
+   * Produced by PromptService from the PromptInstructionSet.
+   *
+   * This is NOT executed here.
+   *
+   * The caller passes this request to core/ai.
    */
   readonly aiRequest?: AIRequest;
 }
 
 // ============================================================================
-// REQUEST
+// PROMPT OPTIONS
 // ============================================================================
 
 export interface InterviewIntelligencePromptOptions {
+  /**
+   * Stable request identifier required by shared AIRequest.
+   */
   readonly requestId: AIRequest["requestId"];
 
+  /**
+   * Optional explicit provider.
+   *
+   * If omitted, the AI routing/execution layer may choose one.
+   */
   readonly provider?: AIRequest["provider"];
 
+  /**
+   * Optional explicit model.
+   */
   readonly model?: string;
 
+  /**
+   * Whether AI execution should stream.
+   */
   readonly stream?: boolean;
 
+  /**
+   * Optional timeout.
+   */
   readonly timeoutMs?: number;
 
+  /**
+   * Prompt response style.
+   *
+   * This affects PromptInstructionSet generation settings.
+   */
   readonly responseStyle?: PromptResponseStyle;
 }
 
@@ -151,6 +264,10 @@ export class InterviewIntelligence {
 
   private readonly promptService: PromptService;
 
+  // ========================================================================
+  // CONSTRUCTOR
+  // ========================================================================
+
   public constructor(options: InterviewIntelligenceOptions = {}) {
     this.interviewEngine = options.interviewEngine ?? new InterviewEngine();
 
@@ -166,70 +283,82 @@ export class InterviewIntelligence {
   // ========================================================================
 
   /**
-   * Analyze an interview and enrich it with candidate/context information.
+   * Perform complete Interview intelligence preparation.
    *
-   * This method stops before AI execution.
+   * Flow:
+   *
+   *     ConversationAnalysis
+   *             ↓
+   *     InterviewEngine
+   *             ↓
+   *     InterviewAnalysis
+   *             ↓
+   *     CandidateService
+   *             +
+   *     ContextManager
+   *             ↓
+   *     PromptService
+   *             ↓
+   *     PromptInstructionSet
+   *
+   * This method does NOT construct an AIRequest because request metadata such
+   * as requestId/provider/model belongs to the AI-request stage.
+   *
+   * Use analyzeForAI() when the caller needs the canonical AIRequest.
    */
   public async analyze(
     request: InterviewAnalysisRequest,
   ): Promise<InterviewIntelligenceResult> {
-    if (!request) {
-      throw InterviewError.invalidRequest(
-        "Interview intelligence request is required.",
-      );
-    }
+    this.validateAnalysisRequest(request);
 
     this.throwIfAborted(request.signal);
+
+    // ======================================================================
+    // 1. INTERVIEW ANALYSIS
+    // ======================================================================
 
     const analysis = await this.interviewEngine.execute(request);
 
     this.throwIfAborted(request.signal);
 
-    let candidate: CandidateSummary | undefined;
-
     // ======================================================================
-    // CANDIDATE
+    // 2. CANDIDATE
     // ======================================================================
 
-    if (request.candidateId && this.candidateService) {
-      try {
-        const result = await this.candidateService.getSummary({
-          candidateId: request.candidateId,
-
-          signal: request.signal,
-        });
-
-        candidate = result.candidate;
-      } catch (error) {
-        throw InterviewError.candidateFailure(
-          "Unable to retrieve candidate information for interview analysis.",
-          {
-            candidateId: request.candidateId,
-
-            cause: error,
-          },
-        );
-      }
-    }
+    const candidate = await this.retrieveCandidate(request);
 
     this.throwIfAborted(request.signal);
 
     // ======================================================================
-    // CONTEXT
+    // 3. CONTEXT
     // ======================================================================
 
-    let context: InterviewIntelligenceResult["context"] | undefined;
-
-    if (this.contextManager) {
-      context = await this.retrieveInterviewContext(request, analysis);
-    }
+    const context = await this.retrieveInterviewContext(request, analysis);
 
     this.throwIfAborted(request.signal);
 
     // ======================================================================
-    // PROMPT
+    // 4. PROMPT
     // ======================================================================
 
+    /**
+     * This is the important connection:
+     *
+     * InterviewIntelligence now has:
+     *
+     *     InterviewAnalysis
+     *     Candidate evidence
+     *     Context evidence
+     *
+     * Those are passed into PromptService.
+     *
+     * PromptService returns:
+     *
+     *     PromptInstructionSet
+     *
+     * The PromptInstructionSet becomes part of the InterviewIntelligence
+     * result.
+     */
     const promptInput = this.buildPromptInput(
       request,
       analysis,
@@ -239,50 +368,66 @@ export class InterviewIntelligence {
 
     const prompt = this.promptService.buildInterview(promptInput);
 
+    this.throwIfAborted(request.signal);
+
+    // ======================================================================
+    // 5. RETURN INTELLIGENCE RESULT
+    // ======================================================================
+
     return Object.freeze({
       analysis,
+
       candidate,
+
       context,
+
       prompt,
     });
   }
 
   // ========================================================================
-  // ANALYZE + BUILD AI REQUEST
+  // ANALYZE FOR AI
   // ========================================================================
 
   /**
-   * Full orchestration path:
+   * Prepare a complete interview AI request.
    *
-   *     conversation
-   *          ↓
-   *     interview analysis
-   *          ↓
-   *     candidate/context
-   *          ↓
-   *     prompt
-   *          ↓
-   *     AIRequest
+   * Flow:
    *
-   * The AIRequest is returned but NOT executed.
+   *     ConversationAnalysis
+   *             ↓
+   *     InterviewEngine
+   *             ↓
+   *     CandidateService
+   *             +
+   *     ContextManager
+   *             ↓
+   *     PromptService
+   *             ↓
+   *     PromptInstructionSet
+   *             ↓
+   *     PromptService.toAIRequest()
+   *             ↓
+   *          AIRequest
+   *
+   * IMPORTANT:
+   *
+   * The AIRequest is returned.
+   *
+   * It is NOT executed here.
    */
   public async analyzeForAI(
     request: InterviewAnalysisRequest,
     options: InterviewIntelligencePromptOptions,
   ): Promise<InterviewIntelligenceResult> {
-    if (!options) {
-      throw InterviewError.invalidRequest(
-        "Interview AI prompt options are required.",
-      );
-    }
+    this.validatePromptOptions(options);
 
-    if (!options.requestId) {
-      throw InterviewError.invalidRequest(
-        "A requestId is required for AI request construction.",
-      );
-    }
+    this.throwIfAborted(request.signal);
 
-    const result = await this.analyze(request);
+    const result = await this.analyzeWithResponseStyle(
+      request,
+      options.responseStyle,
+    );
 
     this.throwIfAborted(request.signal);
 
@@ -292,6 +437,22 @@ export class InterviewIntelligence {
       );
     }
 
+    // ======================================================================
+    // PROMPT → AI REQUEST
+    // ======================================================================
+
+    /**
+     * This is the second important connection:
+     *
+     *     PromptInstructionSet
+     *              ↓
+     *     PromptService.toAIRequest()
+     *              ↓
+     *          AIRequest
+     *
+     * PromptService remains responsible for translating prompt instructions
+     * into the canonical shared AIRequest contract.
+     */
     const aiRequest = this.promptService.toAIRequest(result.prompt, {
       requestId: options.requestId,
 
@@ -307,24 +468,136 @@ export class InterviewIntelligence {
 
       metadata: Object.freeze({
         feature: "interview",
+
         interviewType: result.analysis.classification.type,
+
+        interviewConfidence: String(result.analysis.confidence),
       }),
     });
 
+    this.throwIfAborted(request.signal);
+
     return Object.freeze({
       ...result,
+
       aiRequest,
     });
+  }
+
+  // ========================================================================
+  // ANALYZE WITH RESPONSE STYLE
+  // ========================================================================
+
+  /**
+   * Internal preparation helper.
+   *
+   * This allows analyzeForAI() to pass the requested response style into the
+   * Prompt subsystem without making response style part of InterviewEngine.
+   */
+  private async analyzeWithResponseStyle(
+    request: InterviewAnalysisRequest,
+    responseStyle?: PromptResponseStyle,
+  ): Promise<InterviewIntelligenceResult> {
+    this.validateAnalysisRequest(request);
+
+    this.throwIfAborted(request.signal);
+
+    const analysis = await this.interviewEngine.execute(request);
+
+    this.throwIfAborted(request.signal);
+
+    const candidate = await this.retrieveCandidate(request);
+
+    this.throwIfAborted(request.signal);
+
+    const context = await this.retrieveInterviewContext(request, analysis);
+
+    this.throwIfAborted(request.signal);
+
+    const promptInput = this.buildPromptInput(
+      request,
+      analysis,
+      candidate,
+      context,
+      responseStyle,
+    );
+
+    const prompt = this.promptService.buildInterview(promptInput);
+
+    this.throwIfAborted(request.signal);
+
+    return Object.freeze({
+      analysis,
+
+      candidate,
+
+      context,
+
+      prompt,
+    });
+  }
+
+  // ========================================================================
+  // CANDIDATE
+  // ========================================================================
+
+  /**
+   * Retrieve verified candidate information.
+   *
+   * InterviewIntelligence owns the orchestration.
+   *
+   * PromptService never calls CandidateService directly.
+   */
+  private async retrieveCandidate(
+    request: InterviewAnalysisRequest,
+  ): Promise<CandidateSummary | undefined> {
+    if (!request.candidateId || !this.candidateService) {
+      return undefined;
+    }
+
+    try {
+      const result = await this.candidateService.getSummary({
+        candidateId: request.candidateId,
+
+        signal: request.signal,
+      });
+
+      return result.candidate;
+    } catch (error) {
+      throw InterviewError.candidateFailure(
+        "Unable to retrieve candidate information for interview analysis.",
+        {
+          candidateId: request.candidateId,
+
+          cause: error,
+        },
+      );
+    }
   }
 
   // ========================================================================
   // CONTEXT
   // ========================================================================
 
+  /**
+   * Retrieve context relevant to the current interview task.
+   *
+   * Context retrieval happens BEFORE prompt construction.
+   *
+   * This is intentional:
+   *
+   *     ContextManager
+   *          ↓
+   *     resolved evidence
+   *          ↓
+   *     PromptService
+   *
+   * PromptService never decides what context to retrieve.
+   */
   private async retrieveInterviewContext(
     request: InterviewAnalysisRequest,
     analysis: InterviewAnalysis,
-  ): Promise<InterviewIntelligenceResult["context"]> {
+  ): Promise<InterviewIntelligenceContext | undefined> {
     if (!this.contextManager) {
       return undefined;
     }
@@ -348,7 +621,11 @@ export class InterviewIntelligence {
         signal: request.signal,
       });
 
-      const contextIds = result.contexts.map((item) => item.id).filter(Boolean);
+      const contextIds = result.contexts
+        .map((item) => item.id)
+        .filter(
+          (id): id is string => typeof id === "string" && id.trim().length > 0,
+        );
 
       return Object.freeze({
         query,
@@ -373,11 +650,25 @@ export class InterviewIntelligence {
   // PROMPT INPUT
   // ========================================================================
 
+  /**
+   * Adapt InterviewIntelligence data into the Prompt subsystem contract.
+   *
+   * This is the boundary adapter.
+   *
+   * PromptService does not receive:
+   *
+   *     CandidateSummary
+   *     ContextManager
+   *     InterviewEngine
+   *
+   * It receives intentionally smaller prompt evidence contracts.
+   */
   private buildPromptInput(
     request: InterviewAnalysisRequest,
     analysis: InterviewAnalysis,
     candidate?: CandidateSummary,
-    context?: InterviewIntelligenceResult["context"],
+    context?: InterviewIntelligenceContext,
+    responseStyle?: PromptResponseStyle,
   ) {
     const candidateEvidence = this.toPromptCandidateEvidence(
       request,
@@ -396,21 +687,22 @@ export class InterviewIntelligence {
       question:
         analysis.currentTask?.questionText ?? analysis.conversation.turn.text,
 
-      responseStyle: "interview-ready" as const,
+      responseStyle: responseStyle ?? "interview-ready",
 
       signal: request.signal,
     });
   }
 
   // ========================================================================
-  // CANDIDATE ADAPTER
+  // CANDIDATE → PROMPT ADAPTER
   // ========================================================================
 
   /**
-   * Converts the candidate subsystem's public summary into the prompt
-   * subsystem's intentionally smaller evidence contract.
+   * Convert CandidateSummary into the intentionally smaller
+   * PromptCandidateEvidence contract.
    *
-   * The Prompt layer therefore does not depend on CandidateService internals.
+   * PromptService therefore remains independent from CandidateService's
+   * internal model.
    */
   private toPromptCandidateEvidence(
     request: InterviewAnalysisRequest,
@@ -452,11 +744,11 @@ export class InterviewIntelligence {
   }
 
   // ========================================================================
-  // CONTEXT ADAPTER
+  // CONTEXT → PROMPT ADAPTER
   // ========================================================================
 
   private toPromptContextEvidence(
-    context?: InterviewIntelligenceResult["context"],
+    context?: InterviewIntelligenceContext,
   ): PromptContextEvidence | undefined {
     if (!context) {
       return undefined;
@@ -473,6 +765,14 @@ export class InterviewIntelligence {
   // CONTEXT QUERY
   // ========================================================================
 
+  /**
+   * Build the retrieval query from already-understood interview information.
+   *
+   * InterviewEngine determines what is happening.
+   *
+   * InterviewIntelligence determines what supporting information should be
+   * requested from the generic Context subsystem.
+   */
   private buildContextQuery(
     request: InterviewAnalysisRequest,
     analysis: InterviewAnalysis,
@@ -487,15 +787,65 @@ export class InterviewIntelligence {
     if (request.candidateId) {
       return [
         `Interview question: ${question}`,
+
         `Candidate ID: ${request.candidateId}`,
+
         "Find relevant verified candidate experience, projects, skills, education, stories, and evidence.",
       ].join("\n");
     }
 
     return [
       `Interview question: ${question}`,
+
       "Find relevant interview context and supporting knowledge.",
     ].join("\n");
+  }
+
+  // ========================================================================
+  // AI RESPONSE ATTACHMENT
+  // ========================================================================
+
+  /**
+   * Attach an already-executed AIResponse to an InterviewIntelligence result.
+   *
+   * IMPORTANT:
+   *
+   * This method does NOT execute AI.
+   *
+   * The caller remains responsible for:
+   *
+   *     aiRequest
+   *         ↓
+   *     core/ai
+   *         ↓
+   *     AIResponse
+   *
+   * Once the caller has the AIResponse, it may associate that response with
+   * the InterviewIntelligence result.
+   *
+   * This method is intentionally generic because interpretation of the final
+   * response may later belong to a dedicated InterviewAnswerService or
+   * InterviewResponseInterpreter.
+   */
+  public attachAIResponse(
+    result: InterviewIntelligenceResult,
+    response: AIResponse,
+  ): InterviewIntelligenceAIResult {
+    if (!result) {
+      throw InterviewError.invalidRequest(
+        "Interview intelligence result is required.",
+      );
+    }
+
+    if (!response) {
+      throw InterviewError.invalidRequest("AI response is required.");
+    }
+
+    return Object.freeze({
+      ...result,
+
+      response,
+    });
   }
 
   // ========================================================================
@@ -513,6 +863,48 @@ export class InterviewIntelligence {
     );
   }
 
+  // ========================================================================
+  // VALIDATION
+  // ========================================================================
+
+  private validateAnalysisRequest(request: InterviewAnalysisRequest): void {
+    if (!request) {
+      throw InterviewError.invalidRequest(
+        "Interview intelligence request is required.",
+      );
+    }
+
+    if (!request.conversation) {
+      throw InterviewError.invalidRequest("Conversation analysis is required.");
+    }
+
+    if (request.candidateId !== undefined && !request.candidateId.trim()) {
+      throw InterviewError.invalidRequest(
+        "candidateId cannot be empty when supplied.",
+      );
+    }
+  }
+
+  private validatePromptOptions(
+    options: InterviewIntelligencePromptOptions,
+  ): void {
+    if (!options) {
+      throw InterviewError.invalidRequest(
+        "Interview AI prompt options are required.",
+      );
+    }
+
+    if (!options.requestId) {
+      throw InterviewError.invalidRequest(
+        "A requestId is required for AI request construction.",
+      );
+    }
+  }
+
+  // ========================================================================
+  // CANCELLATION
+  // ========================================================================
+
   private throwIfAborted(signal?: AbortSignal): void {
     if (!signal?.aborted) {
       return;
@@ -520,4 +912,18 @@ export class InterviewIntelligence {
 
     throw InterviewError.cancelled();
   }
+}
+
+// ============================================================================
+// AI RESULT
+// ============================================================================
+
+/**
+ * InterviewIntelligence result after an already-executed AI request has been
+ * associated with it.
+ *
+ * The execution itself still belongs to core/ai.
+ */
+export interface InterviewIntelligenceAIResult extends InterviewIntelligenceResult {
+  readonly response: AIResponse;
 }

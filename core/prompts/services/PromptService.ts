@@ -38,7 +38,41 @@
 // IMPORTANT:
 //
 // PromptService does not call AIManager.
-// It only prepares the shared AIRequest contract.
+//
+// It prepares the canonical shared AIRequest contract that is then consumed
+// by the core/ai execution layer.
+//
+// ARCHITECTURE:
+//
+// Interview
+//    │
+//    ▼
+// InterviewIntelligence
+//    │
+//    ├── CandidateService
+//    ├── ContextManager
+//    │
+//    ▼
+// PromptService
+//    │
+//    ├── PromptRegistry
+//    ├── InterviewPromptBuilder
+//    ├── SystemPromptBuilder
+//    └── VisionPromptBuilder
+//    │
+//    ▼
+// PromptInstructionSet
+//    │
+//    ▼
+// shared/types/ai.ts :: AIRequest
+//    │
+//    ▼
+// core/ai
+//    │
+//    ├── AIManager
+//    ├── AIRouter
+//    ├── LocalModelProvider
+//    └── CloudAIProvider
 // ============================================================================
 
 import type { AIRequest, AIRequestMode } from "../../../shared/types/ai";
@@ -61,7 +95,10 @@ import { PromptRegistry } from "../registry/PromptRegistry";
 
 import { PromptNormalizer } from "../normalization/PromptNormalizer";
 
-import { InterviewPromptBuilder } from "../builders/InterviewPromptBuilder";
+import {
+  InterviewPromptBuilder,
+  type InterviewPromptBuilderOptions,
+} from "../builders/InterviewPromptBuilder";
 
 import { SystemPromptBuilder } from "../builders/SystemPromptBuilder";
 
@@ -78,10 +115,22 @@ import { DEFAULT_VISION_TEMPLATE } from "../templates/vision/default";
 // ============================================================================
 
 export interface PromptServiceOptions {
+  /**
+   * Shared prompt registry.
+   */
   readonly registry?: PromptRegistry;
 
+  /**
+   * Shared prompt normalizer.
+   */
   readonly normalizer?: PromptNormalizer;
 
+  /**
+   * Optional custom interview builder.
+   *
+   * When omitted, PromptService creates an InterviewPromptBuilder using
+   * the same registry and normalizer owned by this service.
+   */
   readonly interviewBuilder?: InterviewPromptBuilder;
 
   readonly systemBuilder?: SystemPromptBuilder;
@@ -117,7 +166,11 @@ export class PromptService {
     this.normalizer = options.normalizer ?? new PromptNormalizer();
 
     this.interviewBuilder =
-      options.interviewBuilder ?? new InterviewPromptBuilder();
+      options.interviewBuilder ??
+      new InterviewPromptBuilder({
+        registry: this.registry,
+        normalizer: this.normalizer,
+      });
 
     this.systemBuilder = options.systemBuilder ?? new SystemPromptBuilder();
 
@@ -134,6 +187,7 @@ export class PromptService {
 
   public registerTemplate(
     template: Parameters<PromptRegistry["register"]>[0],
+
     replaceExisting = true,
   ): void {
     this.registry.register(template, replaceExisting);
@@ -193,13 +247,13 @@ export class PromptService {
   // ========================================================================
 
   /**
-   * Builds the complete prompt by combining:
+   * Builds the complete interview prompt by combining:
    *
    *     universal system instructions
    *             +
    *     interview task instructions
    *
-   * This is the normal path for interview AI generation.
+   * This is the normal prompt-construction path for interview generation.
    */
   public buildInterview(input: PromptBuildInput): PromptInstructionSet {
     this.validateInput(input);
@@ -216,15 +270,23 @@ export class PromptService {
 
     const sections = [...system.sections, ...interview.sections];
 
-    const messages = this.normalizer.toMessages(sections);
+    const normalizedSections = this.normalizer.normalizeSections(sections);
+
+    const messages = this.normalizer.toMessages(normalizedSections);
 
     return Object.freeze({
       ...interview,
-      sections: Object.freeze(sections),
+
+      sections: normalizedSections,
+
       messages,
+
       family: "interview",
+
       kind: input.analysis.classification.type,
+
       source: "template",
+
       grounded: interview.grounded || system.grounded,
     });
   }
@@ -244,6 +306,7 @@ export class PromptService {
    */
   public toAIRequest(
     prompt: PromptInstructionSet,
+
     options: PromptAIRequestOptions,
   ): AIRequest {
     if (!prompt) {
@@ -295,10 +358,15 @@ export class PromptService {
 
       metadata: Object.freeze({
         ...prompt.metadata,
+
         promptFamily: prompt.family,
+
         promptKind: prompt.kind,
+
         promptSource: prompt.source,
+
         grounded: String(prompt.grounded),
+
         ...(prompt.candidateId
           ? {
               candidateId: prompt.candidateId,
@@ -317,15 +385,16 @@ export class PromptService {
   /**
    * Convenience method used by higher-level orchestration.
    *
-   * This produces both:
+   * Produces:
    *
    * - PromptInstructionSet
-   * - AIRequest
+   * - canonical AIRequest
    *
-   * but still does not call AIManager.
+   * It still does NOT call AIManager.
    */
   public buildInterviewRequest(
     input: PromptBuildInput,
+
     options: PromptAIRequestOptions,
   ): PromptBuildResult {
     const prompt = this.buildInterview(input);
@@ -395,6 +464,10 @@ export class PromptService {
       );
     }
   }
+
+  // ========================================================================
+  // CANCELLATION
+  // ========================================================================
 
   private throwIfAborted(signal?: AbortSignal): void {
     if (!signal?.aborted) {
