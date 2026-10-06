@@ -1,161 +1,97 @@
-// shared/index.ts
 
-/**
- * Veyra Shared API
- *
- * This module is the public contract boundary shared by:
- *
- * - React client
- * - Electron desktop
- * - Node server
- * - Core domain/AI engine
- *
- * Avoid adding duplicate wildcard exports here.
- * Every exported symbol should have one canonical owner.
- */
+// ============================================================================
+// FILE: shared/index.ts
+//
+// PURPOSE:
+// Public shared-contract barrel.
+//
+// IMPORTANT:
+// Shared MUST NOT import core domain implementations.
+// ============================================================================
 
-/* -------------------------------------------------------------------------- */
-/* Constants                                                                   */
-/* -------------------------------------------------------------------------- */
-
-export * from "./constants/errorCodes";
-
-export { IPC_CHANNELS, IPC_EVENTS } from "./constants/events";
-
-export type { IPCChannel, IPCEvent } from "./constants/events";
-
-export {
-  INTERVIEW_TYPES,
-  INTERVIEW_TYPE_LABELS,
-  INTERVIEW_TYPE_DESCRIPTIONS,
-  isInterviewType,
-} from "./constants/interviewTypes";
-
-export type { InterviewType } from "./constants/interviewTypes";
-
-export {
-  AI_PROVIDERS as SUPPORTED_AI_PROVIDERS,
-  MODEL_NAMES,
-  DEFAULT_MODELS,
-  MODEL_CAPABILITIES,
-  MODEL_DEFINITIONS,
-  getDefaultModel,
-} from "./constants/modelNames";
-
-export type {
-  ModelName,
-  ModelCapability,
-  ModelDefinition,
-} from "./constants/modelNames";
-
-/* -------------------------------------------------------------------------- */
-/* Common types                                                               */
-/* -------------------------------------------------------------------------- */
+// ============================================================================
+// COMMON TYPES
+// ============================================================================
 
 export * from "./types/common";
 
-/* -------------------------------------------------------------------------- */
-/* AI types                                                                    */
-/* -------------------------------------------------------------------------- */
+// ============================================================================
+// AI
+// ============================================================================
 
-export { AI_PROVIDERS, isAIProvider } from "./types/ai";
-
-export type {
-  AIProvider,
-  AIRequestMode,
-  AIMessageRole,
-  AIMessage,
-  AIMetadata,
-  AIRequest,
-  AIUsage,
-  AIFinishReason,
-  AIResponse,
-  AIStreamChunk,
-  AIStreamStatus,
-  AIStreamStart,
-  AIHealthState,
-  AIHealthStatus,
-  AIProviderCapabilities,
-  AIProviderStatus,
-} from "./types/ai";
-
-/* -------------------------------------------------------------------------- */
-/* Audio                                                                       */
-/* -------------------------------------------------------------------------- */
-
-export * from "./types/audio";
-
-/* -------------------------------------------------------------------------- */
-/* Capture                                                                     */
-/* -------------------------------------------------------------------------- */
-
-export * from "./types/capture";
-
-/* -------------------------------------------------------------------------- */
-/* Conversation                                                                */
-/* -------------------------------------------------------------------------- */
-
-export * from "./types/conversation";
-
-/* -------------------------------------------------------------------------- */
-/* Documents                                                                  */
-/* -------------------------------------------------------------------------- */
-
-export * from "./types/documents";
-
-/* -------------------------------------------------------------------------- */
-/* Interviews                                                                 */
-/* -------------------------------------------------------------------------- */
-
-export * from "./types/interviews";
-
-/* -------------------------------------------------------------------------- */
-/* Sessions                                                                   */
-/* -------------------------------------------------------------------------- */
-
-export * from "./types/sessions";
-
-/* -------------------------------------------------------------------------- */
-/* Vision                                                                     */
-/* -------------------------------------------------------------------------- */
-
-export * from "./types/vision";
-
-/* -------------------------------------------------------------------------- */
-/* Contracts                                                                  */
-/* -------------------------------------------------------------------------- */
-
+export * from "./types/ai";
 export * from "./contracts/ai.contract";
 
+// ============================================================================
+// AUDIO
+// ============================================================================
+
+export * from "./types/audio";
+export * from "./contracts/audio.contract";
+
+// ============================================================================
+// CANDIDATE
+// ============================================================================
+
+export * from "./types/candidate";
+export * from "./contracts/candidate.contract";
+
+// ============================================================================
+// CONVERSATION
+// ============================================================================
+
+export * from "./types/conversation";
+export * from "./contracts/conversation.contract";
+
+// ============================================================================
+// DOCUMENTS
+// ============================================================================
+
+export * from "./types/documents";
 export * from "./contracts/document.contract";
+
+// ============================================================================
+// HARDWARE
+// ============================================================================
+
+export * from "./types/hardware";
+export * from "./contracts/hardware.contract";
+
+// ============================================================================
+// INTERVIEW
+// ============================================================================
+
+export * from "./types/interviews";
+export * from "./contracts/interview.contract";
+
+// ============================================================================
+// PROFILE
+// ============================================================================
 
 export * from "./contracts/profile.contract";
 
+// ============================================================================
+// SESSIONS
+// ============================================================================
+
+export * from "./types/sessions";
 export * from "./contracts/session.contract";
 
-/* -------------------------------------------------------------------------- */
-/* Validation schemas                                                         */
-/* -------------------------------------------------------------------------- */
+// ============================================================================
+// VISION
+// ============================================================================
 
-/**
- * Validation exports are deliberately explicit.
- *
- * aiProviderSchema is owned by aiSchemas.ts.
- * Do not re-export another aiProviderSchema from another schema module.
- */
-export {
-  aiProviderSchema,
-  aiRequestModeSchema,
-  aiMessageSchema,
-  aiRequestSchema,
-  aiCancelStreamSchema,
-  aiProviderStatusRequestSchema,
-} from "./validation/aiSchemas";
+export * from "./types/vision";
+export * from "./contracts/vision.contract";
 
-export type { AIRequestInput } from "./validation/aiSchemas";
+// ============================================================================
+// CONSTANTS
+// ============================================================================
 
-export * from "./validation/documentSchemas";
+export * from "./constants/interviewTypes";
 
-export * from "./validation/profileSchemas";
+// ============================================================================
+// VALIDATION
+// ============================================================================
 
-export * from "./validation/sessionSchemas";
+export * from "./validation/interviewSchemas";

@@ -1,10 +1,16 @@
 // ============================================================================
 // FILE: shared/constants/errorCodes.ts
+//
 // PURPOSE:
 // Canonical Veyra error-code vocabulary.
 //
 // IMPORTANT:
 // Both shared consumers and core execution code must use this vocabulary.
+//
+// ARCHITECTURAL RULE:
+// Domain-specific errors must still resolve to this shared ErrorCode type.
+// Interview-specific errors therefore belong here rather than defining a
+// private error-code vocabulary inside core/interview.
 // ============================================================================
 
 export const ERROR_CODES = Object.freeze({
@@ -13,31 +19,18 @@ export const ERROR_CODES = Object.freeze({
   // --------------------------------------------------------------------------
 
   UNKNOWN: "UNKNOWN_ERROR",
-
   VALIDATION_FAILED: "VALIDATION_FAILED",
-
   INVALID_REQUEST: "INVALID_REQUEST",
-
   INVALID_RESPONSE: "INVALID_RESPONSE",
-
   INVALID_STATE: "INVALID_STATE",
-
   UNAUTHORIZED: "UNAUTHORIZED",
-
   FORBIDDEN: "FORBIDDEN",
-
   NOT_FOUND: "NOT_FOUND",
-
   CONFLICT: "CONFLICT",
-
   PROVIDER: "PROVIDER",
-
   UNAVAILABLE: "UNAVAILABLE",
-
   UNSUPPORTED: "UNSUPPORTED",
-
   CONFIGURATION: "CONFIGURATION",
-
   INTERNAL_ERROR: "INTERNAL_ERROR",
 
   // --------------------------------------------------------------------------
@@ -45,17 +38,11 @@ export const ERROR_CODES = Object.freeze({
   // --------------------------------------------------------------------------
 
   RATE_LIMITED: "RATE_LIMITED",
-
   QUOTA_EXCEEDED: "QUOTA_EXCEEDED",
-
   TIMEOUT: "TIMEOUT",
-
   CANCELLED: "CANCELLED",
-
   ABORTED: "ABORTED",
-
   NETWORK_ERROR: "NETWORK_ERROR",
-
   SERVICE_UNAVAILABLE: "SERVICE_UNAVAILABLE",
 
   // --------------------------------------------------------------------------
@@ -63,17 +50,11 @@ export const ERROR_CODES = Object.freeze({
   // --------------------------------------------------------------------------
 
   AI_PROVIDER_UNAVAILABLE: "AI_PROVIDER_UNAVAILABLE",
-
   AI_PROVIDER_ERROR: "AI_PROVIDER_ERROR",
-
   AI_PROVIDER_TIMEOUT: "AI_PROVIDER_TIMEOUT",
-
   AI_PROVIDER_RATE_LIMITED: "AI_PROVIDER_RATE_LIMITED",
-
   AI_MODEL_NOT_FOUND: "AI_MODEL_NOT_FOUND",
-
   AI_CONTEXT_TOO_LARGE: "AI_CONTEXT_TOO_LARGE",
-
   AI_REQUEST_CANCELLED: "AI_REQUEST_CANCELLED",
 
   // --------------------------------------------------------------------------
@@ -81,11 +62,8 @@ export const ERROR_CODES = Object.freeze({
   // --------------------------------------------------------------------------
 
   MODEL_NOT_FOUND: "MODEL_NOT_FOUND",
-
   MODEL_NOT_INSTALLED: "MODEL_NOT_INSTALLED",
-
   MODEL_UNSUPPORTED: "MODEL_UNSUPPORTED",
-
   MODEL_NOT_LOADED: "MODEL_NOT_LOADED",
 
   // --------------------------------------------------------------------------
@@ -93,11 +71,8 @@ export const ERROR_CODES = Object.freeze({
   // --------------------------------------------------------------------------
 
   AUDIO_PERMISSION_DENIED: "AUDIO_PERMISSION_DENIED",
-
   AUDIO_DEVICE_NOT_FOUND: "AUDIO_DEVICE_NOT_FOUND",
-
   AUDIO_DEVICE_UNAVAILABLE: "AUDIO_DEVICE_UNAVAILABLE",
-
   AUDIO_CAPTURE_FAILED: "AUDIO_CAPTURE_FAILED",
 
   // --------------------------------------------------------------------------
@@ -105,9 +80,7 @@ export const ERROR_CODES = Object.freeze({
   // --------------------------------------------------------------------------
 
   CAPTURE_PERMISSION_DENIED: "CAPTURE_PERMISSION_DENIED",
-
   CAPTURE_SOURCE_NOT_FOUND: "CAPTURE_SOURCE_NOT_FOUND",
-
   CAPTURE_FAILED: "CAPTURE_FAILED",
 
   // --------------------------------------------------------------------------
@@ -115,13 +88,9 @@ export const ERROR_CODES = Object.freeze({
   // --------------------------------------------------------------------------
 
   DOCUMENT_NOT_FOUND: "DOCUMENT_NOT_FOUND",
-
   DOCUMENT_UNSUPPORTED: "DOCUMENT_UNSUPPORTED",
-
   DOCUMENT_TOO_LARGE: "DOCUMENT_TOO_LARGE",
-
   DOCUMENT_READ_FAILED: "DOCUMENT_READ_FAILED",
-
   DOCUMENT_PARSE_FAILED: "DOCUMENT_PARSE_FAILED",
 
   // --------------------------------------------------------------------------
@@ -129,21 +98,32 @@ export const ERROR_CODES = Object.freeze({
   // --------------------------------------------------------------------------
 
   PROFILE_NOT_FOUND: "PROFILE_NOT_FOUND",
-
   SESSION_NOT_FOUND: "SESSION_NOT_FOUND",
-
   SESSION_ALREADY_ACTIVE: "SESSION_ALREADY_ACTIVE",
-
   SESSION_NOT_ACTIVE: "SESSION_NOT_ACTIVE",
-
   SESSION_INVALID_TRANSITION: "SESSION_INVALID_TRANSITION",
+
+  // --------------------------------------------------------------------------
+  // INTERVIEW
+  //
+  // Interview is a domain subsystem, so its failures use the same canonical
+  // error vocabulary rather than defining a separate InterviewErrorCode type.
+  // --------------------------------------------------------------------------
+
+  INTERVIEW_INVALID_REQUEST: "INTERVIEW_INVALID_REQUEST",
+  INTERVIEW_INVALID_CONVERSATION: "INTERVIEW_INVALID_CONVERSATION",
+  INTERVIEW_CLASSIFICATION_FAILED: "INTERVIEW_CLASSIFICATION_FAILED",
+  INTERVIEW_TASK_FAILED: "INTERVIEW_TASK_FAILED",
+  INTERVIEW_ANSWER_GUIDANCE_FAILED: "INTERVIEW_ANSWER_GUIDANCE_FAILED",
+  INTERVIEW_CANDIDATE_CONTEXT_FAILED: "INTERVIEW_CANDIDATE_CONTEXT_FAILED",
+  INTERVIEW_CONTEXT_FAILED: "INTERVIEW_CONTEXT_FAILED",
+  INTERVIEW_UNSUPPORTED_TASK: "INTERVIEW_UNSUPPORTED_TASK",
 
   // --------------------------------------------------------------------------
   // STORAGE
   // --------------------------------------------------------------------------
 
   STORAGE_ERROR: "STORAGE_ERROR",
-
   DATABASE_ERROR: "DATABASE_ERROR",
 } as const);
 
@@ -153,14 +133,9 @@ export type ErrorSeverity = "info" | "warning" | "error" | "critical";
 
 export interface ErrorDetails {
   readonly code: ErrorCode;
-
   readonly message: string;
-
   readonly requestId?: string;
-
   readonly details?: Readonly<Record<string, unknown>>;
-
   readonly retryable?: boolean;
-
   readonly severity?: ErrorSeverity;
 }
