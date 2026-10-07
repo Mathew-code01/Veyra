@@ -7,15 +7,27 @@
 
 import type { RecoveryActionType } from "./RecoveryAction";
 
+// ============================================================================
+// CONTRACT
+// ============================================================================
+
 export interface RecoveryPolicy {
   readonly actions: readonly RecoveryActionType[];
 
   readonly allowRetry?: boolean;
+
   readonly allowFallback?: boolean;
+
   readonly allowReinitialize?: boolean;
+
   readonly allowHealthRefresh?: boolean;
+
   readonly allowCircuitReset?: boolean;
 }
+
+// ============================================================================
+// DEFAULT POLICY
+// ============================================================================
 
 export const DEFAULT_RECOVERY_POLICY: RecoveryPolicy = Object.freeze({
   actions: Object.freeze([
@@ -24,10 +36,15 @@ export const DEFAULT_RECOVERY_POLICY: RecoveryPolicy = Object.freeze({
     "fallback",
     "reinitialize",
     "fail",
-  ]),
+  ] as const),
+
   allowRetry: true,
+
   allowFallback: true,
+
   allowReinitialize: true,
+
   allowHealthRefresh: true,
+
   allowCircuitReset: false,
 });
