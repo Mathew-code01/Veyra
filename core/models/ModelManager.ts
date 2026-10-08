@@ -1,4 +1,78 @@
-// core/models/ModelManager.ts
+// ============================================================================
+// FILE: core/models/ModelManager.ts
+//
+// PURPOSE:
+// Public orchestration facade for the Veyra model subsystem.
+//
+// CORE QUESTION:
+// "Which models are available, installed, loaded, and executable,
+//  and how do we safely operate them?"
+//
+// RESPONSIBILITIES:
+// - Model selection.
+// - Model compatibility.
+// - Model installation.
+// - Model restoration.
+// - Model lifecycle.
+// - Runtime lifecycle.
+// - Model inference.
+// - Speech recognition.
+// - Speech synthesis.
+// - Vision generation.
+// - Reliability-managed model operations.
+//
+// DOES NOT:
+// - Build AI prompts.
+// - Route AI providers.
+// - Decide interview behavior.
+// - Implement retry algorithms.
+// - Implement timeout algorithms.
+// - Implement failure classification.
+// - Implement recovery algorithms.
+// - Own reliability policy.
+//
+// Reliability is delegated to core/reliability.
+//
+// ARCHITECTURE:
+//
+//   core/ai
+//       │
+//       ▼
+//   ModelManager
+//       │
+//       ├──────────────► ReliabilityManager
+//       │                    │
+//       │                    ├── retry
+//       │                    ├── timeout
+//       │                    ├── recovery
+//       │                    ├── failure classification
+//       │                    └── operation lifecycle
+//       │
+//       ├──────────────► ModelInstallationManager
+//       │
+//       └──────────────► ModelRuntimeManager
+//
+// IMPORTANT:
+// ModelRegistry remains a pure catalog.
+// It does NOT depend on reliability.
+//
+// IMPORTANT:
+// ModelManager is the reliability boundary for public model operations.
+//
+// Lower-level model infrastructure such as:
+// - ModelRegistry
+// - ModelInstallationManager
+// - ModelRuntimeManager
+// - RuntimeRegistry
+// - ModelStorage
+// - Runtime implementations
+//
+// should not independently wrap the same public operation in another
+// ReliabilityManager execution boundary.
+//
+// This prevents nested retry / timeout / recovery behavior.
+//
+// ============================================================================
 
 import type { HardwareProfile } from "../hardware/HardwareProfile";
 
@@ -56,11 +130,19 @@ import type {
   VisionGenerationOptions,
 } from "./runtime/ModelRuntime";
 
-/**
- * ============================================================================
- * Installed model state
- * ============================================================================
- */
+// ============================================================================
+// Reliability
+// ============================================================================
+
+import {
+  ReliabilityManager,
+  type OperationContext,
+  type ReliableExecutionOptions,
+} from "../reliability";
+
+// ============================================================================
+// Installed model state
+// ============================================================================
 
 export interface InstalledModel {
   readonly modelId: string;
@@ -74,11 +156,9 @@ export interface InstalledModel {
   readonly sha256: string;
 }
 
-/**
- * ============================================================================
- * Manager configuration
- * ============================================================================
- */
+// ============================================================================
+// Manager configuration
+// ============================================================================
 
 export interface ModelManagerOptions {
   readonly selection?: ModelSelectionOptions;
@@ -86,13 +166,22 @@ export interface ModelManagerOptions {
   readonly installationManager?: ModelInstallationManager;
 
   readonly runtimeManager?: ModelRuntimeManager;
+
+  /**
+   * Optional shared application-level reliability manager.
+   *
+   * If omitted, ModelManager creates its own reliability manager.
+   *
+   * A shared ReliabilityManager can be injected during application
+   * composition so AI, models, audio, documents, and other subsystems
+   * participate in the same reliability infrastructure.
+   */
+  readonly reliabilityManager?: ReliabilityManager;
 }
 
-/**
- * ============================================================================
- * Installation
- * ============================================================================
- */
+// ============================================================================
+// Installation
+// ============================================================================
 
 export interface ModelInstallOptions {
   readonly overwrite?: boolean;
@@ -115,6 +204,14 @@ export interface ModelInstallOptions {
    * runtime manager.
    */
   readonly requireMemorySafety?: boolean;
+
+  /**
+   * Reliability configuration for the installation operation.
+   *
+   * Model-specific download retry/resume behavior remains inside the
+   * downloader. These options control the outer model operation lifecycle.
+   */
+  readonly reliability?: ModelReliabilityOptions;
 }
 
 export interface ModelInstallResult {
@@ -125,11 +222,9 @@ export interface ModelInstallResult {
   readonly installation: ModelInstallationResult;
 }
 
-/**
- * ============================================================================
- * Active model plan
- * ============================================================================
- */
+// ============================================================================
+// Active model plan
+// ============================================================================
 
 export interface ActiveModelPlan {
   readonly generatedAt: number;
@@ -143,11 +238,9 @@ export interface ActiveModelPlan {
   >;
 }
 
-/**
- * ============================================================================
- * Runtime tuning
- * ============================================================================
- */
+// ============================================================================
+// Runtime tuning
+// ============================================================================
 
 export interface ModelLoadOptions {
   readonly contextSize?: number;
@@ -159,45 +252,75 @@ export interface ModelLoadOptions {
   readonly batchSize?: number;
 
   readonly signal?: AbortSignal;
+
+  /**
+   * Reliability configuration for model loading.
+   */
+  readonly reliability?: ModelReliabilityOptions;
 }
 
+// ============================================================================
+// Reliability options
+// ============================================================================
+
 /**
- * ============================================================================
- * Model manager
- * ============================================================================
+ * Reliability options accepted by model operations.
  *
- * PUBLIC FACADE
+ * This deliberately exposes only the generic reliability controls that
+ * are meaningful to the model boundary.
  *
- * Application code should interact with local models through this class.
- *
- * Consumers should NOT import:
- *
- * - ModelStorage
- * - ModelInstallationManager
- * - RuntimeRegistry
- * - ModelRuntimeManager
- * - LlamaCppRuntime
- * - WhisperCppRuntime
- * - OnnxRuntime
- *
- * Architecture:
- *
- *   AI / Audio / Vision
- *            ↓
- *       ModelManager
- *            ↓
- *   ┌────────┴─────────┐
- *   │                  │
- * Installation       Runtime
- *   │                  │
- * Storage       ModelRuntimeManager
- *                       │
- *                 RuntimeRegistry
- *                       │
- *          ┌────────────┼─────────────┐
- *          ↓            ↓             ↓
- *      llama.cpp    whisper.cpp      ONNX
+ * ModelManager does not implement retry or timeout behavior itself.
  */
+export interface ModelReliabilityOptions {
+  readonly retryPolicy?: ReliableExecutionOptions["retryPolicy"];
+
+  readonly timeoutMs?: number;
+
+  readonly recover?: boolean;
+
+  readonly recovery?: ReliableExecutionOptions["recovery"];
+}
+
+// ============================================================================
+// Model manager
+// ============================================================================
+//
+// PUBLIC FACADE
+//
+// Application code should interact with local models through this class.
+//
+// Consumers should NOT import:
+//
+// - ModelStorage
+// - ModelInstallationManager
+// - RuntimeRegistry
+// - ModelRuntimeManager
+// - LlamaCppRuntime
+// - WhisperCppRuntime
+// - OnnxRuntime
+//
+// Architecture:
+//
+//   AI / Audio / Vision
+//            │
+//            ▼
+//       ModelManager
+//            │
+//       ┌────┴─────────────────────────────┐
+//       │                                  │
+//       ▼                                  ▼
+// ReliabilityManager              Model infrastructure
+//       │                                  │
+//       │                     ┌────────────┴─────────┐
+//       │                     │                      │
+//       ▼                     ▼                      ▼
+//   retry/timeout        Installation            Runtime
+//   recovery             Storage             ModelRuntimeManager
+//   lifecycle                                    │
+//                                           RuntimeRegistry
+//
+// ============================================================================
+
 export class ModelManager {
   private readonly selector: ModelSelector;
 
@@ -210,6 +333,8 @@ export class ModelManager {
   private readonly installationManager?: ModelInstallationManager;
 
   private readonly runtimeManager?: ModelRuntimeManager;
+
+  private readonly reliabilityManager: ReliabilityManager;
 
   private currentPlan: ModelSelectionPlan | null = null;
 
@@ -240,6 +365,103 @@ export class ModelManager {
       installationManager ?? options.installationManager;
 
     this.runtimeManager = runtimeManager ?? options.runtimeManager;
+
+    this.reliabilityManager =
+      options.reliabilityManager ?? new ReliabilityManager();
+  }
+
+  // ==========================================================================
+  // Reliability
+  // ==========================================================================
+
+  /**
+   * Return the reliability manager used by the model subsystem.
+   *
+   * This is primarily a composition/diagnostics API.
+   *
+   * Application code should normally allow ModelManager to manage
+   * reliability internally.
+   */
+  public getReliabilityManager(): ReliabilityManager {
+    return this.reliabilityManager;
+  }
+
+  /**
+   * Execute a model operation through the shared reliability boundary.
+   *
+   * ModelManager does NOT implement:
+   *
+   * - retry
+   * - timeout
+   * - recovery
+   * - failure classification
+   *
+   * ReliabilityManager owns those concerns.
+   *
+   * The callback receives the OperationContext created by
+   * ReliabilityManager.
+   */
+  private async executeReliable<T>(
+    componentId: string,
+
+    signal: AbortSignal | undefined,
+
+    reliability: ModelReliabilityOptions | undefined,
+
+    metadata: Readonly<Record<string, string>>,
+
+    handler: (context: OperationContext) => Promise<T>,
+  ): Promise<T> {
+    const result = await this.reliabilityManager.execute(
+      {
+        componentId,
+
+        signal,
+
+        retryPolicy: reliability?.retryPolicy,
+
+        timeoutMs: reliability?.timeoutMs,
+
+        recover: reliability?.recover,
+
+        recovery: reliability?.recovery,
+
+        metadata,
+      },
+
+      handler,
+    );
+
+    // ----------------------------------------------------------------------
+    // Successful execution
+    // ----------------------------------------------------------------------
+
+    if (result.succeeded) {
+      /*
+       * ReliabilityExecutionResult currently exposes `value` as optional
+       * at the type level even on the successful branch.
+       *
+       * A successful model operation must have a value because this helper
+       * is specifically used for operations returning Promise<T>.
+       *
+       * Therefore explicitly verify that the successful result contains
+       * the value before returning it.
+       */
+      if (!("value" in result) || result.value === undefined) {
+        throw new Error(
+          `Reliable model operation "${componentId}" completed successfully ` +
+            "without returning a result value.",
+        );
+      }
+
+      return result.value as T;
+    }
+
+    // ----------------------------------------------------------------------
+    // Recovery / cancellation / final failure
+    // ----------------------------------------------------------------------
+
+    throw result.error;
   }
 
   // ==========================================================================
@@ -292,8 +514,8 @@ export class ModelManager {
     return this.activePlan;
   }
 
-  public getActiveModel(modality: ModelModality): ModelDefinition | null {
-    const modelId = this.activePlan?.primary[modality];
+  public getActiveModel(modelModality: ModelModality): ModelDefinition | null {
+    const modelId = this.activePlan?.primary[modelModality];
 
     if (!modelId) {
       return null;
@@ -322,6 +544,7 @@ export class ModelManager {
 
   public evaluateModel(
     modelId: string,
+
     profile: HardwareProfile,
   ): ModelCompatibilityResult {
     const model = this.registry.require(modelId);
@@ -339,39 +562,63 @@ export class ModelManager {
 
   public async install(
     modelId: string,
+
     options: ModelInstallOptions = {},
   ): Promise<ModelInstallResult> {
     const manager = this.requireInstallationManager();
 
     const model = this.registry.require(modelId);
 
-    const installation = await manager.installModel(model, {
-      priority: options.priority ?? 0,
+    return this.executeReliable(
+      "models.install",
 
-      requireMemorySafety: options.requireMemorySafety ?? false,
+      options.signal,
 
-      signal: options.signal,
+      options.reliability,
 
-      overwrite: options.overwrite,
+      {
+        modelId,
 
-      onProgress: options.onProgress,
-    });
+        operation: "install",
 
-    this.cacheInstalledModel(installation);
+        modality: model.modality,
 
-    let benchmarkResult: ModelBenchmarkResult | undefined;
+        runtime: model.runtime,
+      },
 
-    if (options.benchmarkAfterInstall) {
-      benchmarkResult = await this.benchmarkModel(modelId, options.benchmark);
-    }
+      async () => {
+        const installation = await manager.installModel(model, {
+          priority: options.priority ?? 0,
 
-    return Object.freeze({
-      download: installation.download,
+          requireMemorySafety: options.requireMemorySafety ?? false,
 
-      benchmark: benchmarkResult,
+          signal: options.signal,
 
-      installation,
-    });
+          overwrite: options.overwrite,
+
+          onProgress: options.onProgress,
+        });
+
+        this.cacheInstalledModel(installation);
+
+        let benchmarkResult: ModelBenchmarkResult | undefined;
+
+        if (options.benchmarkAfterInstall) {
+          benchmarkResult = await this.benchmarkModel(
+            modelId,
+            options.benchmark,
+          );
+        }
+
+        return Object.freeze({
+          download: installation.download,
+
+          benchmark: benchmarkResult,
+
+          installation,
+        });
+      },
+    );
   }
 
   /**
@@ -382,6 +629,7 @@ export class ModelManager {
    */
   public async ensureInstalled(
     modelId: string,
+
     options: ModelInstallOptions = {},
   ): Promise<InstalledModel> {
     const existing = this.getInstalled(modelId);
@@ -400,9 +648,13 @@ export class ModelManager {
 
     return this.createInstalledModel(
       result.installation.model.id,
+
       result.download.filePath,
+
       result.installation.manifest.installedAt,
+
       result.download.bytesDownloaded,
+
       result.download.sha256,
     );
   }
@@ -438,9 +690,13 @@ export class ModelManager {
 
     const installed = this.createInstalledModel(
       stored.modelId,
+
       primaryArtifact.filePath,
+
       stored.manifest.installedAt,
+
       primaryArtifact.sizeBytes,
+
       primaryArtifact.sha256,
     );
 
@@ -474,17 +730,37 @@ export class ModelManager {
 
     const manager = this.requireInstallationManager();
 
-    /*
-     * Never remove files while the runtime
-     * is using the model.
-     */
-    if (this.runtimeManager?.getActiveModel()?.id === modelId) {
-      await this.runtimeManager.unload();
-    }
+    return this.executeReliable(
+      "models.uninstall",
 
-    await manager.getStorage().remove(model);
+      undefined,
 
-    this.installedModels.delete(modelId);
+      undefined,
+
+      {
+        modelId,
+
+        operation: "uninstall",
+
+        modality: model.modality,
+
+        runtime: model.runtime,
+      },
+
+      async () => {
+        /**
+         * Never remove files while the runtime
+         * is using the model.
+         */
+        if (this.runtimeManager?.getActiveModel()?.id === modelId) {
+          await this.runtimeManager.unload();
+        }
+
+        await manager.getStorage().remove(model);
+
+        this.installedModels.delete(modelId);
+      },
+    );
   }
 
   public isInstalled(modelId: string): boolean {
@@ -525,11 +801,32 @@ export class ModelManager {
 
   public async benchmarkModel(
     modelId: string,
+
     options?: ModelBenchmarkOptions,
   ): Promise<ModelBenchmarkResult> {
     const model = this.registry.require(modelId);
 
-    return this.benchmark.benchmark(model, options);
+    return this.executeReliable(
+      "models.benchmark",
+
+      undefined,
+
+      undefined,
+
+      {
+        modelId,
+
+        operation: "benchmark",
+
+        modality: model.modality,
+
+        runtime: model.runtime,
+      },
+
+      async () => {
+        return this.benchmark.benchmark(model, options);
+      },
+    );
   }
 
   public getBenchmark(modelId: string): ModelBenchmarkResult | undefined {
@@ -560,7 +857,27 @@ export class ModelManager {
   public async prepareLoad(modelId: string): Promise<RuntimeLoadResult> {
     const model = this.registry.require(modelId);
 
-    return this.requireRuntimeManager().prepareLoad(model);
+    return this.executeReliable(
+      "models.prepare-load",
+
+      undefined,
+
+      undefined,
+
+      {
+        modelId,
+
+        operation: "prepare-load",
+
+        modality: model.modality,
+
+        runtime: model.runtime,
+      },
+
+      async () => {
+        return this.requireRuntimeManager().prepareLoad(model);
+      },
+    );
   }
 
   /**
@@ -573,13 +890,34 @@ export class ModelManager {
    */
   public async loadModel(
     modelId: string,
+
     options: ModelLoadOptions = {},
   ): Promise<void> {
     const runtime = this.requireRuntimeManager();
 
     const model = this.registry.require(modelId);
 
-    await runtime.load(model, options);
+    await this.executeReliable(
+      "models.load",
+
+      options.signal,
+
+      options.reliability,
+
+      {
+        modelId,
+
+        operation: "load",
+
+        modality: model.modality,
+
+        runtime: model.runtime,
+      },
+
+      async () => {
+        await runtime.load(model, options);
+      },
+    );
   }
 
   /**
@@ -587,12 +925,14 @@ export class ModelManager {
    */
   public async ensureLoaded(
     modelId: string,
+
     options: ModelLoadOptions & {
       readonly install?: Omit<ModelInstallOptions, "signal">;
     } = {},
   ): Promise<void> {
     await this.ensureInstalled(modelId, {
       ...options.install,
+
       signal: options.signal,
     });
 
@@ -603,7 +943,29 @@ export class ModelManager {
    * Unload the currently active heavyweight runtime.
    */
   public async unloadModel(): Promise<void> {
-    await this.requireRuntimeManager().unload();
+    const activeModel = this.runtimeManager?.getActiveModel();
+
+    await this.executeReliable(
+      "models.unload",
+
+      undefined,
+
+      undefined,
+
+      {
+        modelId: activeModel?.id ?? "unknown",
+
+        operation: "unload",
+
+        modality: activeModel?.modality ?? "unknown",
+
+        runtime: activeModel?.runtime ?? "unknown",
+      },
+
+      async () => {
+        await this.requireRuntimeManager().unload();
+      },
+    );
   }
 
   /**
@@ -628,7 +990,27 @@ export class ModelManager {
   }
 
   public async getRuntimeHealth(): Promise<ModelRuntimeHealth> {
-    return this.requireRuntimeManager().health();
+    return this.executeReliable(
+      "models.runtime-health",
+
+      undefined,
+
+      undefined,
+
+      {
+        modelId: this.runtimeManager?.getActiveModel()?.id ?? "none",
+
+        operation: "runtime-health",
+
+        modality: this.runtimeManager?.getActiveModality() ?? "unknown",
+
+        runtime: this.runtimeManager?.getActiveModel()?.runtime ?? "unknown",
+      },
+
+      async () => {
+        return this.requireRuntimeManager().health();
+      },
+    );
   }
 
   public listRuntimes(): readonly string[] {
@@ -642,7 +1024,29 @@ export class ModelManager {
   public async generate(
     options: ModelRuntimeGenerateOptions,
   ): Promise<ModelRuntimeGenerationResult> {
-    return this.requireRuntimeManager().generate(options);
+    const activeModel = this.runtimeManager?.getActiveModel();
+
+    return this.executeReliable(
+      "models.generate",
+
+      options.signal,
+
+      undefined,
+
+      {
+        modelId: activeModel?.id ?? "unknown",
+
+        operation: "generate",
+
+        modality: activeModel?.modality ?? "llm",
+
+        runtime: activeModel?.runtime ?? "unknown",
+      },
+
+      async () => {
+        return this.requireRuntimeManager().generate(options);
+      },
+    );
   }
 
   // ==========================================================================
@@ -652,7 +1056,29 @@ export class ModelManager {
   public async generateVision(
     options: VisionGenerationOptions,
   ): Promise<ModelRuntimeGenerationResult> {
-    return this.requireRuntimeManager().generateVision(options);
+    const activeModel = this.runtimeManager?.getActiveModel();
+
+    return this.executeReliable(
+      "models.generate-vision",
+
+      options.signal,
+
+      undefined,
+
+      {
+        modelId: activeModel?.id ?? "unknown",
+
+        operation: "generate-vision",
+
+        modality: activeModel?.modality ?? "vision",
+
+        runtime: activeModel?.runtime ?? "unknown",
+      },
+
+      async () => {
+        return this.requireRuntimeManager().generateVision(options);
+      },
+    );
   }
 
   // ==========================================================================
@@ -662,13 +1088,57 @@ export class ModelManager {
   public async transcribe(
     options: SpeechRecognitionOptions,
   ): Promise<SpeechRecognitionResult> {
-    return this.requireRuntimeManager().transcribe(options);
+    const activeModel = this.runtimeManager?.getActiveModel();
+
+    return this.executeReliable(
+      "models.transcribe",
+
+      options.signal,
+
+      undefined,
+
+      {
+        modelId: activeModel?.id ?? "unknown",
+
+        operation: "transcribe",
+
+        modality: activeModel?.modality ?? "stt",
+
+        runtime: activeModel?.runtime ?? "unknown",
+      },
+
+      async () => {
+        return this.requireRuntimeManager().transcribe(options);
+      },
+    );
   }
 
   public async startRealtimeTranscription(
     options: RealtimeSpeechRecognitionOptions,
   ): Promise<SpeechRecognitionRealtimeSession> {
-    return this.requireRuntimeManager().startRealtimeTranscription(options);
+    const activeModel = this.runtimeManager?.getActiveModel();
+
+    return this.executeReliable(
+      "models.transcribe-realtime",
+
+      options.signal,
+
+      undefined,
+
+      {
+        modelId: activeModel?.id ?? "unknown",
+
+        operation: "transcribe-realtime",
+
+        modality: activeModel?.modality ?? "stt",
+
+        runtime: activeModel?.runtime ?? "unknown",
+      },
+
+      async () => {
+        return this.requireRuntimeManager().startRealtimeTranscription(options);
+      },
+    );
   }
 
   // ==========================================================================
@@ -678,7 +1148,29 @@ export class ModelManager {
   public async synthesize(
     options: SpeechSynthesisOptions,
   ): Promise<SpeechSynthesisResult> {
-    return this.requireRuntimeManager().synthesize(options);
+    const activeModel = this.runtimeManager?.getActiveModel();
+
+    return this.executeReliable(
+      "models.synthesize",
+
+      options.signal,
+
+      undefined,
+
+      {
+        modelId: activeModel?.id ?? "unknown",
+
+        operation: "synthesize",
+
+        modality: activeModel?.modality ?? "tts",
+
+        runtime: activeModel?.runtime ?? "unknown",
+      },
+
+      async () => {
+        return this.requireRuntimeManager().synthesize(options);
+      },
+    );
   }
 
   // ==========================================================================
@@ -688,7 +1180,29 @@ export class ModelManager {
   public async runInference(
     options: OnnxRuntimeRunOptions,
   ): Promise<OnnxRuntimeRunResult> {
-    return this.requireRuntimeManager().run(options);
+    const activeModel = this.runtimeManager?.getActiveModel();
+
+    return this.executeReliable(
+      "models.inference",
+
+      undefined,
+
+      undefined,
+
+      {
+        modelId: activeModel?.id ?? "unknown",
+
+        operation: "inference",
+
+        modality: activeModel?.modality ?? "embedding",
+
+        runtime: activeModel?.runtime ?? "onnx",
+      },
+
+      async () => {
+        return this.requireRuntimeManager().run(options);
+      },
+    );
   }
 
   // ==========================================================================
@@ -708,9 +1222,13 @@ export class ModelManager {
   private cacheInstalledModel(installation: ModelInstallationResult): void {
     const installed = this.createInstalledModel(
       installation.model.id,
+
       installation.download.filePath,
+
       installation.manifest.installedAt,
+
       installation.download.bytesDownloaded,
+
       installation.download.sha256,
     );
 
@@ -719,9 +1237,13 @@ export class ModelManager {
 
   private createInstalledModel(
     modelId: string,
+
     filePath: string,
+
     installedAt: number,
+
     sizeBytes: number,
+
     sha256: string,
   ): InstalledModel {
     return Object.freeze({
@@ -755,3 +1277,7 @@ export class ModelManager {
     return this.runtimeManager;
   }
 }
+
+// ============================================================================
+// END OF FILE
+// ============================================================================
