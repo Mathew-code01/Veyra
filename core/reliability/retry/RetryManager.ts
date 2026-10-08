@@ -14,6 +14,19 @@
 // - AI routing
 // - provider selection
 // - recovery policy
+//
+// IMPORTANT TYPE DESIGN:
+// RetryExecutionResult is deliberately a discriminated union.
+//
+// When succeeded === true:
+//   value is guaranteed to exist as a property.
+//
+// When succeeded === false:
+//   error is guaranteed to exist as a property.
+//
+// This allows callers to safely narrow the result without using
+// non-null assertions or unsafe casts.
+//
 // ============================================================================
 
 import {
@@ -22,16 +35,64 @@ import {
   type RetryPolicy,
 } from "./RetryPolicy";
 
-export interface RetryExecutionResult<T> {
-  readonly value?: T;
-  readonly error?: unknown;
+// ============================================================================
+// Successful retry execution
+// ============================================================================
+
+export interface RetryExecutionSuccess<T> {
+  readonly succeeded: true;
+
+  /**
+   * Result produced by the successful operation.
+   *
+   * T may itself be void. Therefore the property exists even when
+   * the runtime value is undefined.
+   */
+  readonly value: T;
+
   readonly attempts: number;
+
   readonly retried: boolean;
-  readonly succeeded: boolean;
 }
+
+// ============================================================================
+// Failed retry execution
+// ============================================================================
+
+export interface RetryExecutionFailure {
+  readonly succeeded: false;
+
+  /**
+   * The final error produced by the operation.
+   *
+   * This may be undefined in an extremely unusual case where the
+   * retry loop is never entered, but the normal execution path
+   * always supplies the final operation error.
+   */
+  readonly error: unknown;
+
+  readonly attempts: number;
+
+  readonly retried: boolean;
+}
+
+// ============================================================================
+// Retry execution result
+// ============================================================================
+
+export type RetryExecutionResult<T> =
+  RetryExecutionSuccess<T> | RetryExecutionFailure;
+
+// ============================================================================
+// Retry manager
+// ============================================================================
 
 export class RetryManager {
   private readonly evaluator = new RetryPolicyEvaluator();
+
+  // ========================================================================
+  // Retry decision
+  // ========================================================================
 
   public decide(
     policy: RetryPolicy,
@@ -49,35 +110,55 @@ export class RetryManager {
     return this.decide(policy, attempt, error).retry;
   }
 
+  // ========================================================================
+  // Execute
+  // ========================================================================
+
   public async execute<T>(
     operation: (attempt: number) => Promise<T>,
     policy: RetryPolicy,
     signal?: AbortSignal,
   ): Promise<RetryExecutionResult<T>> {
     let attempt = 0;
+
     let retried = false;
+
     let lastError: unknown;
 
     while (attempt < Math.max(1, policy.maxAttempts)) {
+      // --------------------------------------------------------------------
+      // Cancellation before starting the next attempt
+      // --------------------------------------------------------------------
+
       if (signal?.aborted) {
         return Object.freeze({
+          succeeded: false as const,
+
           error: new DOMException("Operation aborted.", "AbortError"),
+
           attempts: attempt,
+
           retried,
-          succeeded: false,
         });
       }
 
       attempt += 1;
 
+      // --------------------------------------------------------------------
+      // Execute operation
+      // --------------------------------------------------------------------
+
       try {
         const value = await operation(attempt);
 
         return Object.freeze({
+          succeeded: true as const,
+
           value,
+
           attempts: attempt,
+
           retried,
-          succeeded: true,
         });
       } catch (error) {
         lastError = error;
@@ -94,13 +175,24 @@ export class RetryManager {
       }
     }
 
+    // ----------------------------------------------------------------------
+    // Final failure
+    // ----------------------------------------------------------------------
+
     return Object.freeze({
+      succeeded: false as const,
+
       error: lastError,
+
       attempts: attempt,
+
       retried,
-      succeeded: false,
     });
   }
+
+  // ========================================================================
+  // Delay
+  // ========================================================================
 
   private async delay(delayMs: number, signal?: AbortSignal): Promise<void> {
     if (delayMs <= 0) {
@@ -112,6 +204,7 @@ export class RetryManager {
 
       const onAbort = (): void => {
         clearTimeout(timer);
+
         reject(new DOMException("Operation aborted.", "AbortError"));
       };
 
