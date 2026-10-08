@@ -1,3 +1,4 @@
+
 // ============================================================================
 // FILE: core/reliability/ReliabilityManager.ts
 //
@@ -26,6 +27,27 @@
 //
 // Those concerns remain in their respective core subsystems.
 //
+// IMPORTANT RESULT SEMANTICS:
+//
+// A successful recovery action does NOT automatically mean the original
+// operation succeeded.
+//
+// Example:
+//
+//   operation fails
+//        ↓
+//   recovery refreshes health
+//        ↓
+//   recovery succeeds
+//
+// The reliability result is:
+//
+//   succeeded: false
+//   recovered: true
+//
+// The caller can then decide whether the original operation should be
+// explicitly executed again according to its domain policy.
+//
 // ============================================================================
 
 import {
@@ -48,7 +70,7 @@ import {
   type RecoveryResult,
 } from "./recovery/RecoveryManager";
 
-import { RetryManager, type RetryExecutionResult } from "./retry/RetryManager";
+import { RetryManager } from "./retry/RetryManager";
 
 import {
   DEFAULT_RETRY_POLICY,
@@ -72,10 +94,13 @@ import type {
 
 import { OPERATION_STATES } from "./execution/OperationState";
 
-import type { ReliabilityExecutionResult } from "./contracts/ReliabilityContract";
+import type {
+  ReliabilityExecutionResult,
+  ReliabilityExecutionSuccess,
+} from "./contracts/ReliabilityContract";
 
 // ============================================================================
-// Reliable execution options
+// RELIABLE EXECUTION OPTIONS
 // ============================================================================
 
 export interface ReliableExecutionOptions extends OperationExecutionOptions {
@@ -92,7 +117,7 @@ export interface ReliableExecutionOptions extends OperationExecutionOptions {
 }
 
 // ============================================================================
-// Reliability manager
+// RELIABILITY MANAGER
 // ============================================================================
 
 export class ReliabilityManager {
@@ -109,7 +134,7 @@ export class ReliabilityManager {
   private readonly operationManager = new OperationManager();
 
   // ========================================================================
-  // Execute
+  // EXECUTE
   // ========================================================================
 
   public async execute<T>(
@@ -142,8 +167,6 @@ export class ReliabilityManager {
 
     let finalOperation =
       this.operationManager.get(operation.operationId) ?? operation;
-
-    let recovered = false;
 
     // ----------------------------------------------------------------------
     // Retry + timeout execution
@@ -196,17 +219,19 @@ export class ReliabilityManager {
       finalOperation =
         this.operationManager.get(operation.operationId) ?? finalOperation;
 
-      return Object.freeze({
+      const result: ReliabilityExecutionSuccess<T> = Object.freeze({
         operation: finalOperation,
 
         value: retryResult.value,
 
-        succeeded: true as const,
+        succeeded: true,
 
         recovered: false,
 
         retried: retryResult.retried,
       });
+
+      return result;
     }
 
     // ======================================================================
@@ -277,8 +302,10 @@ export class ReliabilityManager {
     }
 
     // ======================================================================
-    // Recovery
+    // RECOVERY
     // ======================================================================
+
+    let recovered = false;
 
     if (options.recover !== false) {
       this.operationManager.transition(
@@ -310,7 +337,18 @@ export class ReliabilityManager {
       recovered = recovery.recovered;
 
       // --------------------------------------------------------------------
-      // Recovery succeeded
+      // Recovery action succeeded.
+      //
+      // IMPORTANT:
+      // Recovery does not produce the original operation's T value.
+      // Therefore the execution remains unsuccessful.
+      //
+      // The result tells the caller:
+      //
+      //   succeeded: false
+      //   recovered: true
+      //
+      // The caller may decide to execute the operation again.
       // --------------------------------------------------------------------
 
       if (recovered) {
@@ -328,7 +366,9 @@ export class ReliabilityManager {
         return Object.freeze({
           operation: finalOperation,
 
-          succeeded: true as const,
+          error,
+
+          succeeded: false as const,
 
           recovered: true,
 
@@ -338,7 +378,7 @@ export class ReliabilityManager {
     }
 
     // ======================================================================
-    // Final failure
+    // FINAL FAILURE
     // ======================================================================
 
     this.operationManager.transition(
@@ -368,7 +408,7 @@ export class ReliabilityManager {
   }
 
   // ========================================================================
-  // Failure classification
+  // FAILURE CLASSIFICATION
   // ========================================================================
 
   public classifyFailure(
@@ -392,7 +432,7 @@ export class ReliabilityManager {
   }
 
   // ========================================================================
-  // Health
+  // HEALTH
   // ========================================================================
 
   public async checkHealth(request: HealthCheckRequest): Promise<HealthStatus> {
@@ -404,7 +444,7 @@ export class ReliabilityManager {
   }
 
   // ========================================================================
-  // Recovery
+  // RECOVERY
   // ========================================================================
 
   public getRecoveryManager(): RecoveryManager {
@@ -412,7 +452,7 @@ export class ReliabilityManager {
   }
 
   // ========================================================================
-  // Retry
+  // RETRY
   // ========================================================================
 
   public getRetryManager(): RetryManager {
@@ -420,7 +460,7 @@ export class ReliabilityManager {
   }
 
   // ========================================================================
-  // Timeout
+  // TIMEOUT
   // ========================================================================
 
   public getTimeoutManager(): TimeoutManager {
@@ -428,7 +468,7 @@ export class ReliabilityManager {
   }
 
   // ========================================================================
-  // Operation lifecycle
+  // OPERATION LIFECYCLE
   // ========================================================================
 
   public getOperationManager(): OperationManager {
@@ -436,7 +476,7 @@ export class ReliabilityManager {
   }
 
   // ========================================================================
-  // Retry decision
+  // RETRY DECISION
   // ========================================================================
 
   public decideRetry(
@@ -450,7 +490,7 @@ export class ReliabilityManager {
   }
 
   // ========================================================================
-  // Direct recovery
+  // DIRECT RECOVERY
   // ========================================================================
 
   public async recover(context: RecoveryContext): Promise<RecoveryResult> {
@@ -458,7 +498,7 @@ export class ReliabilityManager {
   }
 
   // ========================================================================
-  // Cancellation
+  // CANCELLATION
   // ========================================================================
 
   private isCancellation(error: unknown): boolean {
@@ -466,10 +506,13 @@ export class ReliabilityManager {
       return error.code === "reliability.cancellation";
     }
 
-    if (error instanceof DOMException) {
+    if (
+      typeof DOMException !== "undefined" &&
+      error instanceof DOMException
+    ) {
       return error.name === "AbortError";
     }
 
-    return false;
+    return error instanceof Error && error.name === "AbortError";
   }
 }

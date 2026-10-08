@@ -33,7 +33,7 @@
 //     "Which provider should run it?"
 //     "Which model should run it?"
 //
-// Those belong elsewhere.
+// Those responsibilities belong elsewhere.
 //
 // IMPORTANT:
 //
@@ -77,12 +77,9 @@
 
 import type { AIRequest, AIRequestMode } from "../../../shared/types/ai";
 
-import type {
-  InterviewAnalysis,
-  InterviewType,
-} from "../../../shared/types/interviews";
+import type { InterviewAnalysis } from "../../../shared/types/interviews";
 
-import type { PromptBuilder } from "../contracts/PromptBuilder";
+import type { InterviewType } from "../../../shared/constants/interviewTypes";
 
 import type {
   PromptBuildInput,
@@ -127,18 +124,21 @@ export interface PromptServiceOptions {
 
   /**
    * Optional custom interview builder.
-   *
-   * When omitted, PromptService creates an InterviewPromptBuilder using
-   * the same registry and normalizer owned by this service.
    */
   readonly interviewBuilder?: InterviewPromptBuilder;
 
+  /**
+   * System prompt builder.
+   */
   readonly systemBuilder?: SystemPromptBuilder;
 
+  /**
+   * Vision prompt builder.
+   */
   readonly visionBuilder?: VisionPromptBuilder;
 
   /**
-   * Whether the default templates should be registered automatically.
+   * Whether default templates should be registered automatically.
    *
    * Defaults to true.
    */
@@ -160,6 +160,10 @@ export class PromptService {
 
   private readonly visionBuilder: VisionPromptBuilder;
 
+  // ========================================================================
+  // CONSTRUCTOR
+  // ========================================================================
+
   public constructor(options: PromptServiceOptions = {}) {
     this.registry = options.registry ?? new PromptRegistry();
 
@@ -169,6 +173,7 @@ export class PromptService {
       options.interviewBuilder ??
       new InterviewPromptBuilder({
         registry: this.registry,
+
         normalizer: this.normalizer,
       });
 
@@ -182,7 +187,7 @@ export class PromptService {
   }
 
   // ========================================================================
-  // PUBLIC TEMPLATE REGISTRATION
+  // TEMPLATE REGISTRATION
   // ========================================================================
 
   public registerTemplate(
@@ -202,7 +207,11 @@ export class PromptService {
   // ========================================================================
 
   /**
-   * Build the prompt for an already-analyzed interview task.
+   * Build the prompt instructions for an already-analyzed interview.
+   *
+   * This returns PromptInstructionSet.
+   *
+   * It does NOT create an AI provider call.
    */
   public buildInterviewPrompt(input: PromptBuildInput): PromptInstructionSet {
     this.validateInput(input);
@@ -215,7 +224,9 @@ export class PromptService {
 
     this.throwIfAborted(input.signal);
 
-    return this.normalizer.normalize(this.interviewBuilder.build(input));
+    const prompt = this.interviewBuilder.build(input);
+
+    return this.normalizer.normalize(prompt);
   }
 
   // ========================================================================
@@ -247,13 +258,21 @@ export class PromptService {
   // ========================================================================
 
   /**
-   * Builds the complete interview prompt by combining:
+   * Build the complete interview PromptInstructionSet.
    *
-   *     universal system instructions
-   *             +
-   *     interview task instructions
+   * Composition:
    *
-   * This is the normal prompt-construction path for interview generation.
+   *     system instructions
+   *            +
+   *     interview instructions
+   *            +
+   *     candidate grounding
+   *            +
+   *     context grounding
+   *            +
+   *     safety instructions
+   *            ↓
+   *     PromptInstructionSet
    */
   public buildInterview(input: PromptBuildInput): PromptInstructionSet {
     this.validateInput(input);
@@ -266,7 +285,11 @@ export class PromptService {
 
     const system = this.buildSystemPrompt(input);
 
+    this.throwIfAborted(input.signal);
+
     const interview = this.buildInterviewPrompt(input);
+
+    this.throwIfAborted(input.signal);
 
     const sections = [...system.sections, ...interview.sections];
 
@@ -292,17 +315,27 @@ export class PromptService {
   }
 
   // ========================================================================
-  // CONVERT TO AI REQUEST
+  // PROMPT → AI REQUEST
   // ========================================================================
 
   /**
-   * Convert prompt instructions into the canonical shared AIRequest.
+   * Convert PromptInstructionSet into the canonical shared AIRequest.
    *
    * IMPORTANT:
    *
-   * This does not execute anything.
+   * This is the boundary between:
    *
-   * core/ai receives the resulting request and decides how to execute it.
+   *     core/prompts
+   *
+   * and:
+   *
+   *     core/ai
+   *
+   * PromptService creates the request.
+   *
+   * core/ai executes it.
+   *
+   * PromptService does NOT call AIManager.
    */
   public toAIRequest(
     prompt: PromptInstructionSet,
@@ -317,7 +350,36 @@ export class PromptService {
       throw new Error("A requestId is required to construct AIRequest.");
     }
 
+    this.throwIfAborted(options.signal);
+
     const generation = prompt.generation;
+
+    const requestOptions =
+      generation || prompt.metadata
+        ? Object.freeze({
+            ...(generation
+              ? {
+                  temperature: generation.temperature,
+
+                  maxTokens: generation.maxTokens,
+
+                  topP: generation.topP,
+
+                  topK: generation.topK,
+
+                  
+
+                  responseFormat: generation.responseFormat,
+                }
+              : {}),
+
+            ...(prompt.metadata
+              ? {
+                  metadata: prompt.metadata,
+                }
+              : {}),
+          })
+        : undefined;
 
     const request: AIRequest = {
       requestId: options.requestId,
@@ -328,27 +390,9 @@ export class PromptService {
 
       mode: prompt.mode,
 
-      messages: prompt.messages,
+      messages: Object.freeze([...prompt.messages]),
 
-      options: generation
-        ? Object.freeze({
-            temperature: generation.temperature,
-
-            maxTokens: generation.maxTokens,
-
-            topP: generation.topP,
-
-            topK: generation.topK,
-
-            responseFormat: generation.responseFormat,
-
-            metadata: prompt.metadata,
-          })
-        : prompt.metadata
-          ? Object.freeze({
-              metadata: prompt.metadata,
-            })
-          : undefined,
+      options: requestOptions,
 
       signal: options.signal,
 
@@ -357,7 +401,7 @@ export class PromptService {
       stream: options.stream,
 
       metadata: Object.freeze({
-        ...prompt.metadata,
+        ...this.toStringMetadata(prompt.metadata),
 
         promptFamily: prompt.family,
 
@@ -372,6 +416,12 @@ export class PromptService {
               candidateId: prompt.candidateId,
             }
           : {}),
+
+        ...(prompt.contextIds && prompt.contextIds.length > 0
+          ? {
+              contextIds: prompt.contextIds.join(","),
+            }
+          : {}),
       }),
     };
 
@@ -383,34 +433,56 @@ export class PromptService {
   // ========================================================================
 
   /**
-   * Convenience method used by higher-level orchestration.
+   * Convenience operation.
    *
    * Produces:
    *
-   * - PromptInstructionSet
-   * - canonical AIRequest
+   *     PromptInstructionSet
+   *             +
+   *          AIRequest
    *
-   * It still does NOT call AIManager.
+   * It still does NOT execute AI.
    */
   public buildInterviewRequest(
     input: PromptBuildInput,
 
     options: PromptAIRequestOptions,
   ): PromptBuildResult {
+    this.throwIfAborted(input?.signal);
+
     const prompt = this.buildInterview(input);
+
+    this.throwIfAborted(options?.signal);
 
     const request = this.toAIRequest(prompt, options);
 
     return Object.freeze({
       prompt,
+
       request,
     });
   }
 
   // ========================================================================
-  // TYPE HELPERS
+  // INTERVIEW TYPE → AI MODE
   // ========================================================================
 
+  /**
+   * Map domain InterviewType values to shared AIRequest modes.
+   *
+   * IMPORTANT:
+   *
+   * Interview uses:
+   *
+   *     system_design
+   *
+   * Shared AI uses:
+   *
+   *     system-design
+   *
+   * The mapping belongs here rather than duplicating or changing either
+   * domain's canonical type.
+   */
   public getInterviewMode(type: InterviewType): AIRequestMode {
     switch (type) {
       case "system_design":
@@ -466,6 +538,32 @@ export class PromptService {
   }
 
   // ========================================================================
+  // METADATA
+  // ========================================================================
+
+  /**
+   * Prompt metadata may contain values suitable for AIRequestOptions.
+   *
+   * The outer AIRequest metadata contract is intentionally string-only because
+   * it is the transport-safe metadata representation.
+   */
+  private toStringMetadata(
+    metadata: Readonly<Record<string, string | number | boolean>> | undefined,
+  ): Readonly<Record<string, string>> {
+    if (!metadata) {
+      return Object.freeze({});
+    }
+
+    const result: Record<string, string> = {};
+
+    for (const [key, value] of Object.entries(metadata)) {
+      result[key] = String(value);
+    }
+
+    return Object.freeze(result);
+  }
+
+  // ========================================================================
   // CANCELLATION
   // ========================================================================
 
@@ -478,7 +576,7 @@ export class PromptService {
   }
 
   // ========================================================================
-  // DEFAULT REGISTRATION
+  // DEFAULT TEMPLATES
   // ========================================================================
 
   private registerDefaultTemplates(): void {

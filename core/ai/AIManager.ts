@@ -1,42 +1,55 @@
+
 // ============================================================================
 // FILE: core/ai/AIManager.ts
+//
 // PURPOSE:
 // Central registry and execution entry point for all Veyra AI providers.
 //
 // ARCHITECTURE:
 //
-// AIManager
-//    |
-//    +--> LocalModelProvider
-//    |       |
-//    |       +--> ModelManager
-//    |
-//    +--> CloudAIProvider
-//            |
-//            +--> CloudGateway
-//                    |
-//                    +--> CloudProviderRegistry
-//                            |
-//                            +--> Gemini
-//                            +--> Groq
-//                            +--> Mistral
-//                            +--> Cerebras
-//                            +--> ...
+//                         AIRequest
+//                             │
+//                             ▼
+//                          AIRouter
+//                             │
+//                   explicit provider/model
+//                             │
+//                             ▼
+//                         AIManager
+//                             │
+//                    ReliabilityManager
+//                             │
+//              ┌──────────────┴──────────────┐
+//              ▼                             ▼
+//      LocalModelProvider             CloudAIProvider
+//              │                             │
+//              ▼                             ▼
+//       ModelManager / Runtime       CloudGateway
+//                                            │
+//                                            ▼
+//                                  CloudProviderRegistry
 //
 // IMPORTANT:
 //
-// AIManager owns provider registration and access.
+// AIManager owns:
+// - provider registration
+// - provider lookup
+// - provider execution access
+// - reliability boundary for AI execution
 //
 // AIManager does NOT:
+// - build prompts
+// - retrieve context
+// - classify interview questions
 // - select interview context
-// - build interview prompts
 // - rank cloud providers
-// - implement retry logic
-// - implement circuit breaking
-// - implement cloud transport
+// - implement provider transport
 // - implement local model runtimes
+// - contain provider-specific retry rules
 //
-// Those responsibilities remain in their respective layers.
+// Routing belongs to AIRouter.
+// Reliability belongs to core/reliability.
+// Provider execution belongs to AIProvider implementations.
 // ============================================================================
 
 import type { AIProvider } from "./AIProvider";
@@ -63,6 +76,13 @@ import { CloudGateway } from "../cloud/CloudGateway";
 
 import type { CloudProviderRegistry } from "../cloud/CloudProviderRegistry";
 
+import {
+  ReliabilityManager,
+  type ReliableExecutionOptions,
+} from "../reliability/ReliabilityManager";
+
+import type { OperationContext } from "../reliability/execution/OperationContext";
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -79,6 +99,88 @@ export interface AIManagerRegisterOptions {
 export interface AIManagerCloudProviderOptions
   extends CloudAIProviderOptions, AIManagerRegisterOptions {}
 
+/**
+ * Reliability configuration supplied to AIManager.
+ *
+ * ReliabilityManager remains the owner of:
+ * - retry
+ * - timeout
+ * - recovery
+ * - failure classification
+ * - operation lifecycle
+ *
+ * AIManager only supplies AI-specific execution metadata.
+ */
+export interface AIManagerReliabilityOptions {
+  /**
+   * Shared reliability manager.
+   *
+   * If omitted, AIManager creates its own instance.
+   */
+  readonly manager?: ReliabilityManager;
+
+  /**
+   * Default timeout for AI generation.
+   *
+   * A request-level timeout still takes precedence.
+   */
+  readonly timeoutMs?: number;
+
+  /**
+   * Whether failed executions should enter recovery.
+   *
+   * Defaults to true.
+   */
+  readonly recover?: boolean;
+
+  /**
+   * Optional base reliability configuration.
+   *
+   * IMPORTANT:
+   *
+   * componentId is intentionally excluded here because AIManager owns
+   * the component identity for AI operations.
+   *
+   * operationId is also excluded because ReliabilityManager creates the
+   * operation unless an upper-level operation explicitly owns it.
+   */
+  readonly execution?: Omit<
+    ReliableExecutionOptions,
+    "operationId" | "componentId" | "timeoutMs"
+  >;
+}
+
+/**
+ * Options controlling a single AI generation call.
+ */
+export interface AIGenerationOptions {
+  /**
+   * Disable reliability wrapping for this execution.
+   *
+   * This should normally remain false.
+   *
+   * It exists for exceptional internal cases where another reliability
+   * boundary already owns the operation.
+   */
+  readonly bypassReliability?: boolean;
+
+  /**
+   * Optional reliability configuration for this execution.
+   *
+   * AIManager owns componentId, so callers cannot accidentally provide an
+   * undefined componentId.
+   */
+  readonly reliability?: Omit<
+    ReliableExecutionOptions,
+    "operationId" | "componentId" | "timeoutMs"
+  >;
+
+  /**
+   * Override the timeout for this execution.
+   */
+  readonly timeoutMs?: number;
+}
+
 // ============================================================================
 // AI MANAGER
 // ============================================================================
@@ -88,6 +190,31 @@ export class AIManager {
    * All providers are stored behind the common AIProvider abstraction.
    */
   private readonly providers = new Map<string, AIProvider>();
+
+  /**
+   * Central reliability boundary for AI execution.
+   *
+   * AIManager owns the dependency.
+   *
+   * ReliabilityManager does NOT import AIManager.
+   */
+  private readonly reliabilityManager: ReliabilityManager;
+
+  /**
+   * Default reliability configuration for AI operations.
+   */
+  private readonly reliabilityOptions: AIManagerReliabilityOptions;
+
+  // ==========================================================================
+
+  public constructor(reliabilityOptions: AIManagerReliabilityOptions = {}) {
+    this.reliabilityOptions = Object.freeze({
+      ...reliabilityOptions,
+    });
+
+    this.reliabilityManager =
+      reliabilityOptions.manager ?? new ReliabilityManager();
+  }
 
   // ==========================================================================
   // PROVIDER REGISTRATION
@@ -262,6 +389,20 @@ export class AIManager {
   }
 
   // ==========================================================================
+  // RELIABILITY
+  // ==========================================================================
+
+  /**
+   * Return the reliability manager used by AI execution.
+   *
+   * The returned instance is shared by all AI operations handled by this
+   * manager.
+   */
+  public getReliabilityManager(): ReliabilityManager {
+    return this.reliabilityManager;
+  }
+
+  // ==========================================================================
   // LOCAL MODEL CONNECTION
   // ==========================================================================
 
@@ -410,10 +551,21 @@ export class AIManager {
    * Execute a non-streaming request through an explicitly selected provider.
    *
    * Routing belongs to AIRouter.
+   *
+   * Reliability belongs to ReliabilityManager.
+   *
+   * Therefore the actual execution path is:
+   *
+   *   AIManager
+   *       ↓
+   *   ReliabilityManager
+   *       ↓
+   *   AIProvider.generate()
    */
   public async generate(
     providerName: string,
     request: AIRequest,
+    options: AIGenerationOptions = {},
   ): Promise<AIResponse> {
     if (!request) {
       throw new AIError("AI request is required.", "INVALID_REQUEST", {
@@ -421,7 +573,86 @@ export class AIManager {
       });
     }
 
-    return this.get(providerName).generate(request);
+    const provider = this.get(providerName);
+
+    /**
+     * Allow an already-managed upper-level operation to bypass this boundary.
+     *
+     * This prevents accidental double retry/timeout layers.
+     */
+    if (options.bypassReliability === true) {
+      return provider.generate(request);
+    }
+
+    const timeoutMs =
+      options.timeoutMs ??
+      request.timeoutMs ??
+      this.reliabilityOptions.timeoutMs;
+
+    /**
+     * Build the reliability execution options.
+     *
+     * componentId is always supplied by AIManager because the actual
+     * OperationExecutionOptions contract requires it.
+     *
+     * There is intentionally no operationName because that field does not
+     * exist in OperationExecutionOptions.
+     */
+    const reliabilityExecutionOptions: ReliableExecutionOptions = {
+      ...(this.reliabilityOptions.execution ?? {}),
+      ...(options.reliability ?? {}),
+
+      componentId: `ai.provider:${provider.name}`,
+
+      timeoutMs,
+
+      recover:
+        options.reliability?.recover ?? this.reliabilityOptions.recover ?? true,
+
+      metadata: {
+        ...(this.reliabilityOptions.execution?.metadata ?? {}),
+        ...(options.reliability?.metadata ?? {}),
+
+        provider: provider.name,
+
+        operation: "ai.generate",
+
+        requestId: request.requestId,
+      },
+
+      signal:
+        request.signal ??
+        options.reliability?.signal ??
+        this.reliabilityOptions.execution?.signal,
+    };
+
+    const result = await this.reliabilityManager.execute(
+      reliabilityExecutionOptions,
+
+      async (operationContext: OperationContext) => {
+        /**
+         * The operation context belongs to reliability.
+         *
+         * It is deliberately NOT injected into AIRequest.
+         *
+         * AIRequest remains the canonical shared application contract.
+         */
+        void operationContext;
+
+        return provider.generate(request);
+      },
+    );
+
+    if (result.succeeded && result.value !== undefined) {
+      return result.value;
+    }
+
+    throw this.toAIError(
+      result.error,
+      provider.name,
+      request,
+      result.operation,
+    );
   }
 
   // ==========================================================================
@@ -431,7 +662,23 @@ export class AIManager {
   /**
    * Stream a request through an explicitly selected provider.
    *
-   * Routing belongs to AIRouter.
+   * IMPORTANT:
+   *
+   * Streaming is deliberately not wrapped in RetryManager here.
+   *
+   * Once a caller has received non-empty output, retrying the stream could
+   * duplicate content and produce an invalid conversation.
+   *
+   * Stream reliability should therefore be handled as:
+   *
+   * - connection timeout
+   * - cancellation
+   * - provider health
+   * - circuit state
+   * - pre-stream failure handling
+   *
+   * A dedicated streaming reliability adapter can be introduced later without
+   * changing AIProvider.
    */
   public stream(
     providerName: string,
@@ -455,6 +702,9 @@ export class AIManager {
    *
    * A failed health check for one provider does not prevent the remaining
    * providers from being checked.
+   *
+   * Health checks are intentionally not passed through normal retry execution.
+   * The provider itself owns its health probe semantics.
    */
   public async healthCheck(): Promise<
     Awaited<ReturnType<AIProvider["healthCheck"]>>[]
@@ -485,5 +735,66 @@ export class AIManager {
         }
       }),
     );
+  }
+
+  // ==========================================================================
+  // ERROR NORMALIZATION
+  // ==========================================================================
+
+  /**
+   * Convert a reliability failure back into the AI error boundary.
+   *
+   * Reliability remains generic.
+   *
+   * AIManager is responsible for presenting the final failure in the AI
+   * domain's error vocabulary.
+   */
+
+  /**
+   * Convert a reliability failure back into the AI error boundary.
+   *
+   * Reliability remains generic.
+   *
+   * AIManager is responsible for presenting the final failure in the AI
+   * domain's error vocabulary.
+   */
+  private toAIError(
+    error: unknown,
+    providerName: string,
+    request: AIRequest,
+    operation: OperationContext,
+  ): AIError {
+    if (error instanceof AIError) {
+      return error;
+    }
+
+    const message =
+      error instanceof Error ? error.message : "AI provider execution failed.";
+
+    /**
+     * "UNAVAILABLE" is part of the existing AI error vocabulary.
+     *
+     * Do not use "EXECUTION" because it is not part of the canonical
+     * ErrorCode union.
+     *
+     * AIErrorDetails intentionally exposes only common AI error metadata
+     * at the top level. Reliability-specific diagnostic information such
+     * as operationId, componentId, and operationState belongs inside the
+     * generic details record.
+     */
+    return new AIError(message, "UNAVAILABLE", {
+      retryable: false,
+
+      details: {
+        provider: providerName,
+
+        details: {
+          requestId: request.requestId,
+          operationId: operation.operationId,
+          componentId: operation.componentId,
+          operationState: operation.state,
+        },
+      },
+    });
   }
 }
