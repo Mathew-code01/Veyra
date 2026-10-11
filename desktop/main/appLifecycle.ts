@@ -2,6 +2,16 @@
 
 import { app } from "electron";
 
+import { AIManager } from "../../core/ai/AIManager";
+
+import { createDefaultCloudProviderRegistry } from "../../core/cloud/registry/defaultCloudProviders";
+
+import { InterviewIntelligence } from "../../core/interview/services/InterviewIntelligence";
+
+import { PromptService } from "../../core/prompts/services/PromptService";
+
+import { ReliabilityManager } from "../../core/reliability";
+
 import { ModelSystem } from "./ModelSystem";
 
 import { HardwareService } from "../services/ai/HardwareService";
@@ -13,6 +23,10 @@ let initialized = false;
 let modelSystem: ModelSystem | null = null;
 
 let hardwareService: HardwareService | null = null;
+
+let aiManager: AIManager | null = null;
+
+let interviewIntelligence: InterviewIntelligence | null = null;
 
 let cleanupHardwareIpc: (() => void) | null = null;
 
@@ -58,6 +72,22 @@ export function getHardwareService(): HardwareService {
   return hardwareService;
 }
 
+export function getAIManager(): AIManager {
+  if (!aiManager) {
+    throw new Error("Veyra AIManager has not been initialized.");
+  }
+
+  return aiManager;
+}
+
+export function getInterviewIntelligence(): InterviewIntelligence {
+  if (!interviewIntelligence) {
+    throw new Error("Veyra InterviewIntelligence has not been initialized.");
+  }
+
+  return interviewIntelligence;
+}
+
 function configureApplication(): void {
   app.setName("Veyra");
 
@@ -92,7 +122,51 @@ async function initializeApplicationServices(): Promise<void> {
 
   /*
    * --------------------------------------------------------------------------
-   * 3. Create HardwareService using the SAME ModelManager.
+   * 3. Create a shared reliability manager for AI and interview operations.
+   * --------------------------------------------------------------------------
+   */
+  const reliabilityManager = new ReliabilityManager();
+
+  /*
+   * --------------------------------------------------------------------------
+   * 4. Create the AI runtime composition root.
+   * --------------------------------------------------------------------------
+   */
+  const runtimeAIManager = new AIManager({
+    manager: reliabilityManager,
+    timeoutMs: 30_000,
+    recover: true,
+  });
+
+  runtimeAIManager.registerLocalModelProvider(system.getModelManager(), {
+    name: "local",
+    autoInstall: false,
+  });
+
+  const cloudRegistry = createDefaultCloudProviderRegistry({
+    allowUnconfigured: false,
+  });
+
+  for (const provider of cloudRegistry.list()) {
+    runtimeAIManager.registerCloudAIProviderFromRegistry(cloudRegistry, {
+      providerId: provider.id,
+      name: provider.name,
+      replaceExisting: true,
+    });
+  }
+
+  aiManager = runtimeAIManager;
+
+  const promptService = new PromptService();
+
+  interviewIntelligence = new InterviewIntelligence({
+    promptService,
+    reliabilityManager,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
+   * 5. Create HardwareService using the SAME ModelManager.
    * --------------------------------------------------------------------------
    */
   const hardware = new HardwareService({
@@ -103,7 +177,7 @@ async function initializeApplicationServices(): Promise<void> {
 
   /*
    * --------------------------------------------------------------------------
-   * 4. Register hardware IPC.
+   * 6. Register hardware IPC.
    * --------------------------------------------------------------------------
    */
   cleanupHardwareIpc = registerHardwareIpc({
@@ -136,5 +210,7 @@ async function shutdownApplicationServices(): Promise<void> {
     }
   }
 
+  aiManager = null;
+  interviewIntelligence = null;
   hardwareService = null;
 }
