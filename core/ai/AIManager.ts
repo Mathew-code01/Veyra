@@ -97,7 +97,8 @@ export interface AIManagerRegisterOptions {
 }
 
 export interface AIManagerCloudProviderOptions
-  extends CloudAIProviderOptions, AIManagerRegisterOptions {}
+  extends CloudAIProviderOptions,
+    AIManagerRegisterOptions {}
 
 /**
  * Reliability configuration supplied to AIManager.
@@ -643,7 +644,27 @@ export class AIManager {
       },
     );
 
-    if (result.succeeded && result.value !== undefined) {
+    // ----------------------------------------------------------------------
+    // TYPE-SAFE RELIABILITY RESULT NARROWING
+    // ----------------------------------------------------------------------
+    //
+    // ReliabilityExecutionResult<T> is a discriminated union:
+    //
+    //   succeeded: true
+    //       -> value: T
+    //
+    //   succeeded: false
+    //       -> error: unknown
+    //
+    // Do NOT check result.value for undefined here.
+    //
+    // T may legitimately be undefined for a valid void operation.
+    //
+    // The "succeeded" discriminant is the authoritative way to narrow the
+    // result.
+    // ----------------------------------------------------------------------
+
+    if (result.succeeded) {
       return result.value;
     }
 
@@ -749,15 +770,6 @@ export class AIManager {
    * AIManager is responsible for presenting the final failure in the AI
    * domain's error vocabulary.
    */
-
-  /**
-   * Convert a reliability failure back into the AI error boundary.
-   *
-   * Reliability remains generic.
-   *
-   * AIManager is responsible for presenting the final failure in the AI
-   * domain's error vocabulary.
-   */
   private toAIError(
     error: unknown,
     providerName: string,
@@ -790,8 +802,11 @@ export class AIManager {
 
         details: {
           requestId: request.requestId,
+
           operationId: operation.operationId,
+
           componentId: operation.componentId,
+
           operationState: operation.state,
         },
       },
