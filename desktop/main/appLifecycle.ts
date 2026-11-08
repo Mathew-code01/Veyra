@@ -58,7 +58,7 @@ import { AIManagerDocumentAnalyzer } from "../../core/documents/analysis/AIManag
 
 import { ContextDocumentIndexer } from "../../core/documents/ContextDocumentIndexer";
 
-import { InMemoryDocumentStore } from "../../core/documents/storage/InMemoryDocumentStore";
+import { SqliteDocumentStore } from "../../core/documents/storage/SqliteDocumentStore";
 
 import { DocumentValidator } from "../../core/documents/validation/DocumentValidator";
 
@@ -86,7 +86,11 @@ import type { DocumentAIAnalyzerOptions } from "../../core/documents/analysis/Do
 
 import type { DocumentStore } from "../../core/documents/storage/DocumentStore";
 
+import { MemoryRepository } from "../../database/repositories/memoryRepository";
+
 import { registerDocumentIpc } from "../ipc/document.ipc";
+
+import { registerMemoryIpc } from "../ipc/memory.ipc";
 
 let initialized = false;
 
@@ -108,6 +112,8 @@ let contextManager: ContextManager | null = null;
 
 let documentService: DocumentService | null = null;
 
+let memoryRepository: MemoryRepository | null = null;
+
 let cleanupHardwareIpc: (() => void) | null = null;
 
 let cleanupAiIpc: (() => void) | null = null;
@@ -115,6 +121,8 @@ let cleanupAiIpc: (() => void) | null = null;
 let cleanupInterviewIpc: (() => void) | null = null;
 
 let cleanupDocumentIpc: (() => void) | null = null;
+
+let cleanupMemoryIpc: (() => void) | null = null;
 
 export async function initializeApplication(): Promise<void> {
   if (initialized) {
@@ -196,6 +204,14 @@ export function getDocumentService(): DocumentService {
   }
 
   return documentService;
+}
+
+export function getMemoryRepository(): MemoryRepository {
+  if (!memoryRepository) {
+    throw new Error("Veyra MemoryRepository has not been initialized.");
+  }
+
+  return memoryRepository;
 }
 
 export function getAnalyticsManager(): AnalyticsManager {
@@ -336,9 +352,10 @@ async function initializeApplicationServices(): Promise<void> {
    * --------------------------------------------------------------------------
    * 4c. Generic context engine.
    *
-   * Uses MockEmbeddingService + InMemoryVectorStore by default (P2 replaces
-   * this with a persistent production embedding/vector store without changing
-   * the ContextManager contract).
+   * Uses OnnxEmbeddingService when VEYRA_EMBEDDING_MODEL_PATH points to a
+   * compatible ONNX embedding model; otherwise degrades to MockEmbeddingService
+   * so indexing still works. Vectors are persisted in SQLite via
+   * SqliteVectorStore (survives restart).
    * --------------------------------------------------------------------------
    */
   const contextEngine = createContextEngine();
@@ -385,7 +402,7 @@ async function initializeApplicationServices(): Promise<void> {
     new MarkdownParser(),
   ]);
 
-  const documentStore: DocumentStore = new InMemoryDocumentStore();
+  const documentStore: DocumentStore = new SqliteDocumentStore();
 
   const evidenceStore = new InMemoryCandidateEvidenceStore();
 
@@ -438,6 +455,21 @@ async function initializeApplicationServices(): Promise<void> {
     documentService,
     ipcMain,
     dialog,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
+   * 5d. Memory repository + IPC.
+   *
+   * MemoryRepository is backed by SQLite (survives restart) and scopes every
+   * record to profile_id for profile isolation.
+   * --------------------------------------------------------------------------
+   */
+  memoryRepository = new MemoryRepository();
+
+  cleanupMemoryIpc = registerMemoryIpc({
+    memoryRepository,
+    ipcMain,
   });
 
   /*
@@ -500,6 +532,12 @@ async function shutdownApplicationServices(): Promise<void> {
     cleanupDocumentIpc = null;
   }
 
+  if (cleanupMemoryIpc) {
+    cleanupMemoryIpc();
+
+    cleanupMemoryIpc = null;
+  }
+
   /*
    * --------------------------------------------------------------------------
    * 2. Dispose the model system.
@@ -523,6 +561,7 @@ async function shutdownApplicationServices(): Promise<void> {
   candidateService = null;
   contextManager = null;
   documentService = null;
+  memoryRepository = null;
   hardwareService = null;
   analyticsManager = null;
 }

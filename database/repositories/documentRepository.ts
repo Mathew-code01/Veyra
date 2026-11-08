@@ -8,7 +8,22 @@ export class DocumentRepository {
 
   create(input: Omit<typeof documents.$inferInsert, "id" | "createdAt" | "updatedAt">) {
     const now = new Date().toISOString();
-    return this.db.insert(documents).values({ ...input, id: randomUUID(), createdAt: now, updatedAt: now }).returning().get();
+
+    return this.db
+      .insert(documents)
+      .values({
+        ...input,
+
+        // Honor a caller-supplied id when present (needed so documents can be
+        // retrieved by their stable domain id); otherwise generate one.
+        id: (input as { readonly id?: string }).id ?? randomUUID(),
+
+        createdAt: now,
+
+        updatedAt: now,
+      })
+      .returning()
+      .get();
   }
 
   getById(id: string) {
@@ -35,5 +50,13 @@ export class DocumentRepository {
 
   deleteForProfile(id: string, profileId: string) {
     return this.db.delete(documents).where(and(eq(documents.id, id), eq(documents.profileId, profileId))).run();
+  }
+
+  listAll() {
+    return this.db.select().from(documents).all();
+  }
+
+  setStatus(id: string, status: string) {
+    return this.db.update(documents).set({ status, updatedAt: new Date().toISOString() }).where(eq(documents.id, id)).run();
   }
 }

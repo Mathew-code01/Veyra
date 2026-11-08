@@ -11,3 +11,4 @@ export * from "./questions";
 export * from "./answers";
 export * from "./captures";
 export * from "./metrics";
+export * from "./memory";

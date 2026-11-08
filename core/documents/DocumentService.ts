@@ -880,6 +880,8 @@ export class DocumentService {
       processedAt,
 
       warnings,
+
+      profileId: request.candidateId,
     };
 
     this.throwIfAborted(signal);

@@ -97,6 +97,16 @@ export const IPC_CHANNELS = Object.freeze({
   DOCUMENT_LIST: "document:list",
 
   // --------------------------------------------------------------------------
+  // MEMORY
+  // --------------------------------------------------------------------------
+
+  MEMORY_SEARCH: "memory:search",
+  MEMORY_LIST: "memory:list",
+  MEMORY_CREATE: "memory:create",
+  MEMORY_UPDATE: "memory:update",
+  MEMORY_DELETE: "memory:delete",
+
+  // --------------------------------------------------------------------------
   // INTERVIEW
   //
   // These are deliberately separate from conversation channels.

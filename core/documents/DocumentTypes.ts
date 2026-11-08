@@ -301,6 +301,14 @@ export interface ProcessedDocument {
   readonly processedAt: string;
 
   readonly warnings: readonly string[];
+
+  /**
+   * Owning candidate/profile ID.
+   *
+   * Used by the SQLite document store for profile isolation. Set by the
+   * caller (DocumentService) from the import request's candidateId.
+   */
+  readonly profileId?: string;
 }
 
 /**

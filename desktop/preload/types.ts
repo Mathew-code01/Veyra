@@ -34,6 +34,14 @@ import type {
 } from "../ipc/document.ipc";
 
 import type {
+  MemorySearchRequest,
+  MemoryListRequest,
+  MemoryCreateRequest,
+  MemoryUpdateRequest,
+  MemoryDeleteRequest,
+} from "../ipc/memory.ipc";
+
+import type {
   InterviewAnalysisResult,
   InterviewTaskResult,
   InterviewExecuteAIResult,
@@ -234,6 +242,75 @@ export interface VeyraDocumentApi {
 }
 
 /**
+ * Memory API exposed to the renderer.
+ *
+ * Every operation is scoped to profileId to enforce profile isolation in
+ * the main process.
+ */
+export interface VeyraMemoryApi {
+  /**
+   * Keyword/filtered search over persistent memory (profile-scoped).
+   */
+  search(
+    request: MemorySearchRequest,
+  ): Promise<{
+    readonly success: boolean;
+
+    readonly data?: readonly unknown[];
+
+    readonly error?: Error;
+  }>;
+
+  /**
+   * List memory records for a profile.
+   */
+  list(
+    request: MemoryListRequest,
+  ): Promise<{
+    readonly success: boolean;
+
+    readonly data?: readonly unknown[];
+
+    readonly error?: Error;
+  }>;
+
+  /**
+   * Create a durable memory record scoped to profileId.
+   */
+  create(
+    request: MemoryCreateRequest,
+  ): Promise<{
+    readonly success: boolean;
+
+    readonly data?: { readonly memoryId: string };
+
+    readonly error?: Error;
+  }>;
+
+  /**
+   * Update a memory record scoped to profileId.
+   */
+  update(
+    request: MemoryUpdateRequest,
+  ): Promise<{
+    readonly success: boolean;
+
+    readonly error?: Error;
+  }>;
+
+  /**
+   * Soft-delete a memory record scoped to profileId.
+   */
+  delete(
+    request: MemoryDeleteRequest,
+  ): Promise<{
+    readonly success: boolean;
+
+    readonly error?: Error;
+  }>;
+}
+
+/**
  * Complete renderer-facing Veyra API.
  */
 export interface VeyraDesktopAPI {
@@ -248,6 +325,8 @@ export interface VeyraDesktopAPI {
   readonly interview: VeyraInterviewApi;
 
   readonly document: VeyraDocumentApi;
+
+  readonly memory: VeyraMemoryApi;
 }
 
 /**
@@ -261,6 +340,7 @@ export interface VeyraDesktopAPI {
  * window.veyra.ai
  * window.veyra.interview
  * window.veyra.document
+ * window.veyra.memory
  */
 declare global {
   interface Window {

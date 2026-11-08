@@ -798,18 +798,26 @@ Tests: 18 new unit tests, all passing; full suite 39/39 passing; `tsc -p tsconfi
 
 ## P1 IMPLEMENTATION STATUS (COMPLETED)
 
-Commit (pending) `feat(desktop): connect document IPC services`:
+Commit (pending) `feat(database): persistent memory + production local retrieval`:
 
-- P1 Document intelligence (`desktop/ipc/document.ipc.ts`): `document:pick`, `:import`, `:read`, `:delete`, `:list` handlers with sender validation, Result-shaped outputs, injected `ipcMain` and `dialog` for testability; registered in `appLifecycle.ts`; exposed as `window.veyra.document`.
-- `core/documents/storage/InMemoryDocumentStore.ts`: `DocumentStore` implementation (save, getById, delete, exists, updateStatus, list).
+- P1 Document intelligence (`desktop/ipc/document.ipc.ts`): `document:pick`, `:import`, `:read`, `:delete`, `:list` handlers; `SqliteDocumentStore` replaces `InMemoryDocumentStore` as the production default (SQLite-backed, survives restart, profile-scoped via `documents.profile_id`). `DocumentService` now sets `profileId` from `request.candidateId` before storage.
+- `core/documents/storage/SqliteDocumentStore.ts`: `DocumentStore` implementation backed by `DocumentRepository`/`documents` table.
 - `core/documents/storage/DocumentStore.ts`: added `list()` to the contract.
-- `core/documents/DocumentService.ts`: added `getDocumentById()`, `deleteDocument()`, `listDocuments()` + `requireDocumentStore()` helper.
-- `desktop/main/appLifecycle.ts`: DocumentService wired with parser registry (Text/HTML/Markdown), InMemoryDocumentStore, ContextDocumentIndexer context sink, AIManagerDocumentAnalyzer AI boundary, CandidateDocumentEvidenceAdapter candidate port; `getDocumentService()` getter added.
+- `core/documents/DocumentService.ts`: added `getDocumentById()`, `deleteDocument()`, `listDocuments()`; sets `profileId` on save.
+- `database/repositories/documentRepository.ts`: added `setStatus()`, `listAll()`; `create()` honors a caller-supplied id.
 - `shared/constants/events.ts`: added `DOCUMENT_IMPORT: "document:import"` channel.
 
-Tests: 13 new document IPC unit tests, all passing; full suite 52/52 passing; `tsc -p tsconfig.desktop.json --noEmit` and `tsc -b` pass.
+- P1 Persistent memory (`database/schema/memory.ts`, `database/migrations/0001_memory.sql`): `memories` table (candidate/conversation/session/preference/knowledge) scoped to `profile_id` with source tracing, confidence, verification status, timestamps, expiration; `context_vectors` table for persistent vector storage.
+- `database/repositories/memoryRepository.ts`: create/get/list/search/update/soft-delete/expire, all profile-isolated; LIKE-based keyword search (offline, no API key).
+- `core/context/embeddings/OnnxEmbeddingService.ts`: real local embedding via onnxruntime-node (mean-pool + L2-normalize); requires a model file (`VEYRA_EMBEDDING_MODEL_PATH`) — PARTIALLY VERIFIED (no model bundled).
+- `core/context/storage/SqliteVectorStore.ts`: persistent SQLite vector store (cosine similarity in JS, metadata/source filtering); no external extension.
+- `core/context/createContextEngine.ts`: OnnxEmbeddingService when a model is configured, else degraded mock fallback; SqliteVectorStore persistent; exposes `semanticAvailable`.
+- `desktop/ipc/memory.ipc.ts`: `MEMORY_SEARCH`/`:list`/`:create`/`:update`/`:delete`, all profile-scoped; exposed as `window.veyra.memory`.
+- `desktop/main/appLifecycle.ts`: `SqliteDocumentStore` + `MemoryRepository` wired; memory IPC registered; `getMemoryRepository()` getter.
 
-**Next implementation task:** P1 persistent memory + production local retrieval (embedding/vector store replacement).
+Tests: 42 new tests (memory-repository, document-store, vector-store, onnx-embedding, memory-ipc), all passing; full suite 93/93 passing; `tsc -b` passes.
+
+**Next implementation task:** P2 local/cloud AI routing + free-usage enforcement (cost-aware router, ZERO_PAID_USAGE default, Nebius provider investigation).
 
 ---
 
@@ -846,4 +854,4 @@ Tests: 13 new document IPC unit tests, all passing; full suite 52/52 passing; `t
 
 **Report location:** `C:\Users\MATTHEW\Desktop\Veyra\VEYRA_BACKEND_AUDIT.md`
 
-**Recommended first implementation task:** P0.2 — Implement desktop IPC for AI generation (`desktop/ipc/ai.ipc.ts`, register in `desktop/main/index.ts`, expose `veyra.ai` in `desktop/preload/api.ts`).
+**Recommended next task:** P2 local/cloud AI routing + free-usage enforcement (cost-aware router, ZERO_PAID_USAGE default, Nebius provider investigation).

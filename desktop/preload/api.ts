@@ -69,6 +69,14 @@ import type {
 } from "../ipc/document.ipc";
 
 import type {
+  MemorySearchRequest,
+  MemoryListRequest,
+  MemoryCreateRequest,
+  MemoryUpdateRequest,
+  MemoryDeleteRequest,
+} from "../ipc/memory.ipc";
+
+import type {
   HardwareModelPlanResponse,
   HardwareSnapshotResponse,
 } from "../../shared/types/hardware";
@@ -261,6 +269,60 @@ const documentApi: VeyraDesktopAPI["document"] = Object.freeze({
 });
 
 /**
+ * Memory API exposed to the renderer.
+ *
+ * Only whitelisted IPC channels are exposed. Results are returned as
+ * explicit Result shapes. Every operation is scoped to profileId to enforce
+ * profile isolation in the main process.
+ */
+const memoryApi: VeyraDesktopAPI["memory"] = Object.freeze({
+  search: async (
+    request: MemorySearchRequest,
+  ): Promise<{ readonly success: boolean; readonly data?: readonly unknown[]; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.MEMORY_SEARCH,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly data?: readonly unknown[]; readonly error?: Error }>;
+  },
+
+  list: async (
+    request: MemoryListRequest,
+  ): Promise<{ readonly success: boolean; readonly data?: readonly unknown[]; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.MEMORY_LIST,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly data?: readonly unknown[]; readonly error?: Error }>;
+  },
+
+  create: async (
+    request: MemoryCreateRequest,
+  ): Promise<{ readonly success: boolean; readonly data?: { readonly memoryId: string }; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.MEMORY_CREATE,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly data?: { readonly memoryId: string }; readonly error?: Error }>;
+  },
+
+  update: async (
+    request: MemoryUpdateRequest,
+  ): Promise<{ readonly success: boolean; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.MEMORY_UPDATE,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly error?: Error }>;
+  },
+
+  delete: async (
+    request: MemoryDeleteRequest,
+  ): Promise<{ readonly success: boolean; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.MEMORY_DELETE,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly error?: Error }>;
+  },
+});
+
+/**
  * Complete renderer-facing API.
  *
  * IMPORTANT:
@@ -313,4 +375,6 @@ export const api: VeyraDesktopAPI = Object.freeze({
   interview: interviewApi,
 
   document: documentApi,
+
+  memory: memoryApi,
 });
