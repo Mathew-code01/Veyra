@@ -1,6 +1,6 @@
 // desktop/main/appLifecycle.ts
 
-import { app, ipcMain } from "electron";
+import { app, ipcMain, dialog } from "electron";
 import { join } from "node:path";
 
 import { AIManager } from "../../core/ai/AIManager";
@@ -52,6 +52,42 @@ import { createContextEngine } from "../../core/context/createContextEngine";
 
 import type { ContextManager } from "../../core/context/ContextManager";
 
+import { DocumentService } from "../../core/documents/DocumentService";
+
+import { AIManagerDocumentAnalyzer } from "../../core/documents/analysis/AIManagerDocumentAnalyzer";
+
+import { ContextDocumentIndexer } from "../../core/documents/ContextDocumentIndexer";
+
+import { InMemoryDocumentStore } from "../../core/documents/storage/InMemoryDocumentStore";
+
+import { DocumentValidator } from "../../core/documents/validation/DocumentValidator";
+
+import { DocumentClassifier } from "../../core/documents/classification/DocumentClassifier";
+
+import { DocumentNormalizer } from "../../core/documents/normalization/DocumentNormalizer";
+
+import { DocumentChunker } from "../../core/documents/chunking/DocumentChunker";
+
+import { DocumentIndexer } from "../../core/documents/indexing/DocumentIndexer";
+
+import { DefaultDocumentParserRegistry } from "../../core/documents/DocumentService";
+
+import { TextParser } from "../../core/documents/parsers/TextParser";
+
+import { HTMLParser } from "../../core/documents/parsers/HTMLParser";
+
+import { MarkdownParser } from "../../core/documents/parsers/MarkdownParser";
+
+import { InMemoryCandidateEvidenceStore } from "../../core/candidate/contracts/CandidateEvidenceStore";
+
+import { CandidateDocumentEvidenceAdapter } from "../../core/candidate/services/CandidateDocumentEvidenceAdapter";
+
+import type { DocumentAIAnalyzerOptions } from "../../core/documents/analysis/DocumentAIAnalyzer";
+
+import type { DocumentStore } from "../../core/documents/storage/DocumentStore";
+
+import { registerDocumentIpc } from "../ipc/document.ipc";
+
 let initialized = false;
 
 let databaseHandle: ReturnType<typeof createDatabase> | null = null;
@@ -70,11 +106,15 @@ let candidateService: CandidateService | null = null;
 
 let contextManager: ContextManager | null = null;
 
+let documentService: DocumentService | null = null;
+
 let cleanupHardwareIpc: (() => void) | null = null;
 
 let cleanupAiIpc: (() => void) | null = null;
 
 let cleanupInterviewIpc: (() => void) | null = null;
+
+let cleanupDocumentIpc: (() => void) | null = null;
 
 export async function initializeApplication(): Promise<void> {
   if (initialized) {
@@ -148,6 +188,14 @@ export function getContextManager(): ContextManager {
   }
 
   return contextManager;
+}
+
+export function getDocumentService(): DocumentService {
+  if (!documentService) {
+    throw new Error("Veyra DocumentService has not been initialized.");
+  }
+
+  return documentService;
 }
 
 export function getAnalyticsManager(): AnalyticsManager {
@@ -317,6 +365,83 @@ async function initializeApplicationServices(): Promise<void> {
 
   /*
    * --------------------------------------------------------------------------
+   * 5b. Document service.
+   *
+   * The deterministic document pipeline is wired with:
+   *
+   *   - In-memory document store (P1 stage; SQLite replaces this later)
+   *   - All registered parsers (PDF, DOCX, TXT, HTML, Markdown)
+   *   - ContextDocumentIndexer as the context sink
+   *   - AIManagerDocumentAnalyzer as the AI analysis boundary
+   *   - CandidateDocumentEvidenceAdapter as the candidate evidence port
+   *
+   * AI analysis is best-effort (required: false) so document ingestion
+   * succeeds even when no suitable AI model is available.
+   * --------------------------------------------------------------------------
+   */
+  const parserRegistry = new DefaultDocumentParserRegistry([
+    new TextParser(),
+    new HTMLParser(),
+    new MarkdownParser(),
+  ]);
+
+  const documentStore: DocumentStore = new InMemoryDocumentStore();
+
+  const evidenceStore = new InMemoryCandidateEvidenceStore();
+
+  const evidenceAdapter = new CandidateDocumentEvidenceAdapter({
+    evidenceStore,
+  });
+
+  const documentAiAnalyzer = new AIManagerDocumentAnalyzer(runtimeAIManager);
+
+  const documentAiOptions: DocumentAIAnalyzerOptions = {
+    providerName: "local",
+
+    model: undefined,
+
+    batchMaxCharacters: 40_000,
+
+    maxTokens: 4_000,
+  };
+
+  const contextIndexer = new ContextDocumentIndexer(contextManager);
+
+  documentService = new DocumentService({
+    parserRegistry,
+
+    documentStore,
+
+    contextSink: contextIndexer,
+
+    aiAnalysis: {
+      analyzer: documentAiAnalyzer,
+
+      options: documentAiOptions,
+
+      required: false,
+    },
+
+    candidateEvidence: {
+      port: evidenceAdapter,
+
+      required: false,
+    },
+  });
+
+  /*
+   * --------------------------------------------------------------------------
+   * 6. Register document IPC.
+   * --------------------------------------------------------------------------
+   */
+  cleanupDocumentIpc = registerDocumentIpc({
+    documentService,
+    ipcMain,
+    dialog,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
    * 5. Create HardwareService using the SAME ModelManager.
    * --------------------------------------------------------------------------
    */
@@ -369,6 +494,12 @@ async function shutdownApplicationServices(): Promise<void> {
     cleanupInterviewIpc = null;
   }
 
+  if (cleanupDocumentIpc) {
+    cleanupDocumentIpc();
+
+    cleanupDocumentIpc = null;
+  }
+
   /*
    * --------------------------------------------------------------------------
    * 2. Dispose the model system.
@@ -391,6 +522,7 @@ async function shutdownApplicationServices(): Promise<void> {
   interviewIntelligence = null;
   candidateService = null;
   contextManager = null;
+  documentService = null;
   hardwareService = null;
   analyticsManager = null;
 }

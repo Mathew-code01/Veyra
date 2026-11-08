@@ -62,6 +62,13 @@ import type {
 import type { InterviewGuidanceRequest } from "../ipc/interview.ipc";
 
 import type {
+  DocumentImportRequest,
+  DocumentReadRequest,
+  DocumentDeleteRequest,
+  DocumentPickRequest,
+} from "../ipc/document.ipc";
+
+import type {
   HardwareModelPlanResponse,
   HardwareSnapshotResponse,
 } from "../../shared/types/hardware";
@@ -204,6 +211,56 @@ const interviewApi: VeyraDesktopAPI["interview"] = Object.freeze({
 });
 
 /**
+ * Document API exposed to the renderer.
+ *
+ * Only whitelisted IPC channels are exposed. Results are returned as
+ * explicit Result shapes.
+ */
+const documentApi: VeyraDesktopAPI["document"] = Object.freeze({
+  pick: async (
+    request?: DocumentPickRequest,
+  ): Promise<{ readonly success: boolean; readonly data?: { readonly filePaths: readonly string[] }; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.DOCUMENT_PICK,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly data?: { readonly filePaths: readonly string[] }; readonly error?: Error }>;
+  },
+
+  import: async (
+    request: DocumentImportRequest,
+  ): Promise<{ readonly success: boolean; readonly data?: unknown; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.DOCUMENT_IMPORT,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly data?: unknown; readonly error?: Error }>;
+  },
+
+  read: async (
+    request: DocumentReadRequest,
+  ): Promise<{ readonly success: boolean; readonly data?: unknown; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.DOCUMENT_READ,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly data?: unknown; readonly error?: Error }>;
+  },
+
+  delete: async (
+    request: DocumentDeleteRequest,
+  ): Promise<{ readonly success: boolean; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.DOCUMENT_DELETE,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly error?: Error }>;
+  },
+
+  list: async (): Promise<{ readonly success: boolean; readonly data?: readonly unknown[]; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.DOCUMENT_LIST,
+    ) as Promise<{ readonly success: boolean; readonly data?: readonly unknown[]; readonly error?: Error }>;
+  },
+});
+
+/**
  * Complete renderer-facing API.
  *
  * IMPORTANT:
@@ -254,4 +311,6 @@ export const api: VeyraDesktopAPI = Object.freeze({
   ai: aiApi,
 
   interview: interviewApi,
+
+  document: documentApi,
 });

@@ -27,6 +27,13 @@ import type {
 import type { InterviewGuidanceRequest } from "../ipc/interview.ipc";
 
 import type {
+  DocumentImportRequest,
+  DocumentReadRequest,
+  DocumentDeleteRequest,
+  DocumentPickRequest,
+} from "../ipc/document.ipc";
+
+import type {
   InterviewAnalysisResult,
   InterviewTaskResult,
   InterviewExecuteAIResult,
@@ -154,6 +161,79 @@ export interface VeyraInterviewApi {
 }
 
 /**
+ * Document API exposed to the renderer.
+ */
+export interface VeyraDocumentApi {
+  /**
+   * Open an authorized file picker and return selected file paths.
+   *
+   * The renderer never receives direct filesystem access.
+   */
+  pick(
+    request?: DocumentPickRequest,
+  ): Promise<{
+    readonly success: boolean;
+
+    readonly data?: {
+      readonly filePaths: readonly string[];
+    };
+
+    readonly error?: Error;
+  }>;
+
+  /**
+   * Import a document through the full ingestion pipeline.
+   *
+   * Returns validation, classification, processing status, and optional
+   * AI analysis / candidate evidence results.
+   */
+  import(
+    request: DocumentImportRequest,
+  ): Promise<{
+    readonly success: boolean;
+
+    readonly data?: unknown;
+
+    readonly error?: Error;
+  }>;
+
+  /**
+   * Return the stored processed document by ID.
+   */
+  read(
+    request: DocumentReadRequest,
+  ): Promise<{
+    readonly success: boolean;
+
+    readonly data?: unknown;
+
+    readonly error?: Error;
+  }>;
+
+  /**
+   * Delete a stored document and its derived data.
+   */
+  delete(
+    request: DocumentDeleteRequest,
+  ): Promise<{
+    readonly success: boolean;
+
+    readonly error?: Error;
+  }>;
+
+  /**
+   * List all stored processed documents.
+   */
+  list(): Promise<{
+    readonly success: boolean;
+
+    readonly data?: readonly unknown[];
+
+    readonly error?: Error;
+  }>;
+}
+
+/**
  * Complete renderer-facing Veyra API.
  */
 export interface VeyraDesktopAPI {
@@ -166,6 +246,8 @@ export interface VeyraDesktopAPI {
   readonly ai: VeyraAiApi;
 
   readonly interview: VeyraInterviewApi;
+
+  readonly document: VeyraDocumentApi;
 }
 
 /**
@@ -178,6 +260,7 @@ export interface VeyraDesktopAPI {
  * window.veyra.hardware
  * window.veyra.ai
  * window.veyra.interview
+ * window.veyra.document
  */
 declare global {
   interface Window {

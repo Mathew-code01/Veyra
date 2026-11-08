@@ -21,6 +21,8 @@ export interface DocumentStore {
     documentId: string,
     status: ProcessedDocument["status"],
   ): Promise<void>;
+
+  list(): Promise<readonly ProcessedDocument[]>;
 }
 
 export interface DocumentMetadataStore {

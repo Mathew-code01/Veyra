@@ -91,6 +91,7 @@ export const IPC_CHANNELS = Object.freeze({
   // --------------------------------------------------------------------------
 
   DOCUMENT_PICK: "document:pick",
+  DOCUMENT_IMPORT: "document:import",
   DOCUMENT_READ: "document:read",
   DOCUMENT_DELETE: "document:delete",
   DOCUMENT_LIST: "document:list",

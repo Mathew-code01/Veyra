@@ -1392,6 +1392,45 @@ export class DocumentService {
   }
 
   // ==========================================================================
+  // DOCUMENT RETRIEVAL
+  // ==========================================================================
+
+  /**
+   * Returns the stored processed document by ID.
+   *
+   * Requires documentStore to be configured.
+   */
+  public async getDocumentById(
+    documentId: string,
+  ): Promise<ProcessedDocument | null> {
+    const store = this.requireDocumentStore();
+
+    return store.getById(documentId);
+  }
+
+  /**
+   * Deletes a stored document by ID.
+   *
+   * Requires documentStore to be configured.
+   */
+  public async deleteDocument(documentId: string): Promise<void> {
+    const store = this.requireDocumentStore();
+
+    await store.delete(documentId);
+  }
+
+  /**
+   * Lists all stored processed documents.
+   *
+   * Requires documentStore to be configured.
+   */
+  public async listDocuments(): Promise<readonly ProcessedDocument[]> {
+    const store = this.requireDocumentStore();
+
+    return store.list();
+  }
+
+  // ==========================================================================
   // REQUEST VALIDATION
   // ==========================================================================
 
@@ -1473,6 +1512,20 @@ export class DocumentService {
       },
       signal.reason,
     );
+  }
+
+  private requireDocumentStore(): DocumentStore {
+    if (!this.documentStore) {
+      throw new DocumentError(
+        DocumentErrorCode.STORAGE_FAILED,
+        "Document store is not configured.",
+        {
+          stage: "storage",
+        },
+      );
+    }
+
+    return this.documentStore;
   }
 
   // ==========================================================================
