@@ -42,6 +42,26 @@ import {
 } from "../../shared/contracts/hardware.contract";
 
 import type {
+  AIProviderStatusRequest,
+  AIProviderStatusResult,
+  AIGenerateRequest,
+  AIGenerateResult,
+} from "../../shared/contracts/ai.contract";
+
+import type {
+  InterviewAnalysisResult,
+  InterviewTaskResult,
+  InterviewExecuteAIResult,
+} from "../../shared/contracts/interview.contract";
+
+import type {
+  InterviewAnalysisRequest,
+  InterviewTaskRequest,
+} from "../../shared/types/interviews";
+
+import type { InterviewGuidanceRequest } from "../ipc/interview.ipc";
+
+import type {
   HardwareModelPlanResponse,
   HardwareSnapshotResponse,
 } from "../../shared/types/hardware";
@@ -122,6 +142,68 @@ const hardwareApi: VeyraDesktopAPI["hardware"] = Object.freeze({
 });
 
 /**
+ * AI API exposed to the renderer.
+ *
+ * Only whitelisted IPC channels are exposed. Results are returned as
+ * explicit Result shapes so the renderer can handle provider unavailability
+ * and validation failures without unhandled IPC rejections.
+ */
+const aiApi: VeyraDesktopAPI["ai"] = Object.freeze({
+  generate: async (
+    request: AIGenerateRequest,
+  ): Promise<AIGenerateResult> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AI_GENERATE,
+      request,
+    ) as Promise<AIGenerateResult>;
+  },
+
+  providerStatus: async (
+    request?: AIProviderStatusRequest,
+  ): Promise<AIProviderStatusResult> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AI_PROVIDER_STATUS,
+      request,
+    ) as Promise<AIProviderStatusResult>;
+  },
+});
+
+/**
+ * Interview API exposed to the renderer.
+ *
+ * Only whitelisted IPC channels are exposed. Results are returned as
+ * explicit Result shapes.
+ */
+const interviewApi: VeyraDesktopAPI["interview"] = Object.freeze({
+  analyze: async (
+    request: Omit<InterviewAnalysisRequest, "signal">,
+  ): Promise<InterviewAnalysisResult> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.INTERVIEW_ANALYZE,
+      request,
+    ) as Promise<InterviewAnalysisResult>;
+  },
+
+  detectTask: async (
+    request: Omit<InterviewTaskRequest, "signal">,
+  ): Promise<InterviewTaskResult> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.INTERVIEW_TASK,
+      request,
+    ) as Promise<InterviewTaskResult>;
+  },
+
+  guidance: async (
+    request: InterviewGuidanceRequest,
+  ): Promise<InterviewExecuteAIResult> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.INTERVIEW_GUIDANCE,
+      request,
+    ) as Promise<InterviewExecuteAIResult>;
+  },
+});
+
+/**
  * Complete renderer-facing API.
  *
  * IMPORTANT:
@@ -168,4 +250,8 @@ export const api: VeyraDesktopAPI = Object.freeze({
   }),
 
   hardware: hardwareApi,
+
+  ai: aiApi,
+
+  interview: interviewApi,
 });

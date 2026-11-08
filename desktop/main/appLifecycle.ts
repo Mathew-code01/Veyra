@@ -1,8 +1,11 @@
 // desktop/main/appLifecycle.ts
 
-import { app } from "electron";
+import { app, ipcMain } from "electron";
+import { join } from "node:path";
 
 import { AIManager } from "../../core/ai/AIManager";
+
+import { AnalyticsManager } from "../../core/analytics";
 
 import { createDefaultCloudProviderRegistry } from "../../core/cloud/registry/defaultCloudProviders";
 
@@ -17,8 +20,43 @@ import { ModelSystem } from "./ModelSystem";
 import { HardwareService } from "../services/ai/HardwareService";
 
 import { registerHardwareIpc } from "../ipc/hardware.ipc";
+import { registerAiIpc } from "../ipc/ai.ipc";
+import { registerInterviewIpc } from "../ipc/interview.ipc";
+import { closeDatabase, createDatabase } from "../../database/client";
+
+import {
+  InMemoryCandidateProfileStore,
+} from "../../core/candidate/stores/CandidateProfileStore";
+
+import {
+  InMemoryExperienceStore,
+} from "../../core/candidate/stores/ExperienceStore";
+
+import {
+  InMemoryProjectStore,
+} from "../../core/candidate/stores/ProjectStore";
+
+import {
+  InMemorySkillStore,
+} from "../../core/candidate/stores/SkillStore";
+
+import {
+  InMemoryStoryStore,
+} from "../../core/candidate/stores/StoryStore";
+
+import { CandidateContextBuilder } from "../../core/candidate/services/CandidateContextBuilder";
+
+import { CandidateService } from "../../core/candidate/services/CandidateService";
+
+import { createContextEngine } from "../../core/context/createContextEngine";
+
+import type { ContextManager } from "../../core/context/ContextManager";
 
 let initialized = false;
+
+let databaseHandle: ReturnType<typeof createDatabase> | null = null;
+
+let analyticsManager: AnalyticsManager | null = null;
 
 let modelSystem: ModelSystem | null = null;
 
@@ -28,7 +66,15 @@ let aiManager: AIManager | null = null;
 
 let interviewIntelligence: InterviewIntelligence | null = null;
 
+let candidateService: CandidateService | null = null;
+
+let contextManager: ContextManager | null = null;
+
 let cleanupHardwareIpc: (() => void) | null = null;
+
+let cleanupAiIpc: (() => void) | null = null;
+
+let cleanupInterviewIpc: (() => void) | null = null;
 
 export async function initializeApplication(): Promise<void> {
   if (initialized) {
@@ -88,6 +134,30 @@ export function getInterviewIntelligence(): InterviewIntelligence {
   return interviewIntelligence;
 }
 
+export function getCandidateService(): CandidateService {
+  if (!candidateService) {
+    throw new Error("Veyra CandidateService has not been initialized.");
+  }
+
+  return candidateService;
+}
+
+export function getContextManager(): ContextManager {
+  if (!contextManager) {
+    throw new Error("Veyra ContextManager has not been initialized.");
+  }
+
+  return contextManager;
+}
+
+export function getAnalyticsManager(): AnalyticsManager {
+  if (!analyticsManager) {
+    throw new Error("Veyra AnalyticsManager has not been initialized.");
+  }
+
+  return analyticsManager;
+}
+
 function configureApplication(): void {
   app.setName("Veyra");
 
@@ -97,6 +167,24 @@ function configureApplication(): void {
 }
 
 async function initializeApplicationServices(): Promise<void> {
+  const databasePath = join(app.getPath("userData"), "veyra.db");
+
+  databaseHandle = createDatabase({
+    filename: databasePath,
+  });
+
+  analyticsManager = new AnalyticsManager({ maxEvents: 500 });
+  analyticsManager.record({
+    type: "app_start",
+    category: "application",
+    severity: "info",
+    success: true,
+    metadata: {
+      databasePath,
+      environment: process.env.NODE_ENV ?? "production",
+    },
+  });
+
   /*
    * --------------------------------------------------------------------------
    * 1. Create the single application ModelSystem.
@@ -157,11 +245,74 @@ async function initializeApplicationServices(): Promise<void> {
 
   aiManager = runtimeAIManager;
 
+  cleanupAiIpc = registerAiIpc({
+    aiManager: runtimeAIManager,
+    ipcMain,
+  });
+
   const promptService = new PromptService();
 
+  /*
+   * --------------------------------------------------------------------------
+   * 4b. Candidate service (in-memory stores until SQLite repositories are
+   * wired in P1).
+   *
+   * Candidate data is isolated within this process and never leaks between
+   * candidate profiles because every store operation is keyed by candidateId.
+   * --------------------------------------------------------------------------
+   */
+  const profileStore = new InMemoryCandidateProfileStore();
+
+  const experienceStore = new InMemoryExperienceStore();
+
+  const projectStore = new InMemoryProjectStore();
+
+  const skillStore = new InMemorySkillStore();
+
+  const storyStore = new InMemoryStoryStore();
+
+  const contextBuilder = new CandidateContextBuilder({
+    profileStore,
+    experienceStore,
+    projectStore,
+    skillStore,
+    storyStore,
+  });
+
+  candidateService = new CandidateService({
+    profileStore,
+    contextBuilder,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
+   * 4c. Generic context engine.
+   *
+   * Uses MockEmbeddingService + InMemoryVectorStore by default (P2 replaces
+   * this with a persistent production embedding/vector store without changing
+   * the ContextManager contract).
+   * --------------------------------------------------------------------------
+   */
+  const contextEngine = createContextEngine();
+
+  contextManager = contextEngine.manager;
+
+  /*
+   * --------------------------------------------------------------------------
+   * 5. Create InterviewIntelligence with candidate + context enrichment.
+   * --------------------------------------------------------------------------
+   */
   interviewIntelligence = new InterviewIntelligence({
     promptService,
     reliabilityManager,
+    candidateService,
+    contextManager,
+  });
+
+  cleanupInterviewIpc = registerInterviewIpc({
+    interviewIntelligence,
+    aiManager: runtimeAIManager,
+    ipcMain,
   });
 
   /*
@@ -186,6 +337,15 @@ async function initializeApplicationServices(): Promise<void> {
 }
 
 async function shutdownApplicationServices(): Promise<void> {
+  if (analyticsManager) {
+    analyticsManager.record({
+      type: "app_shutdown",
+      category: "application",
+      severity: "info",
+      success: true,
+    });
+  }
+
   /*
    * --------------------------------------------------------------------------
    * 1. Remove IPC handlers.
@@ -195,6 +355,18 @@ async function shutdownApplicationServices(): Promise<void> {
     cleanupHardwareIpc();
 
     cleanupHardwareIpc = null;
+  }
+
+  if (cleanupAiIpc) {
+    cleanupAiIpc();
+
+    cleanupAiIpc = null;
+  }
+
+  if (cleanupInterviewIpc) {
+    cleanupInterviewIpc();
+
+    cleanupInterviewIpc = null;
   }
 
   /*
@@ -210,7 +382,15 @@ async function shutdownApplicationServices(): Promise<void> {
     }
   }
 
+  if (databaseHandle) {
+    closeDatabase();
+    databaseHandle = null;
+  }
+
   aiManager = null;
   interviewIntelligence = null;
+  candidateService = null;
+  contextManager = null;
   hardwareService = null;
+  analyticsManager = null;
 }
