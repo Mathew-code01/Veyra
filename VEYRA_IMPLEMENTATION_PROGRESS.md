@@ -91,6 +91,7 @@ Update `VEYRA_BACKEND_AUDIT.md`, then commit this stage (code files + progress d
 
 ## COMMITS
 - 9b6cbdb feat(desktop): connect AI and interview IPC services (8 files, +1685/-32)
+- 896d3f3 feat(desktop): connect document IPC services (11 files, +2308/-23)
 
 ## PUSH STATUS
-Not yet pushed. 3 local commits exist on main (2 pre-existing + this one).
+Not yet pushed. 4 local commits exist on main (2 pre-existing + 2 from this work).
