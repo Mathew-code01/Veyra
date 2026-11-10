@@ -23,6 +23,8 @@ export interface CandidateEvidenceStore {
   saveMany(evidence: readonly CandidateEvidence[]): Promise<void>;
 
   remove(candidateId: CandidateId, evidenceId: string): Promise<void>;
+
+  removeBySource(sourceId: string): Promise<void>;
 }
 
 import { CandidateError } from "../errors/CandidateError";
@@ -178,6 +180,24 @@ export class InMemoryCandidateEvidenceStore implements CandidateEvidenceStore {
 
     if (existing?.candidateId === candidateId.trim()) {
       this.records.delete(id);
+    }
+  }
+
+  public async removeBySource(
+    sourceId: string,
+  ): Promise<void> {
+    const normalizedSourceId = sourceId.trim();
+
+    if (!normalizedSourceId) {
+      throw CandidateError.invalidRequest("Evidence source id is required.", {
+        stage: "evidence",
+      });
+    }
+
+    for (const [id, evidence] of this.records) {
+      if (evidence.sourceId === normalizedSourceId) {
+        this.records.delete(id);
+      }
     }
   }
 

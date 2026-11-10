@@ -12,3 +12,6 @@ export * from "./answers";
 export * from "./captures";
 export * from "./metrics";
 export * from "./memory";
+export * from "./candidateEvidence";
+export * from "./providerCredentials";
+export * from "./providerSettings";
