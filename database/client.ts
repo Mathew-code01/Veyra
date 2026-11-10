@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schema from "./schema";
@@ -52,27 +53,34 @@ export function createDatabase(options: DatabaseOptions = {}): DatabaseHandle {
   sqlite.pragma("synchronous = NORMAL");
   sqlite.pragma("temp_store = MEMORY");
 
-  const db = drizzle(sqlite, { schema });
+  try {
+    if (!options.readonly) {
+      const migrationsFolder = resolveMigrationsFolder(options.migrationsFolder);
 
-  if (!options.readonly) {
-    const migrationsFolder = resolveMigrationsFolder(options.migrationsFolder);
+      if (!existsSync(migrationsFolder)) {
+        throw new Error(
+          `Database migrations directory does not exist: ${migrationsFolder}`,
+        );
+      }
 
-    if (!existsSync(migrationsFolder)) {
-      mkdirSync(migrationsFolder, { recursive: true });
+      runMigrations(sqlite, migrationsFolder);
     }
 
-    runMigrations(sqlite, migrationsFolder);
-  }
+    const db = drizzle(sqlite, { schema });
 
-  return {
-    db,
-    sqlite,
-    close: () => sqlite.close(),
-    healthCheck: () => {
-      sqlite.prepare("SELECT 1").get();
-      return true;
-    },
-  };
+    return {
+      db,
+      sqlite,
+      close: () => sqlite.close(),
+      healthCheck: () => {
+        sqlite.prepare("SELECT 1").get();
+        return true;
+      },
+    };
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
 }
 
 let singleton: ReturnType<typeof createDatabase> | undefined;
@@ -102,14 +110,139 @@ function runMigrations(sqlite: Database.Database, migrationsFolder: string): voi
     .filter((file) => file.endsWith(".sql"))
     .sort();
 
-  for (const file of files) {
-    const script = readFileSync(resolve(migrationsFolder, file), "utf8");
+  const migrations = files.map((file) => {
+    const match = /^(\d+)_.*\.sql$/.exec(file);
+    if (!match) {
+      throw new Error(
+        `Invalid migration filename "${file}"; expected a numeric prefix and description.`,
+      );
+    }
 
-    if (!script.trim()) {
+    return {
+      file,
+      version: Number(match[1]),
+      script: readFileSync(resolve(migrationsFolder, file), "utf8"),
+    };
+  });
+
+  const seenVersions = new Set<number>();
+  for (const migration of migrations) {
+    if (seenVersions.has(migration.version)) {
+      throw new Error(
+        `Duplicate database migration version ${migration.version}.`,
+      );
+    }
+    seenVersions.add(migration.version);
+  }
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS veyra_schema_migrations (
+      migration_id TEXT PRIMARY KEY,
+      checksum TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    )
+  `);
+
+  const appliedMigrations = sqlite
+    .prepare(
+      "SELECT migration_id AS migrationId, checksum FROM veyra_schema_migrations",
+    )
+    .all() as Array<{ migrationId: string; checksum: string }>;
+  const appliedById = new Map(
+    appliedMigrations.map((migration) => [
+      migration.migrationId,
+      migration.checksum,
+    ]),
+  );
+  const availableIds = new Set(migrations.map((migration) => migration.file));
+
+  for (const migration of appliedMigrations) {
+    if (!availableIds.has(migration.migrationId)) {
+      throw new Error(
+        `Applied migration "${migration.migrationId}" is missing from the migrations directory.`,
+      );
+    }
+  }
+
+  const recordMigration = sqlite.prepare(
+    `INSERT INTO veyra_schema_migrations (migration_id, checksum, applied_at)
+     VALUES (?, ?, ?)`,
+  );
+
+  for (const migration of migrations) {
+    if (!migration.script.trim()) {
+      throw new Error(`Database migration "${migration.file}" is empty.`);
+    }
+
+    const checksum = createHash("sha256")
+      .update(migration.script, "utf8")
+      .digest("hex");
+    const appliedChecksum = appliedById.get(migration.file);
+
+    if (appliedChecksum !== undefined) {
+      if (appliedChecksum !== checksum) {
+        throw new Error(
+          `Applied migration "${migration.file}" has changed; refusing to rerun it.`,
+        );
+      }
       continue;
     }
 
-    sqlite.exec(script);
+    try {
+      sqlite.transaction(() => {
+        sqlite.exec(migration.script);
+        recordMigration.run(
+          migration.file,
+          checksum,
+          new Date().toISOString(),
+        );
+      })();
+    } catch (error) {
+      const reason =
+        error instanceof Error ? error.message : "Unknown migration failure.";
+      throw new Error(
+        `Database migration "${migration.file}" failed and was rolled back: ${reason}`,
+        { cause: error },
+      );
+    }
+  }
+
+  const requiredTables = [
+    "profiles",
+    "documents",
+    "sessions",
+    "memories",
+    "context_vectors",
+    "candidate_evidence",
+    "provider_credentials",
+    "provider_settings",
+    "candidate_profiles",
+    "candidate_records",
+    "memories",
+  ];
+  const existingTables = new Set(
+    (
+      sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .all() as Array<{ name: string }>
+    ).map((table) => table.name),
+  );
+  const missingTables = requiredTables.filter(
+    (table) => !existingTables.has(table),
+  );
+  if (missingTables.length > 0) {
+    throw new Error(
+      `Database migrations did not create required tables: ${missingTables.join(", ")}.`,
+    );
+  }
+
+  const foreignKeyViolations = sqlite.pragma("foreign_key_check") as unknown[];
+  if (foreignKeyViolations.length > 0) {
+    throw new Error(
+      `Database migration integrity check found ${foreignKeyViolations.length} foreign-key violation(s).`,
+    );
   }
 }
 

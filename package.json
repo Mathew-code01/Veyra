@@ -13,7 +13,7 @@
     "dev": "vite",
     "build": "npm run typecheck && npm run build:client && npm run build:electron",
     "build:client": "vite build",
-    "build:electron": "tsc -p tsconfig.desktop.json",
+    "build:electron": "tsc -p tsconfig.desktop.json && node scripts/copy-database-migrations.js",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
