@@ -319,6 +319,9 @@ export interface DocumentServiceDependencies {
 
   readonly documentStore?: DocumentStore;
 
+  /** Trusted owner scope supplied by the desktop composition root. */
+  readonly resolveProfileId?: () => string | undefined;
+
   readonly indexSink?: DocumentIndexSink;
 
   /**
@@ -449,6 +452,8 @@ export class DocumentService {
 
   private readonly documentStore?: DocumentStore;
 
+  private readonly resolveProfileId?: () => string | undefined;
+
   private readonly indexSink?: DocumentIndexSink;
 
   private readonly contextSink?: DocumentContextSink;
@@ -510,6 +515,8 @@ export class DocumentService {
     this.indexer = dependencies.indexer ?? new DocumentIndexer();
 
     this.documentStore = dependencies.documentStore;
+
+    this.resolveProfileId = dependencies.resolveProfileId;
 
     this.indexSink = dependencies.indexSink;
 
@@ -881,7 +888,9 @@ export class DocumentService {
 
       warnings,
 
-      profileId: request.candidateId,
+      profileId: this.resolveProfileId?.(),
+
+      candidateId: request.candidateId,
     };
 
     this.throwIfAborted(signal);
@@ -982,6 +991,12 @@ export class DocumentService {
       try {
         await this.contextSink.index(document, indexBatch, {
           signal,
+          scope: {
+            ...(document.profileId ? { profileId: document.profileId } : {}),
+            ...(document.candidateId
+              ? { candidateId: document.candidateId }
+              : {}),
+          },
         });
       } catch (error) {
         throw DocumentError.from(
@@ -1417,8 +1432,31 @@ export class DocumentService {
    */
   public async deleteDocument(documentId: string): Promise<void> {
     const store = this.requireDocumentStore();
+    const id = documentId?.trim();
 
-    await store.delete(documentId);
+    if (!id) {
+      throw new DocumentError(
+        DocumentErrorCode.INVALID_INPUT,
+        "A document ID is required for deletion.",
+      );
+    }
+
+    const document = await store.getById(id);
+    if (!document) {
+      return;
+    }
+
+    await store.assertDeleteScope?.(id);
+
+    if (this.contextSink) {
+      await this.contextSink.remove(id);
+    }
+
+    if (this.candidateEvidence) {
+      await this.candidateEvidence.port.removeDocument(id);
+    }
+
+    await store.delete(id);
   }
 
   /**

@@ -110,4 +110,6 @@ export interface CandidateDocumentEvidencePort {
   ingest(
     request: CandidateDocumentEvidenceIngestRequest,
   ): Promise<CandidateDocumentEvidenceIngestResult>;
+
+  removeDocument(documentId: string): Promise<void>;
 }

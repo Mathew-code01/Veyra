@@ -70,9 +70,7 @@ function makeDocument(overrides: Partial<{
 
       wordCount: 40,
 
-      sizeBytes: overrides.sizeBytes ?? 12345,
-
-      storagePath: `/tmp/${overrides.id ?? "doc-1"}.pdf`,
+      fileSizeBytes: overrides.sizeBytes ?? 12345,
     },
 
     paragraphs: [],
@@ -113,7 +111,33 @@ describe("SqliteDocumentStore", () => {
     expect(retrieved?.text).toContain("Software Engineer");
     expect(retrieved?.status).toBe("completed");
     expect(retrieved?.metadata.mimeType).toBe("application/pdf");
+    expect(retrieved?.metadata.fileSizeBytes).toBe(12345);
     expect(retrieved?.warnings).toEqual([]);
+  });
+
+  it("uses unique database references and persists parser byte sizes", async () => {
+    const store = new SqliteDocumentStore({ profileId: profileA });
+    await store.save(makeDocument({ id: "doc-one", sizeBytes: 120 }));
+    await store.save(makeDocument({ id: "doc-two", sizeBytes: 240 }));
+
+    const rows = getTestDatabase().sqlite
+      .prepare(
+        "SELECT id, storage_path, size_bytes FROM documents ORDER BY id",
+      )
+      .all();
+
+    expect(rows).toEqual([
+      {
+        id: "doc-one",
+        storage_path: "sqlite-document://doc-one",
+        size_bytes: 120,
+      },
+      {
+        id: "doc-two",
+        storage_path: "sqlite-document://doc-two",
+        size_bytes: 240,
+      },
+    ]);
   });
 
   it("isolates documents between profiles", async () => {
@@ -198,13 +222,50 @@ describe("SqliteDocumentStore", () => {
     expect(await store.getById("missing")).toBeNull();
   });
 
-  it("throws when saving without a profileId", async () => {
+  it("uses the active profile rather than document-supplied profile metadata", async () => {
+    const store = new SqliteDocumentStore({ profileId: profileA });
+
+    await store.save(makeDocument({ id: "doc-untrusted-profile", profileId: profileB }));
+
+    expect(await store.getById("doc-untrusted-profile")).toMatchObject({
+      profileId: profileA,
+    });
+    await expect(
+      new SqliteDocumentStore({ profileId: profileB }).getById(
+        "doc-untrusted-profile",
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("uses the trusted active profile for writes, updates, and deletes", async () => {
+    let activeProfileId: string | undefined = profileA;
+    const store = new SqliteDocumentStore({
+      resolveProfileId: () => activeProfileId,
+    });
+
+    await store.save(makeDocument({ id: "active-scope", profileId: profileB }));
+    activeProfileId = profileB;
+
+    await expect(store.updateStatus("active-scope", "failed")).rejects.toThrow(
+      /not stored/i,
+    );
+    await expect(store.assertDeleteScope("active-scope")).rejects.toThrow(
+      /not owned by the active profile/i,
+    );
+    await store.delete("active-scope");
+
+    activeProfileId = profileA;
+    expect(await store.exists("active-scope")).toBe(true);
+    expect((await store.getById("active-scope"))?.status).toBe("completed");
+  });
+
+  it("fails closed for unscoped document access", async () => {
     const store = new SqliteDocumentStore();
 
     const document: any = makeDocument();
 
-    delete document.profileId;
-
-    await expect(store.save(document)).rejects.toThrow(/profileId/);
+    await expect(store.save(document)).rejects.toThrow(/active profile/i);
+    await expect(store.getById("doc-1")).rejects.toThrow(/active profile/i);
+    await expect(store.list()).rejects.toThrow(/active profile/i);
   });
 });

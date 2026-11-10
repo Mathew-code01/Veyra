@@ -171,6 +171,20 @@ export class CandidateDocumentEvidenceAdapter implements CandidateDocumentEviden
     }
   }
 
+  public async removeDocument(
+    documentId: string,
+  ): Promise<void> {
+    const normalizedDocumentId = documentId.trim();
+
+    if (!normalizedDocumentId) {
+      throw CandidateError.invalidRequest("Document id is required.", {
+        stage: "evidence",
+      });
+    }
+
+    await this.evidenceStore.removeBySource(normalizedDocumentId);
+  }
+
   // ==========================================================================
   // ANALYSIS VALIDATION
   // ==========================================================================

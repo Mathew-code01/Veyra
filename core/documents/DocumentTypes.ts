@@ -303,12 +303,12 @@ export interface ProcessedDocument {
   readonly warnings: readonly string[];
 
   /**
-   * Owning candidate/profile ID.
-   *
-   * Used by the SQLite document store for profile isolation. Set by the
-   * caller (DocumentService) from the import request's candidateId.
+   * Trusted owning profile ID assigned by the document service composition.
    */
   readonly profileId?: string;
+
+  /** Candidate association used only for candidate-scoped context retrieval. */
+  readonly candidateId?: string;
 }
 
 /**

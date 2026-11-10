@@ -15,6 +15,14 @@ export interface DocumentStore {
 
   delete(documentId: string): Promise<void>;
 
+  /**
+   * Verifies ownership before any derived data is removed.
+   *
+   * Stores that require an explicit profile scope should reject deletion
+   * here, before the document service cleans indexes or evidence.
+   */
+  assertDeleteScope?(documentId: string): Promise<void>;
+
   exists(documentId: string): Promise<boolean>;
 
   updateStatus(

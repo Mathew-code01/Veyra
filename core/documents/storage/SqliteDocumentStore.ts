@@ -9,10 +9,10 @@
 // shutdown and are scoped to profile_id for profile isolation.
 //
 // IMPORTANT:
-//   - `save` requires `document.profileId` (set by DocumentService from the
-//     import request's candidateId) or a store-level default profileId.
-//   - Reads/deletes are scoped to the store's configured profileId when one
-//     is supplied, enforcing profile isolation.
+//   - Every operation resolves its profile from trusted store configuration
+//     or the active-profile resolver; document-supplied profile IDs are ignored.
+//   - Missing profile scope fails closed for reads, writes, status changes,
+//     and deletes.
 //   - InMemoryDocumentStore remains available for tests/development but is
 //     no longer the production default.
 // ============================================================================
@@ -25,6 +25,9 @@ import { documents } from "../../../database/schema";
 
 export interface SqliteDocumentStoreOptions {
   readonly profileId?: string;
+
+  /** Trusted main-process profile resolver used when no fixed scope is set. */
+  readonly resolveProfileId?: () => string | undefined;
 }
 
 export class SqliteDocumentStore implements DocumentStore {
@@ -32,9 +35,24 @@ export class SqliteDocumentStore implements DocumentStore {
 
   private readonly profileId?: string;
 
+  private readonly resolveProfileId?: () => string | undefined;
+
   public constructor(options: SqliteDocumentStoreOptions = {}) {
     this.repository = new DocumentRepository();
     this.profileId = options.profileId;
+    this.resolveProfileId = options.resolveProfileId;
+  }
+
+  private resolveScopeProfileId(): string | undefined {
+    return this.profileId ?? this.resolveProfileId?.();
+  }
+
+  private requireScopeProfileId(): string {
+    const profileId = this.resolveScopeProfileId()?.trim();
+    if (!profileId) {
+      throw new Error("An active profile is required for document access.");
+    }
+    return profileId;
   }
 
   public async save(document: ProcessedDocument): Promise<void> {
@@ -50,17 +68,25 @@ export class SqliteDocumentStore implements DocumentStore {
       );
     }
 
-    const profileId = document.profileId ?? this.profileId;
-
-    if (!profileId) {
-      throw new Error(
-        `Document "${documentId}" cannot be stored without a profileId.`,
-      );
-    }
+    const profileId = this.requireScopeProfileId();
 
     const metadata = (document.metadata ?? {}) as Record<string, unknown>;
 
     const now = new Date().toISOString();
+    const requestedStoragePath =
+      typeof metadata.storagePath === "string"
+        ? metadata.storagePath.trim()
+        : "";
+    const requestedSize =
+      typeof metadata.fileSizeBytes === "number"
+        ? metadata.fileSizeBytes
+        : metadata.sizeBytes;
+    const sizeBytes =
+      typeof requestedSize === "number" &&
+      Number.isFinite(requestedSize) &&
+      requestedSize >= 0
+        ? Math.floor(requestedSize)
+        : 0;
 
     this.repository.create(
       // Values are mapped between the ProcessedDocument domain shape and the
@@ -72,17 +98,21 @@ export class SqliteDocumentStore implements DocumentStore {
         profileId,
         name: document.identity.filename ?? documentId,
         originalName: document.identity.filename ?? documentId,
-        storagePath: metadata.storagePath ?? "",
+        storagePath:
+          requestedStoragePath ||
+          `sqlite-document://${encodeURIComponent(documentId)}`,
         documentType: document.type,
         status: document.status as any,
-        sizeBytes: Number(metadata.sizeBytes ?? 0),
+        sizeBytes,
         extractedText: document.text,
         metadata: JSON.stringify({
           mimeType: metadata.mimeType,
           format: metadata.format,
+          fileSizeBytes: sizeBytes,
+          candidateId: document.candidateId,
           pageCount: metadata.pageCount,
           wordCount: metadata.wordCount,
-          checksum: document.identity.checksum,
+          checksum: document.identity.checksum ?? metadata.checksum,
           paragraphs: document.paragraphs,
           headings: document.headings,
           sections: document.sections,
@@ -103,13 +133,10 @@ export class SqliteDocumentStore implements DocumentStore {
       return null;
     }
 
+    const profileId = this.requireScopeProfileId();
     const row: any = this.repository.getById(id);
 
-    if (!row) {
-      return null;
-    }
-
-    if (this.profileId && row.profileId !== this.profileId) {
+    if (!row || row.profileId !== profileId) {
       return null;
     }
 
@@ -123,7 +150,20 @@ export class SqliteDocumentStore implements DocumentStore {
       return;
     }
 
-    this.repository.deleteForProfile(id, this.profileId ?? "");
+    const profileId = this.requireScopeProfileId();
+
+    this.repository.deleteForProfile(id, profileId);
+  }
+
+  public async assertDeleteScope(documentId: string): Promise<void> {
+    const profileId = this.requireScopeProfileId();
+
+    const row = this.repository.getById(documentId.trim());
+    if (row && row.profileId !== profileId) {
+      throw new Error(
+        "The document is not owned by the active profile and cannot be deleted.",
+      );
+    }
   }
 
   public async exists(documentId: string): Promise<boolean> {
@@ -133,13 +173,14 @@ export class SqliteDocumentStore implements DocumentStore {
       return false;
     }
 
+    const profileId = this.requireScopeProfileId();
     const row = this.repository.getById(id);
 
-    if (!row) {
+    if (!row || row.profileId !== profileId) {
       return false;
     }
 
-    return !this.profileId || row.profileId === this.profileId;
+    return true;
   }
 
   public async updateStatus(
@@ -152,27 +193,19 @@ export class SqliteDocumentStore implements DocumentStore {
       throw new Error("A document ID is required to update document status.");
     }
 
+    const profileId = this.requireScopeProfileId();
     const row: any = this.repository.getById(id);
 
-    if (!row) {
+    if (!row || row.profileId !== profileId) {
       throw new Error(`Document "${id}" is not stored and cannot be updated.`);
     }
 
-    if (this.profileId && row.profileId !== this.profileId) {
-      throw new Error(
-        `Document "${id}" is not visible to this profile and cannot be updated.`,
-      );
-    }
-
-    this.repository.setStatus(id, status);
+    this.repository.setStatusForProfile(id, status, profileId);
   }
 
   public async list(): Promise<readonly ProcessedDocument[]> {
-    const profileId = this.profileId;
-
-    const rows: any[] = profileId
-      ? this.repository.listByProfile(profileId)
-      : this.repository.listAll();
+    const profileId = this.requireScopeProfileId();
+    const rows: any[] = this.repository.listByProfile(profileId);
 
     return rows.map((row: any) => this.toProcessedDocument(row));
   }
@@ -192,7 +225,7 @@ export class SqliteDocumentStore implements DocumentStore {
     const storedMetadata: Record<string, unknown> = {
       mimeType: metadata.mimeType ?? "application/octet-stream",
       format: metadata.format ?? "unknown",
-      sizeBytes: metadata.sizeBytes ?? row.sizeBytes ?? 0,
+      fileSizeBytes: metadata.fileSizeBytes ?? row.sizeBytes ?? 0,
       pageCount: metadata.pageCount,
       wordCount: metadata.wordCount,
     };
@@ -215,6 +248,7 @@ export class SqliteDocumentStore implements DocumentStore {
       processedAt: row.updatedAt,
       warnings: Array.isArray(metadata.warnings) ? metadata.warnings : [],
       profileId: row.profileId,
+      candidateId: metadata.candidateId,
     };
   }
 }

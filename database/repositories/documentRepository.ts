@@ -59,4 +59,12 @@ export class DocumentRepository {
   setStatus(id: string, status: string) {
     return this.db.update(documents).set({ status, updatedAt: new Date().toISOString() }).where(eq(documents.id, id)).run();
   }
+
+  setStatusForProfile(id: string, status: string, profileId: string) {
+    return this.db
+      .update(documents)
+      .set({ status, updatedAt: new Date().toISOString() })
+      .where(and(eq(documents.id, id), eq(documents.profileId, profileId)))
+      .run();
+  }
 }

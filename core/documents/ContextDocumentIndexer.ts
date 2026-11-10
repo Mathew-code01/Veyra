@@ -97,7 +97,7 @@ export class ContextDocumentIndexer implements DocumentContextSink {
 
     this.throwIfAborted(options.signal);
 
-    const context = this.toContext(document);
+    const context = this.toContext(document, options.scope);
 
     const chunks = batch.documents.map((indexDocument, index) =>
       this.toContextChunk(indexDocument, document, index),
@@ -144,7 +144,10 @@ export class ContextDocumentIndexer implements DocumentContextSink {
   // DOCUMENT → CONTEXT
   // ==========================================================================
 
-  private toContext(document: ProcessedDocument): ContextItem {
+  private toContext(
+    document: ProcessedDocument,
+    scope?: Readonly<Record<string, unknown>>,
+  ): ContextItem {
     const documentId = document.identity.id.trim();
 
     const documentName =
@@ -195,6 +198,8 @@ export class ContextDocumentIndexer implements DocumentContextSink {
 
       source,
 
+      ...(scope ? { scope } : {}),
+
       /**
        * Preserve document-specific information as generic Context metadata.
        *
@@ -204,6 +209,8 @@ export class ContextDocumentIndexer implements DocumentContextSink {
         ...document.metadata,
 
         documentId,
+        profileId: document.profileId,
+        candidateId: document.candidateId,
 
         documentFormat: document.type,
 

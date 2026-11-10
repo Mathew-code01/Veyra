@@ -41,6 +41,9 @@ export interface DocumentContextIndexOptions {
    * Optional cancellation signal owned by the document-processing request.
    */
   readonly signal?: AbortSignal;
+
+  /** Scope labels applied to the indexed document and its vector records. */
+  readonly scope?: Readonly<Record<string, unknown>>;
 }
 
 /**
