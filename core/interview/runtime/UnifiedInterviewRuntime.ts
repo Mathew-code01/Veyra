@@ -119,6 +119,7 @@ export interface RuntimeSessionState {
   readonly status: SessionStatus;
   readonly turns: ConversationAnalysis[];
   readonly lastQuestionId?: string;
+  readonly lastGuidance?: InterviewRuntimeResponse;
 }
 
 function nowIso(): string {
@@ -303,22 +304,15 @@ export class UnifiedInterviewRuntime {
       ? ["Question competencies could not be fully determined."]
       : [];
 
-    return Object.freeze({
-      sessionId: input.sessionId,
-      mode: state.mode,
-      source: input.source,
+    const guidanceSnapshot = {
       questionText,
-      conversation,
-      analysis: intelligence.analysis,
-      domain,
-      understanding,
+      questionId: question?.id,
       guidance: {
         headline: plan.headline,
         talkingPoints: plan.steps.flatMap((s) => s.keyTalkingPoints).slice(0, 8),
         cautions: plan.cautions,
         structure: plan.steps.map((s) => s.phase),
       },
-      evidence,
       provenance: Object.freeze({
         candidateEvidenceIds: evidence.filter((e) => e.source === "candidate").map((e) => e.id),
         memoryIds: evidence.filter((e) => e.source === "memory").map((e) => e.id),
@@ -330,8 +324,42 @@ export class UnifiedInterviewRuntime {
       confidence: intelligence.analysis.confidence ?? 0.5,
       followUps,
       ai,
-      questionId: question?.id,
+    };
+
+    // Persist the last guidance snapshot so a restarted runtime can surface
+    // live-session guidance without re-running the full intelligence path.
+    const db = this.options.sessionRepository.getById(input.sessionId);
+    if (db) {
+      this.options.sessionRepository.updateSettings(input.sessionId, {
+        ...db.settings,
+        runtimeGuidance: guidanceSnapshot,
+      });
+    }
+
+    const result: InterviewRuntimeResponse = Object.freeze({
+      sessionId: input.sessionId,
+      mode: state.mode,
+      source: input.source,
+      questionText,
+      conversation,
+      analysis: intelligence.analysis,
+      domain,
+      understanding,
+      guidance: guidanceSnapshot.guidance,
+      evidence,
+      provenance: guidanceSnapshot.provenance,
+      confidence: guidanceSnapshot.confidence,
+      followUps: guidanceSnapshot.followUps,
+      ai: guidanceSnapshot.ai,
+      questionId: guidanceSnapshot.questionId,
     });
+
+    this.sessions.set(input.sessionId, {
+      ...this.sessions.get(input.sessionId)!,
+      lastGuidance: result,
+    });
+
+    return result;
   }
 
   public async submitAnswer(input: {
@@ -457,6 +485,7 @@ export class UnifiedInterviewRuntime {
       mode: ((db.settings as any)?.interviewMode as InterviewRuntimeMode) ?? "practice",
       status: toRuntimeStatus(db.status, (((db.settings as any)?.interviewMode as InterviewRuntimeMode) ?? "practice")),
       turns: [],
+      lastGuidance: (db.settings as any)?.runtimeGuidance,
     };
     this.sessions.set(sessionId, state);
     return state;
@@ -474,6 +503,7 @@ export class UnifiedInterviewRuntime {
       status: db.status,
       turns: prev?.turns ?? [],
       lastQuestionId: prev?.lastQuestionId,
+      lastGuidance: (db.settings as any)?.runtimeGuidance ?? prev?.lastGuidance,
     };
     this.sessions.set(sessionId, state);
     return state;

@@ -39,6 +39,7 @@ export interface SessionSettings {
   interviewMode?: "practice" | "live";
   candidateId?: string;
   cancellationReason?: string;
+  runtimeGuidance?: any;
 }
 
 export const sessions = sqliteTable(
