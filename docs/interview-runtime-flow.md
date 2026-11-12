@@ -24,3 +24,13 @@
 
 ## Status/limits
 - Runtime and key IPC/server/UI slices are **PARTIALLY VERIFIED** by focused tests/typechecks; real hardware capture/transcription, vision inference, and authorized cloud/provider execution remain **BLOCKED/NOT TESTED**.
+## Audio → Intelligence pipeline (Phase 13/14)
+- **Capture:** `desktop/audio/DesktopAudioCapture.ts` wrapped by `desktop/audio/AudioCaptureLifecycle.ts` (injectable; explicit grant/deny permission state machine; start/pause/resume/stop/dispose; state listeners). No automatic microphone activation; renderer never receives raw audio buffers.
+- **Transcription adapter:** `core/audio/TranscriptionAdapter.ts` — `MockTranscriptionProvider` (deterministic, no real call/model download) vs `RealCloudWhisperAdapter`/`RealLocalWhisperAdapter` (real; cloud requires explicit consent). Factories enforce the mock/real boundary.
+- **Assembly/segmentation:** `core/audio/LiveTranscriptSegmenter.ts` — bounded finalized-segment queue, duplicate suppression within a time window, absolute session timestamps, take-once semantics.
+- **Bridge:** `desktop/audio/AudioTranscriptionBridge.ts` — capture chunk → transcription adapter → segmenter → `UnifiedInterviewRuntime.processQuestion(source: "voice_transcript")`. Only finalized transcript text reaches the runtime/intelligence; no raw audio crosses IPC.
+- **IPC:** `desktop/ipc/audio-runtime.ipc.ts` (`AUDIO_RUNTIME_SESSION_START/STOP/STATE`, `AUDIO_TRANSCRIPT_SUBMIT`) with sender/profile validation; new `AUDIO_RUNTIME_*` channels in `shared/constants/events.ts`; preload `window.veyra.audioRuntime`; wired in `desktop/main/appLifecycle.ts`.
+- **Live guidance:** `core/interview/live/QuestionBoundaryDetector.ts` (new/multi-part/follow-up/clarification detection) + `core/interview/live/LiveGuidanceEngine.ts` (debounce, duplicate suppression, cancellation, structured guidance: domain, competencies, main point, structure, talking points, evidence, omissions, follow-ups).
+
+## Status/limits
+- Runtime and key IPC/server/UI slices are **PARTIALLY VERIFIED** by focused tests/typechecks; real hardware capture/transcription, vision inference, and authorized cloud/provider execution remain **BLOCKED/NOT TESTED**.
