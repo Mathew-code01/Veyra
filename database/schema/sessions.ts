@@ -40,6 +40,10 @@ export interface SessionSettings {
   candidateId?: string;
   cancellationReason?: string;
   runtimeGuidance?: any;
+  /** Post-interview analysis results (Phase 15, additive). */
+  interviewReview?: any;
+  learningPlan?: any;
+  progressInsights?: any;
 }
 
 export const sessions = sqliteTable(
