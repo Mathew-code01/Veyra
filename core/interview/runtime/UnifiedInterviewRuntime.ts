@@ -306,6 +306,7 @@ export class UnifiedInterviewRuntime {
 
     const guidanceSnapshot = {
       questionText,
+      evidence,
       questionId: question?.id,
       guidance: {
         headline: plan.headline,
