@@ -71,8 +71,11 @@ export const IPC_CHANNELS = Object.freeze({
   AUDIO_PERMISSION_REQUEST: "audio:permission:request",
   AUDIO_SESSION_START: "audio:session:start",
   AUDIO_SESSION_STOP: "audio:session:stop",
+  AUDIO_SESSION_STATE: "audio:session:state",
   AUDIO_TRANSCRIPT_PARTIAL: "audio:transcript:partial",
   AUDIO_TRANSCRIPT_FINAL: "audio:transcript:final",
+  AUDIO_TRANSCRIPT_STATE: "audio:transcript:state",
+  AUDIO_METRICS: "audio:metrics",
 
   // --------------------------------------------------------------------------
   // CAPTURE
@@ -95,6 +98,19 @@ export const IPC_CHANNELS = Object.freeze({
   DOCUMENT_READ: "document:read",
   DOCUMENT_DELETE: "document:delete",
   DOCUMENT_LIST: "document:list",
+
+  // --------------------------------------------------------------------------
+  // CANDIDATE
+  // --------------------------------------------------------------------------
+
+  CANDIDATE_PROFILE_GET: "candidate:profile:get",
+  CANDIDATE_PROFILE_LIST: "candidate:profile:list",
+  CANDIDATE_PROFILE_SAVE: "candidate:profile:save",
+  CANDIDATE_PROFILE_DELETE: "candidate:profile:delete",
+  CANDIDATE_RECORD_LIST: "candidate:record:list",
+  CANDIDATE_RECORD_GET: "candidate:record:get",
+  CANDIDATE_RECORD_SAVE: "candidate:record:save",
+  CANDIDATE_RECORD_DELETE: "candidate:record:delete",
 
   // --------------------------------------------------------------------------
   // MEMORY
@@ -122,6 +138,40 @@ export const IPC_CHANNELS = Object.freeze({
   INTERVIEW_CLASSIFY: "interview:classify",
   INTERVIEW_TASK: "interview:task",
   INTERVIEW_GUIDANCE: "interview:guidance",
+  INTERVIEW_DOMAIN_CLASSIFY: "interview:domain-classify",
+  INTERVIEW_QUESTION_UNDERSTAND: "interview:question-understand",
+  INTERVIEW_PLAN_ANSWER: "interview:plan-answer",
+  INTERVIEW_EVALUATE_ANSWER: "interview:evaluate-answer",
+  INTERVIEW_COMMUNICATION_FEEDBACK: "interview:communication-feedback",
+  INTERVIEW_FOLLOW_UP: "interview:follow-up",
+
+  // --------------------------------------------------------------------------
+  // PRACTICE & MOCK INTERVIEWS
+  // --------------------------------------------------------------------------
+
+  PRACTICE_CREATE_SESSION: "practice:create-session",
+  PRACTICE_GET_SESSION: "practice:get-session",
+  PRACTICE_LIST_SESSIONS: "practice:list-sessions",
+  PRACTICE_SUBMIT_ANSWER: "practice:submit-answer",
+  PRACTICE_NEXT_QUESTION: "practice:next-question",
+  PRACTICE_PAUSE_SESSION: "practice:pause-session",
+  PRACTICE_RESUME_SESSION: "practice:resume-session",
+  PRACTICE_COMPLETE_SESSION: "practice:complete-session",
+  PRACTICE_GET_REPORT: "practice:get-report",
+
+  // --------------------------------------------------------------------------
+  // UNIFIED INTERVIEW RUNTIME (practice + live, canonical orchestration)
+  // --------------------------------------------------------------------------
+
+  RUNTIME_CREATE_SESSION: "runtime:create-session",
+  RUNTIME_START_SESSION: "runtime:start-session",
+  RUNTIME_PAUSE_SESSION: "runtime:pause-session",
+  RUNTIME_RESUME_SESSION: "runtime:resume-session",
+  RUNTIME_CANCEL_SESSION: "runtime:cancel-session",
+  RUNTIME_COMPLETE_SESSION: "runtime:complete-session",
+  RUNTIME_PROCESS_QUESTION: "runtime:process-question",
+  RUNTIME_SUBMIT_ANSWER: "runtime:submit-answer",
+  RUNTIME_GET_STATE: "runtime:get-state",
 
   // --------------------------------------------------------------------------
   // SETTINGS
@@ -150,6 +200,18 @@ export const IPC_CHANNELS = Object.freeze({
   // --------------------------------------------------------------------------
 
   HEALTH_CHECK: "health:check",
+
+  // --------------------------------------------------------------------------
+  // PROVIDER SETTINGS (BYOK)
+  // --------------------------------------------------------------------------
+
+  PROVIDERS_GET_STATUS: "providers:get-status",
+  PROVIDERS_SAVE_CREDENTIAL: "providers:save-credential",
+  PROVIDERS_DELETE_CREDENTIAL: "providers:delete-credential",
+  PROVIDERS_VERIFY_CREDENTIAL: "providers:verify-credential",
+  PROVIDERS_LIST_MODELS: "providers:list-models",
+  PROVIDERS_SET_PREFERRED_MODEL: "providers:set-preferred-model",
+  PROVIDERS_SET_EXECUTION_MODE: "providers:set-execution-mode",
 } as const);
 
 export type IPCChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

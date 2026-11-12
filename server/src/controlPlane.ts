@@ -1,3 +1,5 @@
+
+import type { InterviewCloudGateway } from "./cloudGateway.js";
 import type { Request, Response, NextFunction } from "express";
 
 export interface VerifiedPrincipal {
@@ -74,6 +76,7 @@ export interface ServerDependencies {
   readonly devices: DeviceService;
   readonly billing: BillingService;
   readonly cloudAI?: CloudAIService;
+  readonly interviewGateway?: InterviewCloudGateway;
   readonly allowedOrigins?: readonly string[];
 }
 

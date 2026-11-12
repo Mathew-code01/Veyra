@@ -41,6 +41,19 @@ const aiRequestSchema = z.object({
   idempotencyKey: z.string().trim().min(16).max(128),
 }).strict();
 
+const interviewExecuteSchema = z.object({
+  operation: z.enum(["understand_question", "plan_answer", "evaluate_answer", "domain_reasoning", "structured_guidance"]),
+  sessionId: z.string().trim().min(1).max(200).optional(),
+  payload: z.record(z.string(), z.unknown()).default({}),
+  externalProcessingConsent: z.literal(true),
+  idempotencyKey: z.string().trim().min(16).max(128),
+}).strict().superRefine((value, ctx) => {
+  const serialized = JSON.stringify(value.payload ?? {}).toLowerCase();
+  if (/"(api[_-]?key|apikey|byok|secret|token|authorization|credential|bearer|password)"/.test(serialized)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Secrets/BYOK fields are not permitted." });
+  }
+});
+
 type AsyncHandler = (
   request: Request,
   response: Response,
@@ -178,6 +191,13 @@ export function createServerApp(dependencies: ServerDependencies) {
     const input = parseBody(aiRequestSchema, request.body);
     if (!dependencies.cloudAI) throw new ResourceUnavailableError("Cloud AI is disabled.");
     response.json(await dependencies.cloudAI.execute(getPrincipal(request).accountId, input));
+  }));
+  app.post("/api/v1/interview/execute", authenticate, asyncHandler(async (request, response) => {
+    const input = parseBody(interviewExecuteSchema, request.body);
+    if (!dependencies.interviewGateway) {
+      throw new ResourceUnavailableError("Interview cloud gateway is not configured.");
+    }
+    response.json(await dependencies.interviewGateway.executeInterview(getPrincipal(request).accountId, input));
   }));
   app.post("/api/v1/ai/stream", authenticate, (_request, response) => {
     response.status(503).json({ error: { code: "streaming_disabled", message: "Streaming execution is not configured." } });

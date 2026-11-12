@@ -132,3 +132,62 @@ export type {
 export {
   InterviewValidator,
 } from "./validation/InterviewValidator";
+
+// --------------------------------------------------------------------------
+// PROFESSIONAL DOMAINS, UNDERSTANDING, PLANNING & EVALUATION
+// --------------------------------------------------------------------------
+
+export {
+  ProfessionalDomainClassifier,
+} from "./classification/ProfessionalDomainClassifier";
+
+export {
+  QuestionUnderstandingEngine,
+} from "./understanding/QuestionUnderstandingEngine";
+
+export {
+  AnswerPlanningEngine,
+} from "./planning/AnswerPlanningEngine";
+export type {
+  CandidateEvidenceItem,
+} from "./planning/AnswerPlanningEngine";
+
+export {
+  AnswerEvaluationEngine,
+} from "./evaluation/AnswerEvaluationEngine";
+export type {
+  AnswerEvaluationInput,
+} from "./evaluation/AnswerEvaluationEngine";
+
+export {
+  CommunicationAssistanceEngine,
+} from "./communication/CommunicationAssistanceEngine";
+
+export {
+  FollowUpIntelligenceEngine,
+} from "./followup/FollowUpIntelligenceEngine";
+
+export {
+  PracticeSessionEngine,
+} from "./practice/PracticeSessionEngine";
+export type {
+  PracticeSessionConfig,
+  PracticeSessionState,
+  PracticeAnswerResult,
+  PracticeQuestionView,
+} from "./practice/PracticeSessionEngine";
+
+export {
+  UnifiedInterviewRuntime,
+} from "./runtime/UnifiedInterviewRuntime";
+
+export type {
+  UnifiedInterviewRuntimeOptions,
+  UnifiedInterviewSessionConfig,
+  InterviewRuntimeMode,
+  InterviewInputSource,
+  InterviewRuntimeEvidence,
+  InterviewRuntimeResponse,
+  InterviewRuntimeAnswerResult,
+  RuntimeSessionState,
+} from "./runtime/UnifiedInterviewRuntime";

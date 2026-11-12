@@ -57,15 +57,21 @@ import type {
 import type {
   InterviewAnalysisRequest,
   InterviewTaskRequest,
+  InterviewDomain,
+  QuestionUnderstanding,
+  ResponseMode,
 } from "../../shared/types/interviews";
 
 import type { InterviewGuidanceRequest } from "../ipc/interview.ipc";
 
 import type {
   DocumentImportRequest,
+  DocumentImportResult,
   DocumentReadRequest,
   DocumentDeleteRequest,
   DocumentPickRequest,
+  DocumentPickerIpcResult,
+  DocumentListItem,
 } from "../ipc/document.ipc";
 
 import type {
@@ -75,6 +81,50 @@ import type {
   MemoryUpdateRequest,
   MemoryDeleteRequest,
 } from "../ipc/memory.ipc";
+
+import type {
+  CandidateProfileRequest,
+  CandidateProfileSaveRequest,
+  CandidateRecordRequest,
+  CandidateRecordSaveRequest,
+} from "../ipc/candidate.ipc";
+
+import type {
+  ProvidersGetStatusResult,
+  ProvidersSaveCredentialRequest,
+  ProvidersSaveCredentialResult,
+  ProvidersDeleteCredentialResult,
+  ProvidersVerifyCredentialRequest,
+  ProvidersVerifyCredentialResult,
+  ProvidersListModelsRequest,
+  ProvidersListModelsResult,
+  ProvidersSetPreferredModelRequest,
+  ProvidersSetExecutionModeRequest,
+} from "../ipc/providers.ipc";
+
+import type {
+  AudioListDevicesRequest,
+  AudioListDevicesResponse,
+  AudioListDevicesResult,
+  AudioPermissionRequest,
+  AudioPermissionResponse,
+  AudioPermissionResult,
+  AudioSessionStartRequest,
+  AudioSessionStartResponse,
+  AudioSessionStartResult,
+  AudioSessionStopRequest,
+  AudioSessionStopResponse,
+  AudioSessionStopResult,
+  AudioSessionStateRequest,
+  AudioSessionStateResponse,
+  AudioSessionStateResult,
+  AudioTranscriptStateRequest,
+  AudioTranscriptStateResponse,
+  AudioTranscriptStateResult,
+  AudioMetricsRequest,
+  AudioMetricsResponse,
+  AudioMetricsResult,
+} from "../../shared/contracts/audio.contract";
 
 import type {
   HardwareModelPlanResponse,
@@ -216,6 +266,70 @@ const interviewApi: VeyraDesktopAPI["interview"] = Object.freeze({
       request,
     ) as Promise<InterviewExecuteAIResult>;
   },
+
+  classifyDomain: async (
+    question: string,
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.INTERVIEW_DOMAIN_CLASSIFY,
+      { question },
+    );
+  },
+
+  understandQuestion: async (
+    question: string,
+    evidenceTexts?: readonly string[],
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.INTERVIEW_QUESTION_UNDERSTAND,
+      { question, evidenceTexts },
+    );
+  },
+
+  planAnswer: async (
+    understanding: QuestionUnderstanding,
+    domain: InterviewDomain,
+    responseMode?: ResponseMode,
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.INTERVIEW_PLAN_ANSWER,
+      { understanding, domain, responseMode },
+    );
+  },
+
+  evaluateAnswer: async (
+    options: {
+      readonly answerText: string;
+      readonly questionUnderstanding: QuestionUnderstanding;
+      readonly domain: InterviewDomain;
+      readonly targetRole?: string;
+    },
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.INTERVIEW_EVALUATE_ANSWER,
+      options,
+    );
+  },
+
+  communicationFeedback: async (
+    text: string,
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.INTERVIEW_COMMUNICATION_FEEDBACK,
+      { text },
+    );
+  },
+
+  generateFollowUps: async (
+    previousAnswer: string,
+    understanding: QuestionUnderstanding,
+    domain: InterviewDomain,
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.INTERVIEW_FOLLOW_UP,
+      { previousAnswer, understanding, domain },
+    );
+  },
 });
 
 /**
@@ -227,29 +341,37 @@ const interviewApi: VeyraDesktopAPI["interview"] = Object.freeze({
 const documentApi: VeyraDesktopAPI["document"] = Object.freeze({
   pick: async (
     request?: DocumentPickRequest,
-  ): Promise<{ readonly success: boolean; readonly data?: { readonly filePaths: readonly string[] }; readonly error?: Error }> => {
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: DocumentPickerIpcResult;
+    readonly error?: Error;
+  }> => {
     return ipcRenderer.invoke(
       IPC_CHANNELS.DOCUMENT_PICK,
       request,
-    ) as Promise<{ readonly success: boolean; readonly data?: { readonly filePaths: readonly string[] }; readonly error?: Error }>;
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: DocumentPickerIpcResult;
+      readonly error?: Error;
+    }>;
   },
 
   import: async (
     request: DocumentImportRequest,
-  ): Promise<{ readonly success: boolean; readonly data?: unknown; readonly error?: Error }> => {
+  ): Promise<{ readonly success: boolean; readonly data?: DocumentImportResult; readonly error?: Error }> => {
     return ipcRenderer.invoke(
       IPC_CHANNELS.DOCUMENT_IMPORT,
       request,
-    ) as Promise<{ readonly success: boolean; readonly data?: unknown; readonly error?: Error }>;
+    ) as Promise<{ readonly success: boolean; readonly data?: DocumentImportResult; readonly error?: Error }>;
   },
 
   read: async (
     request: DocumentReadRequest,
-  ): Promise<{ readonly success: boolean; readonly data?: unknown; readonly error?: Error }> => {
+  ): Promise<{ readonly success: boolean; readonly data?: import("../../core/documents/DocumentTypes").ProcessedDocument; readonly error?: Error }> => {
     return ipcRenderer.invoke(
       IPC_CHANNELS.DOCUMENT_READ,
       request,
-    ) as Promise<{ readonly success: boolean; readonly data?: unknown; readonly error?: Error }>;
+    ) as Promise<{ readonly success: boolean; readonly data?: import("../../core/documents/DocumentTypes").ProcessedDocument; readonly error?: Error }>;
   },
 
   delete: async (
@@ -261,10 +383,10 @@ const documentApi: VeyraDesktopAPI["document"] = Object.freeze({
     ) as Promise<{ readonly success: boolean; readonly error?: Error }>;
   },
 
-  list: async (): Promise<{ readonly success: boolean; readonly data?: readonly unknown[]; readonly error?: Error }> => {
+  list: async (): Promise<{ readonly success: boolean; readonly data?: readonly DocumentListItem[]; readonly error?: Error }> => {
     return ipcRenderer.invoke(
       IPC_CHANNELS.DOCUMENT_LIST,
-    ) as Promise<{ readonly success: boolean; readonly data?: readonly unknown[]; readonly error?: Error }>;
+    ) as Promise<{ readonly success: boolean; readonly data?: readonly DocumentListItem[]; readonly error?: Error }>;
   },
 });
 
@@ -322,6 +444,279 @@ const memoryApi: VeyraDesktopAPI["memory"] = Object.freeze({
   },
 });
 
+const candidateApi: VeyraDesktopAPI["candidate"] = Object.freeze({
+  listProfiles: async () =>
+    ipcRenderer.invoke(IPC_CHANNELS.CANDIDATE_PROFILE_LIST) as ReturnType<
+      VeyraDesktopAPI["candidate"]["listProfiles"]
+    >,
+
+  getProfile: async (request: CandidateProfileRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CANDIDATE_PROFILE_GET, request) as ReturnType<
+      VeyraDesktopAPI["candidate"]["getProfile"]
+    >,
+
+  saveProfile: async (request: CandidateProfileSaveRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CANDIDATE_PROFILE_SAVE, request) as ReturnType<
+      VeyraDesktopAPI["candidate"]["saveProfile"]
+    >,
+
+  deleteProfile: async (request: CandidateProfileRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CANDIDATE_PROFILE_DELETE, request) as ReturnType<
+      VeyraDesktopAPI["candidate"]["deleteProfile"]
+    >,
+
+  listRecords: async (request: CandidateRecordRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CANDIDATE_RECORD_LIST, request) as ReturnType<
+      VeyraDesktopAPI["candidate"]["listRecords"]
+    >,
+
+  getRecord: async (request: CandidateRecordRequest & { readonly recordId: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CANDIDATE_RECORD_GET, request) as ReturnType<
+      VeyraDesktopAPI["candidate"]["getRecord"]
+    >,
+
+  saveRecord: async (request: CandidateRecordSaveRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CANDIDATE_RECORD_SAVE, request) as ReturnType<
+      VeyraDesktopAPI["candidate"]["saveRecord"]
+    >,
+
+  deleteRecord: async (request: CandidateRecordRequest & { readonly recordId: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CANDIDATE_RECORD_DELETE, request) as ReturnType<
+      VeyraDesktopAPI["candidate"]["deleteRecord"]
+    >,
+});
+
+/**
+ * Provider settings (BYOK) API exposed to the renderer.
+ *
+ * Only whitelisted IPC channels are exposed. No raw API key ever crosses
+ * this boundary: credentials are written and verified in the main process,
+ * and the renderer receives only status, masked values, and model lists.
+ */
+const providersApi: VeyraDesktopAPI["providers"] = Object.freeze({
+  getStatus: async () => {
+    return ipcRenderer.invoke(IPC_CHANNELS.PROVIDERS_GET_STATUS) as Promise<{
+      readonly success: boolean;
+      readonly data?: ProvidersGetStatusResult;
+      readonly error?: Error;
+    }>;
+  },
+
+  saveCredential: async (
+    request: ProvidersSaveCredentialRequest,
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.PROVIDERS_SAVE_CREDENTIAL,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: ProvidersSaveCredentialResult;
+      readonly error?: Error;
+    }>;
+  },
+
+  deleteCredential: async (
+    request: { readonly providerId: string },
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.PROVIDERS_DELETE_CREDENTIAL,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: ProvidersDeleteCredentialResult;
+      readonly error?: Error;
+    }>;
+  },
+
+  verifyCredential: async (
+    request: ProvidersVerifyCredentialRequest,
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.PROVIDERS_VERIFY_CREDENTIAL,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: ProvidersVerifyCredentialResult;
+      readonly error?: Error;
+    }>;
+  },
+
+  listModels: async (
+    request: ProvidersListModelsRequest,
+  ) => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.PROVIDERS_LIST_MODELS,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: ProvidersListModelsResult;
+      readonly error?: Error;
+    }>;
+  },
+
+  setPreferredModel: async (
+    request: ProvidersSetPreferredModelRequest,
+  ): Promise<{ readonly success: boolean; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.PROVIDERS_SET_PREFERRED_MODEL,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly error?: Error }>;
+  },
+
+  setExecutionMode: async (
+    request: ProvidersSetExecutionModeRequest,
+  ): Promise<{ readonly success: boolean; readonly error?: Error }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.PROVIDERS_SET_EXECUTION_MODE,
+      request,
+    ) as Promise<{ readonly success: boolean; readonly error?: Error }>;
+  },
+});
+
+/**
+ * Audio API exposed to the renderer.
+ *
+ * All operations go through IPC. The renderer never receives raw audio
+ * buffers or direct microphone access.
+ */
+const audioApi: VeyraDesktopAPI["audio"] = {
+  listDevices: async (
+    request?: AudioListDevicesRequest,
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: AudioListDevicesResponse;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_DEVICES_LIST,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: AudioListDevicesResponse;
+      readonly error?: Error;
+    }>;
+  },
+
+  permissionStatus: async (
+    request?: AudioPermissionRequest,
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: AudioPermissionResponse;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_PERMISSION_STATUS,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: AudioPermissionResponse;
+      readonly error?: Error;
+    }>;
+  },
+
+  requestPermission: async (
+    request?: AudioPermissionRequest,
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: AudioPermissionResponse;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_PERMISSION_REQUEST,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: AudioPermissionResponse;
+      readonly error?: Error;
+    }>;
+  },
+
+  startSession: async (
+    request: AudioSessionStartRequest,
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: AudioSessionStartResponse;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_SESSION_START,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: AudioSessionStartResponse;
+      readonly error?: Error;
+    }>;
+  },
+
+  stopSession: async (
+    request: AudioSessionStopRequest,
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: AudioSessionStopResponse;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_SESSION_STOP,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: AudioSessionStopResponse;
+      readonly error?: Error;
+    }>;
+  },
+
+  sessionState: async (
+    request: AudioSessionStateRequest,
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: AudioSessionStateResponse;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_SESSION_STATE,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: AudioSessionStateResponse;
+      readonly error?: Error;
+    }>;
+  },
+
+  transcriptState: async (
+    request: AudioTranscriptStateRequest,
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: AudioTranscriptStateResponse;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_TRANSCRIPT_STATE,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: AudioTranscriptStateResponse;
+      readonly error?: Error;
+    }>;
+  },
+
+  metrics: async (
+    request: AudioMetricsRequest,
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: AudioMetricsResponse;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_METRICS,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: AudioMetricsResponse;
+      readonly error?: Error;
+    }>;
+  },
+};
+
 /**
  * Complete renderer-facing API.
  *
@@ -377,4 +772,32 @@ export const api: VeyraDesktopAPI = Object.freeze({
   document: documentApi,
 
   memory: memoryApi,
+
+  candidate: candidateApi,
+
+  providers: providersApi,
+
+  practice: Object.freeze({
+    createSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PRACTICE_CREATE_SESSION, request),
+    getSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PRACTICE_GET_SESSION, request),
+    listSessions: (request?: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PRACTICE_LIST_SESSIONS, request),
+    submitAnswer: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PRACTICE_SUBMIT_ANSWER, request),
+    nextQuestion: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PRACTICE_NEXT_QUESTION, request),
+    pauseSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PRACTICE_PAUSE_SESSION, request),
+    resumeSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PRACTICE_RESUME_SESSION, request),
+    completeSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PRACTICE_COMPLETE_SESSION, request),
+    getReport: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.PRACTICE_GET_REPORT, request),
+  }),
+  runtime: Object.freeze({
+    createSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_CREATE_SESSION, request),
+    startSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_START_SESSION, request),
+    pauseSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_PAUSE_SESSION, request),
+    resumeSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_RESUME_SESSION, request),
+    cancelSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_CANCEL_SESSION, request),
+    completeSession: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_COMPLETE_SESSION, request),
+    getState: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_GET_STATE, request),
+    processQuestion: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_PROCESS_QUESTION, request),
+    submitAnswer: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_SUBMIT_ANSWER, request),
+  }),
+  audio: Object.freeze(audioApi),
 });

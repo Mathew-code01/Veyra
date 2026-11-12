@@ -19,30 +19,14 @@ import { ModelSystem } from "./ModelSystem";
 
 import { HardwareService } from "../services/ai/HardwareService";
 
+import { activeProfileService } from "./activeProfile";
+import { initializeActiveProfile } from "./activeProfile";
+
 import { registerHardwareIpc } from "../ipc/hardware.ipc";
 import { registerAiIpc } from "../ipc/ai.ipc";
 import { registerInterviewIpc } from "../ipc/interview.ipc";
-import { closeDatabase, createDatabase } from "../../database/client";
-
-import {
-  InMemoryCandidateProfileStore,
-} from "../../core/candidate/stores/CandidateProfileStore";
-
-import {
-  InMemoryExperienceStore,
-} from "../../core/candidate/stores/ExperienceStore";
-
-import {
-  InMemoryProjectStore,
-} from "../../core/candidate/stores/ProjectStore";
-
-import {
-  InMemorySkillStore,
-} from "../../core/candidate/stores/SkillStore";
-
-import {
-  InMemoryStoryStore,
-} from "../../core/candidate/stores/StoryStore";
+import { registerProvidersIpc } from "../ipc/providers.ipc";
+import { closeDatabase, createDatabase, getDatabase } from "../../database/client";
 
 import { CandidateContextBuilder } from "../../core/candidate/services/CandidateContextBuilder";
 
@@ -78,8 +62,6 @@ import { HTMLParser } from "../../core/documents/parsers/HTMLParser";
 
 import { MarkdownParser } from "../../core/documents/parsers/MarkdownParser";
 
-import { InMemoryCandidateEvidenceStore } from "../../core/candidate/contracts/CandidateEvidenceStore";
-
 import { CandidateDocumentEvidenceAdapter } from "../../core/candidate/services/CandidateDocumentEvidenceAdapter";
 
 import type { DocumentAIAnalyzerOptions } from "../../core/documents/analysis/DocumentAIAnalyzer";
@@ -88,9 +70,51 @@ import type { DocumentStore } from "../../core/documents/storage/DocumentStore";
 
 import { MemoryRepository } from "../../database/repositories/memoryRepository";
 
+import { CandidateEvidenceRepository } from "../../database/repositories/candidateEvidenceRepository";
+
+import { ProviderCredentialRepository } from "../../database/repositories/providerCredentialRepository";
+
+import { ProviderSettingsRepository } from "../../database/repositories/providerSettingsRepository";
+import { ProfileRepository } from "../../database/repositories/profileRepository";
+import { CandidateRepository } from "../../database/repositories/candidateRepository";
+
+import { SecureCredentialStore } from "../../core/security/SecureCredentialStore";
+
+import { ElectronCredentialVault } from "../security/electronCredentialVault";
+
+import { SecureCloudCredentialResolver } from "../../core/cloud/configuration/SecureCloudCredentialResolver";
+
+import { CloudExecutionPolicy } from "../../core/cloud/CloudExecutionPolicy";
+
+import { CloudGateway } from "../../core/cloud/CloudGateway";
+
 import { registerDocumentIpc } from "../ipc/document.ipc";
 
 import { registerMemoryIpc } from "../ipc/memory.ipc";
+
+import { registerCandidateIpc } from "../ipc/candidate.ipc";
+
+import { registerPracticeIpc } from "../ipc/practice.ipc";
+import { registerInterviewRuntimeIpc } from "../ipc/interview-runtime.ipc";
+
+import { registerAudioIpc } from "../ipc/audio.ipc";
+
+import { registerCaptureIpc } from "../ipc/capture.ipc";
+
+import { registerVisionIpc } from "../ipc/vision.ipc";
+
+import {
+  PDFParser,
+  DOCXParser,
+  SafePDFProvider,
+  SafeDOCXProvider,
+} from "../../core/documents";
+
+import { SessionRepository } from "../../database/repositories/sessionRepository";
+import { QuestionRepository } from "../../database/repositories/questionRepository";
+import { AnswerRepository } from "../../database/repositories/answerRepository";
+import { PracticeSessionEngine } from "../../core/interview/practice/PracticeSessionEngine";
+import { UnifiedInterviewRuntime } from "../../core/interview/runtime/UnifiedInterviewRuntime";
 
 let initialized = false;
 
@@ -123,6 +147,24 @@ let cleanupInterviewIpc: (() => void) | null = null;
 let cleanupDocumentIpc: (() => void) | null = null;
 
 let cleanupMemoryIpc: (() => void) | null = null;
+
+let cleanupCandidateIpc: (() => void) | null = null;
+
+let cleanupPracticeIpc: (() => void) | null = null;
+let cleanupInterviewRuntimeIpc: (() => void) | null = null;
+
+let cleanupAudioIpc: (() => void) | null = null;
+
+let cleanupCaptureIpc: (() => void) | null = null;
+
+let cleanupVisionIpc: (() => void) | null = null;
+
+let practiceSessionEngine: PracticeSessionEngine | null = null;
+let interviewRuntime: UnifiedInterviewRuntime | null = null;
+
+let cleanupProvidersIpc: (() => void) | null = null;
+
+let credentialStore: SecureCredentialStore | null = null;
 
 export async function initializeApplication(): Promise<void> {
   if (initialized) {
@@ -237,6 +279,30 @@ async function initializeApplicationServices(): Promise<void> {
     filename: databasePath,
   });
 
+  const profileRepository = new ProfileRepository();
+  let localProfiles = profileRepository.list();
+  if (localProfiles.length === 0) {
+    profileRepository.create({ displayName: "Local profile" });
+    localProfiles = profileRepository.list();
+  }
+  initializeActiveProfile(activeProfileService, localProfiles);
+
+  /*
+   * Secure BYOK credential store.
+   *
+   * Credentials are encrypted with OS-backed secure storage (Electron
+   * safeStorage) and only ciphertext is persisted in SQLite. The vault is
+   * created here so the secure credential resolver and provider settings
+   * IPC can resolve and store BYOK keys without exposing raw secrets.
+   */
+  const vault = new ElectronCredentialVault();
+
+  credentialStore = new SecureCredentialStore({
+    vault,
+
+    repository: new ProviderCredentialRepository(),
+  });
+
   analyticsManager = new AnalyticsManager({ maxEvents: 500 });
   analyticsManager.record({
     type: "app_start",
@@ -295,14 +361,56 @@ async function initializeApplicationServices(): Promise<void> {
     autoInstall: false,
   });
 
-  const cloudRegistry = createDefaultCloudProviderRegistry({
-    allowUnconfigured: false,
+  /*
+   * Secure cloud credential resolver.
+   *
+   * OS-backed secure storage (BYOK) is checked first for the active profile,
+   * then environment variables. This lets users store keys via the settings UI
+   * while preserving existing environment-variable-based configuration.
+   */
+  const secureCredentialResolver = new SecureCloudCredentialResolver({
+    credentialStore: credentialStore!,
+
+    getActiveProfileId: () => activeProfileService.getActiveProfile(),
   });
 
+  const cloudRegistry = createDefaultCloudProviderRegistry({
+    allowUnconfigured: true,
+
+    credentialResolver: secureCredentialResolver,
+  });
+
+  /*
+   * Central cloud execution policy.
+   *
+   * Cloud requests are denied by default: external processing requires
+   * explicit consent (externalProcessingAllowed) and every model must be
+   * explicitly classified as authorized. UNKNOWN / PAID / DISABLED models
+   * are denied by CloudExecutionPolicy on every generation and streaming
+   * path, so no provider can silently spend quota or money.
+   */
+  const cloudExecutionPolicy = new CloudExecutionPolicy({
+    externalProcessingAllowed: false,
+
+    models: {},
+
+    quotaLedger: undefined,
+  });
+
+  const cloudGateway = new CloudGateway(
+    cloudRegistry,
+
+    reliabilityManager,
+
+    cloudExecutionPolicy,
+  );
+
   for (const provider of cloudRegistry.list()) {
-    runtimeAIManager.registerCloudAIProviderFromRegistry(cloudRegistry, {
+    runtimeAIManager.registerCloudAIProviderFromGateway(cloudGateway, {
       providerId: provider.id,
+
       name: provider.name,
+
       replaceExisting: true,
     });
   }
@@ -318,22 +426,24 @@ async function initializeApplicationServices(): Promise<void> {
 
   /*
    * --------------------------------------------------------------------------
-   * 4b. Candidate service (in-memory stores until SQLite repositories are
-   * wired in P1).
+   * 4b. Candidate service.
    *
-   * Candidate data is isolated within this process and never leaks between
-   * candidate profiles because every store operation is keyed by candidateId.
+   * Structured candidate records and imported document evidence are stored
+   * in SQLite and scoped to the active profile.
    * --------------------------------------------------------------------------
    */
-  const profileStore = new InMemoryCandidateProfileStore();
+  const candidateRepository = new CandidateRepository(() =>
+    activeProfileService.getActiveProfile(),
+  );
+  const profileStore = candidateRepository.profileStore;
+  const experienceStore = candidateRepository.experienceStore;
+  const projectStore = candidateRepository.projectStore;
+  const skillStore = candidateRepository.skillStore;
+  const storyStore = candidateRepository.storyStore;
 
-  const experienceStore = new InMemoryExperienceStore();
-
-  const projectStore = new InMemoryProjectStore();
-
-  const skillStore = new InMemorySkillStore();
-
-  const storyStore = new InMemoryStoryStore();
+  const evidenceStore = new CandidateEvidenceRepository(() =>
+    activeProfileService.getActiveProfile(),
+  );
 
   const contextBuilder = new CandidateContextBuilder({
     profileStore,
@@ -341,6 +451,7 @@ async function initializeApplicationServices(): Promise<void> {
     projectStore,
     skillStore,
     storyStore,
+    evidenceStore,
   });
 
   candidateService = new CandidateService({
@@ -352,15 +463,17 @@ async function initializeApplicationServices(): Promise<void> {
    * --------------------------------------------------------------------------
    * 4c. Generic context engine.
    *
-   * Uses OnnxEmbeddingService when VEYRA_EMBEDDING_MODEL_PATH points to a
-   * compatible ONNX embedding model; otherwise degrades to MockEmbeddingService
-   * so indexing still works. Vectors are persisted in SQLite via
-   * SqliteVectorStore (survives restart).
+   * Uses OnnxEmbeddingService when VEYRA_EMBEDDING_MODEL_PATH and a compatible
+   * tokenizer are available; otherwise indexes text for keyword retrieval
+   * without creating synthetic vectors. Context records persist in SQLite.
    * --------------------------------------------------------------------------
    */
   const contextEngine = createContextEngine();
 
   contextManager = contextEngine.manager;
+
+  memoryRepository = new MemoryRepository();
+  memoryRepository.expireOlderThan(new Date().toISOString());
 
   /*
    * --------------------------------------------------------------------------
@@ -372,6 +485,54 @@ async function initializeApplicationServices(): Promise<void> {
     reliabilityManager,
     candidateService,
     contextManager,
+    resolveProfileId: () => activeProfileService.getActiveProfile(),
+    retrieveCandidateContext: async (candidateId, signal) => {
+      if (!candidateService) {
+        throw new Error("Candidate service is not initialized.");
+      }
+      const context = await candidateService.getContext({ candidateId, signal });
+      return {
+        text: context.text,
+        evidenceIds: context.evidence.map((item) => item.id),
+      };
+    },
+    retrieveMemory: async (profileId, candidateId, query, signal) => {
+      if (!memoryRepository) {
+        throw new Error("Memory repository is not initialized.");
+      }
+
+      const categories = candidateId
+        ? (["candidate", "session", "knowledge"] as const)
+        : ([] as const);
+      const candidateMemories = categories.flatMap((category) =>
+        memoryRepository!.search(profileId, {
+          query,
+          category,
+          candidateId,
+          minConfidence: 40,
+          limit: 6,
+          signal,
+        }),
+      );
+      const preferences = memoryRepository.search(profileId, {
+        query,
+        category: "preference",
+        candidateId: null,
+        minConfidence: 40,
+        limit: 4,
+        signal,
+      });
+
+      return [...candidateMemories, ...preferences]
+        .filter((record) => record.content.text?.trim())
+        .slice(0, 10)
+        .map((record) => ({
+          id: record.id,
+          text: record.content.text!,
+          verificationStatus: record.verificationStatus,
+          sourceId: record.sourceId,
+        }));
+    },
   });
 
   cleanupInterviewIpc = registerInterviewIpc({
@@ -386,8 +547,8 @@ async function initializeApplicationServices(): Promise<void> {
    *
    * The deterministic document pipeline is wired with:
    *
-   *   - In-memory document store (P1 stage; SQLite replaces this later)
-   *   - All registered parsers (PDF, DOCX, TXT, HTML, Markdown)
+   *   - Profile-scoped SQLite document storage
+   *   - Production parsers for TXT, HTML, and Markdown
    *   - ContextDocumentIndexer as the context sink
    *   - AIManagerDocumentAnalyzer as the AI analysis boundary
    *   - CandidateDocumentEvidenceAdapter as the candidate evidence port
@@ -400,11 +561,13 @@ async function initializeApplicationServices(): Promise<void> {
     new TextParser(),
     new HTMLParser(),
     new MarkdownParser(),
+    new PDFParser(new SafePDFProvider()),
+    new DOCXParser(new SafeDOCXProvider()),
   ]);
 
-  const documentStore: DocumentStore = new SqliteDocumentStore();
-
-  const evidenceStore = new InMemoryCandidateEvidenceStore();
+  const documentStore: DocumentStore = new SqliteDocumentStore({
+    resolveProfileId: () => activeProfileService.getActiveProfile(),
+  });
 
   const evidenceAdapter = new CandidateDocumentEvidenceAdapter({
     evidenceStore,
@@ -428,6 +591,7 @@ async function initializeApplicationServices(): Promise<void> {
     parserRegistry,
 
     documentStore,
+    resolveProfileId: () => activeProfileService.getActiveProfile(),
 
     contextSink: contextIndexer,
 
@@ -465,10 +629,128 @@ async function initializeApplicationServices(): Promise<void> {
    * record to profile_id for profile isolation.
    * --------------------------------------------------------------------------
    */
-  memoryRepository = new MemoryRepository();
-
   cleanupMemoryIpc = registerMemoryIpc({
     memoryRepository,
+    ipcMain,
+    activeProfileResolver: activeProfileService,
+  });
+
+  cleanupCandidateIpc = registerCandidateIpc({
+    repository: candidateRepository,
+    ipcMain,
+    activeProfileResolver: activeProfileService,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
+   * Practice session engine + IPC.
+   *
+   * PracticeSessionEngine orchestrates mock interview sessions end-to-end:
+   * question generation, answer evaluation, follow-up logic and report
+   * generation.  It owns SessionRepository, QuestionRepository and
+   * AnswerRepository directly (all SQLite-backed, no extra dependencies).
+   * --------------------------------------------------------------------------
+   */
+  const sessionRepo = new SessionRepository();
+  const questionRepo = new QuestionRepository();
+  const answerRepo = new AnswerRepository();
+
+  practiceSessionEngine = new PracticeSessionEngine(
+    sessionRepo,
+    questionRepo,
+    answerRepo,
+  );
+
+  cleanupPracticeIpc = registerPracticeIpc({
+    practiceEngine: practiceSessionEngine,
+    getActiveProfileId: () => activeProfileService.getActiveProfile(),
+    ipcMain,
+  });
+  interviewRuntime = new UnifiedInterviewRuntime({
+    interviewIntelligence,
+    sessionRepository: sessionRepo,
+    questionRepository: questionRepo,
+    answerRepository: answerRepo,
+    memoryRepository,
+    contextManager,
+    aiManager: runtimeAIManager,
+    resolveProfileId: () => activeProfileService.getActiveProfile(),
+    retrieveCandidateContext: async (_profileId, candidateId, _query, signal) => {
+      if (!candidateService || !candidateId) return [];
+      try {
+        const context = await candidateService.getContext({ candidateId, signal });
+        return (context.evidence ?? []).slice(0, 8).map((item: any) => ({
+          id: String(item.id ?? item.sourceId ?? "candidate-evidence"),
+          source: "candidate" as const,
+          text: String(item.text ?? item.summary ?? item.value ?? item.content ?? "").slice(0, 1200),
+          verified: item.verified === true,
+        })).filter((e: any) => e.text.trim().length > 0);
+      } catch {
+        return [];
+      }
+    },
+  });
+
+  cleanupInterviewRuntimeIpc = registerInterviewRuntimeIpc({
+    runtime: interviewRuntime,
+    getActiveProfileId: () => activeProfileService.getActiveProfile(),
+    ipcMain,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
+   * Audio IPC.
+   *
+   * Exposes audio capture session management, permission checks, device
+   * listing, and transcript state. No raw audio buffers cross IPC.
+   * --------------------------------------------------------------------------
+   */
+  cleanupAudioIpc = registerAudioIpc({
+    ipcMain,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
+   * Capture IPC (screen/window source discovery and session control).
+   * Raw frames are not exposed to renderer; capture is user-initiated.
+   * --------------------------------------------------------------------------
+   */
+  cleanupCaptureIpc = registerCaptureIpc({
+    ipcMain,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
+   * Vision IPC.
+   * Vision pipeline is not constructed by default (no authorized provider/OCR
+   * configured). Handler returns unavailable until a safe pipeline is wired.
+   * --------------------------------------------------------------------------
+   */
+  cleanupVisionIpc = registerVisionIpc({
+    ipcMain,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
+   * Provider settings (BYOK) IPC.
+   *
+   * Exposes secure credential save/delete/verify, model discovery, preferred
+   * model selection and execution mode. No raw secret ever crosses IPC.
+   * --------------------------------------------------------------------------
+   */
+  cleanupProvidersIpc = registerProvidersIpc({
+    credentialStore: credentialStore!,
+
+    settingsRepository: new ProviderSettingsRepository(),
+
+    cloudRegistry,
+
+    cloudExecutionPolicy,
+
+    aiManager: runtimeAIManager,
+
+    activeProfileResolver: activeProfileService,
+
     ipcMain,
   });
 
@@ -538,6 +820,46 @@ async function shutdownApplicationServices(): Promise<void> {
     cleanupMemoryIpc = null;
   }
 
+  if (cleanupCandidateIpc) {
+    cleanupCandidateIpc();
+
+    cleanupCandidateIpc = null;
+  }
+
+  if (cleanupPracticeIpc) {
+    cleanupPracticeIpc();
+
+    cleanupPracticeIpc = null;
+  }
+  if (cleanupInterviewRuntimeIpc) {
+    cleanupInterviewRuntimeIpc();
+    cleanupInterviewRuntimeIpc = null;
+  }
+
+  if (cleanupAudioIpc) {
+    cleanupAudioIpc();
+
+    cleanupAudioIpc = null;
+  }
+
+  if (cleanupCaptureIpc) {
+    cleanupCaptureIpc();
+
+    cleanupCaptureIpc = null;
+  }
+
+  if (cleanupVisionIpc) {
+    cleanupVisionIpc();
+
+    cleanupVisionIpc = null;
+  }
+
+  if (cleanupProvidersIpc) {
+    cleanupProvidersIpc();
+
+    cleanupProvidersIpc = null;
+  }
+
   /*
    * --------------------------------------------------------------------------
    * 2. Dispose the model system.
@@ -564,4 +886,6 @@ async function shutdownApplicationServices(): Promise<void> {
   memoryRepository = null;
   hardwareService = null;
   analyticsManager = null;
+  credentialStore = null;
+  interviewRuntime = null;
 }

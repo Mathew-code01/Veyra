@@ -1,15 +1,21 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+﻿import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createdAt, idColumn, jsonText } from "./_shared";
 import { sessions } from "./sessions";
 import { questions } from "./questions";
 
 export interface AnswerPayload {
+  candidateAnswerText?: string;
   headline?: string;
   sections?: Array<{ title: string; points: string[] }>;
   talkingPoints?: string[];
   cautions?: string[];
   structure?: string;
   sourceContextIds?: string[];
+  evaluation?: unknown;
+  communicationFeedback?: unknown;
+  /** Unified runtime extensions (additive). */
+  followUps?: readonly unknown[];
+  evidenceIds?: readonly string[];
 }
 
 export const answers = sqliteTable(
@@ -32,3 +38,4 @@ export const answers = sqliteTable(
     index("answers_question_idx").on(table.questionId),
   ],
 );
+

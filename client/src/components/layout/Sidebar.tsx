@@ -6,6 +6,7 @@ import {
   FileText,
   FolderKanban,
   History,
+  Mic,
   LayoutDashboard,
   Settings,
   Sparkles,
