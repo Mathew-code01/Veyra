@@ -17,6 +17,7 @@ import type {
   CandidateRoleGap,
   GapAnalysis,
   JobDescriptionAnalysis,
+  MatchType,
 } from "../../../shared/types/preparation";
 
 export interface CandidateEvidenceInput {

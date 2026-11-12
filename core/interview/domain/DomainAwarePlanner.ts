@@ -68,7 +68,7 @@ export class DomainAwarePlanner {
       })),
       talkingPoints: Object.freeze(talkingPoints),
       cautions: Object.freeze(plan.cautions),
-      recommendedEvidenceIds: Object.freeze(plan.recommendedEvidenceIds),
+      recommendedEvidenceIds: Object.freeze(plan.recommendedEvidenceIds ?? []),
       structure: Object.freeze(plan.steps.map((s) => s.phase)),
     });
   }

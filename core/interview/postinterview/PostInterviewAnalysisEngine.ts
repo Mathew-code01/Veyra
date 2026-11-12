@@ -30,11 +30,13 @@ import type {
   AnswerEvaluation,
   AnswerPlan,
   CommunicationFeedback,
+  EvaluationDimensionSummary,
   FollowUpQuestion,
   InterviewDomain,
   QuestionUnderstanding,
 } from "../../../shared/types/interviews";
 import type {
+  LearningActivity,
   LearningPlan,
   PostInterviewAnalysisInput,
   PostInterviewReview,
@@ -266,7 +268,7 @@ export class PostInterviewAnalysisEngine {
       overallTrend: "insufficient_data",
       competencyInsights: Object.freeze(competencyInsights),
       recurringWeaknesses: Object.freeze(
-        review.weaknesses.map((w) => w.area),
+        currentReview.weaknesses.map((w: StrengthWeakness) => w.area),
       ),
       improvedAnswerQuality: previousSessions.length === 0,
       generatedAt: new Date().toISOString(),
@@ -308,7 +310,7 @@ export class PostInterviewAnalysisEngine {
       evidence.map((e) => ({
         id: e.id,
         text: e.text,
-        sourceType: e.source,
+        source: e.source,
         confidence: e.verified ? 1 : 0.7,
       })),
     );
@@ -391,7 +393,7 @@ export class PostInterviewAnalysisEngine {
       questionUnderstanding: understanding,
       domain,
       targetRole,
-      availableEvidenceIds: evidence.map((e) => e.id),
+      availableEvidenceTexts: evidence.map((e) => e.id),
     });
   }
 
@@ -400,7 +402,7 @@ export class PostInterviewAnalysisEngine {
     evidence: readonly ReviewEvidence[],
   ): TransparentEvaluation {
     const dimensions: readonly EvaluationDimensionSummary[] = Object.entries(
-      evaluation.dimensions,
+      evaluation.dimensions as Record<string, { score: number; feedback: string }>,
     ).map(([dimension, value]) => ({
       dimension,
       score: value.score,
@@ -470,11 +472,11 @@ export class PostInterviewAnalysisEngine {
     for (const dim of dimensionNames) {
       const vals = reviews
         .map((r) => r.evaluation.dimensions.find((d) => d.dimension === dim))
-        .filter((d): d is { readonly score: number; readonly feedback: string } => Boolean(d));
+        .filter((d): d is EvaluationDimensionSummary => Boolean(d));
       if (vals.length > 0) {
         dimensionAverages[dim] =
           vals.reduce((s, v) => s + v.score, 0) / vals.length;
-        dimensionFeedback[dim] = vals.map((v) => v.feedback).join("; ");
+        dimensionFeedback[dim] = vals.map((v) => v.feedback ?? "").join("; ");
       }
     }
 

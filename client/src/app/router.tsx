@@ -3,9 +3,13 @@
 import { AppShell } from "@/components/layout/AppShell";
 
 import { Dashboard } from "@/pages/Dashboard/Dashboard";
-import { Preparation } from "@/pages/Preparation/Preparation";
 import { Documents } from "@/pages/Documents/Documents";
+import { Experience } from "@/pages/Profile/Experience";
+import { Preparation } from "@/pages/Preparation/Preparation";
 import { Profile } from "@/pages/Profile/Profile";
+import { Projects } from "@/pages/Projects/Projects";
+import { Skills } from "@/pages/Profile/Skills";
+import { Stories } from "@/pages/Stories/Stories";
 import { Settings } from "@/pages/Settings/Settings";
 import { History } from "@/pages/History/History";
 import { SessionDetails } from "@/pages/History/SessionDetails";
@@ -30,7 +34,10 @@ export const router = createBrowserRouter([
   { path: "/live", element: <AppShell><LiveInterview /></AppShell> },
   { path: "/documents", element: <AppShell><Documents /></AppShell> },
   { path: "/profile", element: <AppShell><Profile /></AppShell> },
-  { path: "/projects", element: <AppShell><Placeholder title="Projects" /></AppShell> },
+  { path: "/profile/experience", element: <AppShell><Experience /></AppShell> },
+  { path: "/profile/skills", element: <AppShell><Skills /></AppShell> },
+  { path: "/projects", element: <AppShell><Projects /></AppShell> },
+  { path: "/stories", element: <AppShell><Stories /></AppShell> },
   { path: "/history", element: <AppShell><History /></AppShell> },
   { path: "/history/:sessionId", element: <AppShell><SessionDetails /></AppShell> },
   { path: "/analytics", element: <AppShell><Placeholder title="Analytics" /></AppShell> },

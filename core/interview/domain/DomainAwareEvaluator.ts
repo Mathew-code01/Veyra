@@ -13,7 +13,7 @@
 
 import type { AnswerEvaluation } from "../../../shared/types/interviews";
 import type { QuestionUnderstanding } from "../../../shared/types/interviews";
-import type { DomainAnswerEvaluation } from "./DomainDefinition";
+import type { DomainAnswerEvaluation, DomainDefinition } from "./DomainDefinition";
 import type { DomainRegistry } from "./DomainRegistry";
 
 import { AnswerEvaluationEngine } from "../evaluation/AnswerEvaluationEngine";
@@ -65,7 +65,7 @@ export class DomainAwareEvaluator {
           "roleAlignment",
         ];
 
-    const baseDimensions = base.dimensions ?? {};
+    const baseDimensions = (base.dimensions as Record<string, { score: number; feedback: string }>) ?? {};
     const dimensions = dimensionOrder.map((dimension) => {
       const found = baseDimensions[dimension];
       const score = found?.score ?? 0;
