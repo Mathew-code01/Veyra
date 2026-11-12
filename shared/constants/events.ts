@@ -78,6 +78,15 @@ export const IPC_CHANNELS = Object.freeze({
   AUDIO_METRICS: "audio:metrics",
 
   // --------------------------------------------------------------------------
+  // AUDIO-TO-RUNTIME (live interview assistance)
+  // --------------------------------------------------------------------------
+
+  AUDIO_RUNTIME_SESSION_START: "audio:runtime:session:start",
+  AUDIO_RUNTIME_SESSION_STOP: "audio:runtime:session:stop",
+  AUDIO_RUNTIME_SESSION_STATE: "audio:runtime:session:state",
+  AUDIO_TRANSCRIPT_SUBMIT: "audio:transcript:submit",
+
+  // --------------------------------------------------------------------------
   // CAPTURE
   // --------------------------------------------------------------------------
 

@@ -96,6 +96,7 @@ import { registerCandidateIpc } from "../ipc/candidate.ipc";
 
 import { registerPracticeIpc } from "../ipc/practice.ipc";
 import { registerInterviewRuntimeIpc } from "../ipc/interview-runtime.ipc";
+import { registerAudioRuntimeIpc } from "../ipc/audio-runtime.ipc";
 
 import { registerAudioIpc } from "../ipc/audio.ipc";
 
@@ -161,6 +162,7 @@ let cleanupVisionIpc: (() => void) | null = null;
 
 let practiceSessionEngine: PracticeSessionEngine | null = null;
 let interviewRuntime: UnifiedInterviewRuntime | null = null;
+let cleanupAudioRuntimeIpc: (() => void) | null = null;
 
 let cleanupProvidersIpc: (() => void) | null = null;
 
@@ -699,6 +701,20 @@ async function initializeApplicationServices(): Promise<void> {
 
   /*
    * --------------------------------------------------------------------------
+   * Audio-to-runtime IPC.
+   *
+   * Connects live audio capture/transcription to the unified interview
+   * runtime for live interview assistance. No raw audio crosses IPC.
+   * --------------------------------------------------------------------------
+   */
+  cleanupAudioRuntimeIpc = registerAudioRuntimeIpc({
+    runtime: interviewRuntime,
+    getActiveProfileId: () => activeProfileService.getActiveProfile(),
+    ipcMain,
+  });
+
+  /*
+   * --------------------------------------------------------------------------
    * Audio IPC.
    *
    * Exposes audio capture session management, permission checks, device
@@ -834,6 +850,10 @@ async function shutdownApplicationServices(): Promise<void> {
   if (cleanupInterviewRuntimeIpc) {
     cleanupInterviewRuntimeIpc();
     cleanupInterviewRuntimeIpc = null;
+  }
+  if (cleanupAudioRuntimeIpc) {
+    cleanupAudioRuntimeIpc();
+    cleanupAudioRuntimeIpc = null;
   }
 
   if (cleanupAudioIpc) {

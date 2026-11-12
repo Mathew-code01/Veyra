@@ -724,6 +724,76 @@ const audioApi: VeyraDesktopAPI["audio"] = {
  *
  * Do not expose ipcRenderer itself.
  */
+const audioRuntimeApi: VeyraDesktopAPI["audioRuntime"] = {
+  startLiveSession: async (
+    request: { readonly sessionId: string; readonly consentGiven?: boolean },
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_RUNTIME_SESSION_START,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: unknown;
+      readonly error?: Error;
+    }>;
+  },
+
+  stopLiveSession: async (
+    request: { readonly sessionId: string },
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_RUNTIME_SESSION_STOP,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: unknown;
+      readonly error?: Error;
+    }>;
+  },
+
+  liveSessionState: async (
+    request: { readonly sessionId: string },
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_RUNTIME_SESSION_STATE,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: unknown;
+      readonly error?: Error;
+    }>;
+  },
+
+  submitTranscript: async (
+    request: { readonly sessionId: string; readonly text: string },
+  ): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }> => {
+    return ipcRenderer.invoke(
+      IPC_CHANNELS.AUDIO_TRANSCRIPT_SUBMIT,
+      request,
+    ) as Promise<{
+      readonly success: boolean;
+      readonly data?: unknown;
+      readonly error?: Error;
+    }>;
+  },
+};
+
 export const api: VeyraDesktopAPI = Object.freeze({
   app: Object.freeze({
     getVersion: (): Promise<string> =>
@@ -800,4 +870,5 @@ export const api: VeyraDesktopAPI = Object.freeze({
     submitAnswer: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_SUBMIT_ANSWER, request),
   }),
   audio: Object.freeze(audioApi),
+  audioRuntime: Object.freeze(audioRuntimeApi),
 });

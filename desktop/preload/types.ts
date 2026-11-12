@@ -524,7 +524,8 @@ export interface VeyraDesktopAPI {
 
   readonly providers: VeyraProvidersApi;
 
-  readonly audio: VeyraAudioApi;
+    readonly audio: VeyraAudioApi;
+    readonly audioRuntime: VeyraAudioRuntimeApi;
 
   readonly practice: VeyraPracticeApi;
 
@@ -623,6 +624,90 @@ export interface VeyraAudioApi {
   ): Promise<{
     readonly success: boolean;
     readonly data?: AudioMetricsResponse;
+    readonly error?: Error;
+  }>;
+}
+
+/**
+ * Audio-to-runtime API exposed to the renderer.
+ *
+ * All operations go through IPC. The renderer never receives raw audio
+ * buffers or direct microphone access.
+ */
+export interface VeyraAudioRuntimeApi {
+  startLiveSession(request: {
+    readonly sessionId: string;
+    readonly consentGiven?: boolean;
+  }): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }>;
+
+  stopLiveSession(request: {
+    readonly sessionId: string;
+  }): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }>;
+
+  liveSessionState(request: {
+    readonly sessionId: string;
+  }): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }>;
+
+  submitTranscript(request: {
+    readonly sessionId: string;
+    readonly text: string;
+  }): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }>;
+}
+
+/**
+ * Audio-to-runtime API exposed to the renderer.
+ *
+ * All operations go through IPC. The renderer never receives raw audio
+ * buffers or direct microphone access.
+ */
+export interface VeyraAudioRuntimeApi {
+  startLiveSession(request: {
+    readonly sessionId: string;
+    readonly consentGiven?: boolean;
+  }): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }>;
+
+  stopLiveSession(request: {
+    readonly sessionId: string;
+  }): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }>;
+
+  liveSessionState(request: {
+    readonly sessionId: string;
+  }): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
+    readonly error?: Error;
+  }>;
+
+  submitTranscript(request: {
+    readonly sessionId: string;
+    readonly text: string;
+  }): Promise<{
+    readonly success: boolean;
+    readonly data?: unknown;
     readonly error?: Error;
   }>;
 }
