@@ -1,5 +1,12 @@
 // ============================================================================
 // FILE: core/vision/errors/VisionError.ts
+//
+// PURPOSE:
+// Canonical error model for the Vision subsystem.
+//
+// Vision errors must be machine-readable so desktop IPC, AIManager,
+// analytics, logging, retry logic, and UI layers can make appropriate
+// decisions without parsing error strings.
 // ============================================================================
 
 export type VisionErrorCode =
@@ -49,11 +56,14 @@ export interface VisionErrorDetails {
 
   readonly maxHeight?: number;
 
+  readonly cause?: unknown;
+
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 export interface VisionErrorOptions {
   readonly details?: VisionErrorDetails;
+
   readonly cause?: unknown;
 }
 
@@ -61,8 +71,6 @@ export class VisionError extends Error {
   public readonly code: VisionErrorCode;
 
   public readonly details: VisionErrorDetails;
-
-  public readonly cause?: unknown;
 
   public constructor(
     code: VisionErrorCode,
@@ -72,14 +80,16 @@ export class VisionError extends Error {
     super(message);
 
     this.name = "VisionError";
-
     this.code = code;
 
-    this.details = Object.freeze({
+    this.details = {
       ...(options.details ?? {}),
-    });
-
-    this.cause = options.cause;
+      ...(options.cause !== undefined
+        ? {
+            cause: options.cause,
+          }
+        : {}),
+    };
 
     Object.setPrototypeOf(this, new.target.prototype);
   }
@@ -188,8 +198,8 @@ export class VisionError extends Error {
           : "An unknown Vision error occurred.";
 
     return new VisionError(fallbackCode, message, {
-      details,
       cause: error,
+      details,
     });
   }
 }

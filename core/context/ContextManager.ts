@@ -263,7 +263,7 @@ export class ContextManager {
    *          ↓
    *     canonical ContextChunk conversion
    *          ↓
-   *     embeddings
+   *     semantic embeddings or keyword-only text indexing
    *          ↓
    *     Context vector records
    *          ↓
@@ -305,7 +305,8 @@ export class ContextManager {
      * and properties such as model/dimensions become unavailable.
      */
     const embeddingResult: EmbeddingResult =
-      contextChunks.length > 0
+      contextChunks.length > 0 &&
+      this.embeddings.supportsSemanticEmbeddings
         ? await this.embeddings.embed(
             contextChunks.map((chunk) => chunk.text),
             {
@@ -313,8 +314,12 @@ export class ContextManager {
             },
           )
         : {
-            embeddings: [],
-            model: "none",
+            embeddings: contextChunks.map(() => []),
+            model:
+              contextChunks.length > 0 &&
+              !this.embeddings.supportsSemanticEmbeddings
+                ? "keyword-only"
+                : "none",
             dimensions: 0,
           };
 

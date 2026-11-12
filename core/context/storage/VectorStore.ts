@@ -31,6 +31,8 @@ import type {
   ContextVectorSearchResult,
 } from "../contracts/ContextStore";
 
+import { scoreKeywordOverlap, tokenizeSearchQuery } from "./KeywordSearch";
+
 // ============================================================================
 // PUBLIC TYPES
 // ============================================================================
@@ -118,6 +120,43 @@ export class InMemoryVectorStore implements ContextStore {
     return results.slice(0, options.limit);
   }
 
+  public async searchText(
+    query: string,
+    options: ContextVectorSearchOptions,
+  ): Promise<readonly ContextVectorSearchResult[]> {
+    if (!options) {
+      throw new Error("Text search options are required.");
+    }
+
+    this.throwIfAborted(options.signal);
+
+    const terms = tokenizeSearchQuery(query);
+    if (terms.length === 0) {
+      return [];
+    }
+
+    const results: ContextVectorSearchResult[] = [];
+
+    for (const record of this.records.values()) {
+      this.throwIfAborted(options.signal);
+
+      if (!matchesFilters(record, options)) {
+        continue;
+      }
+
+      const score = scoreKeywordOverlap(record.text, terms);
+      if (score === 0 || score < options.minScore) {
+        continue;
+      }
+
+      results.push({ record, score });
+    }
+
+    results.sort((left, right) => right.score - left.score);
+
+    return results.slice(0, options.limit);
+  }
+
   public async count(): Promise<number> {
     return this.records.size;
   }
@@ -143,7 +182,10 @@ export class InMemoryVectorStore implements ContextStore {
       throw new Error(`Vector record "${record.id}" requires text.`);
     }
 
-    this.validateVector(record.vector);
+    this.validateVector(
+      record.vector,
+      record.metadata.embeddingModel === "keyword-only",
+    );
 
     if (!record.sourceType) {
       throw new Error(`Vector record "${record.id}" requires sourceType.`);
@@ -154,12 +196,15 @@ export class InMemoryVectorStore implements ContextStore {
     }
   }
 
-  private validateVector(vector: readonly number[]): void {
+  private validateVector(
+    vector: readonly number[],
+    allowEmpty = false,
+  ): void {
     if (!Array.isArray(vector)) {
       throw new TypeError("Vector must be an array.");
     }
 
-    if (vector.length === 0) {
+    if (vector.length === 0 && !allowEmpty) {
       throw new Error("Vector must not be empty.");
     }
 
@@ -218,6 +263,13 @@ function matchesFilters(
   }
 
   if (options.metadata && !matchesMetadata(record.metadata, options.metadata)) {
+    return false;
+  }
+
+  if (
+    options.embeddingModel &&
+    record.metadata.embeddingModel !== options.embeddingModel
+  ) {
     return false;
   }
 

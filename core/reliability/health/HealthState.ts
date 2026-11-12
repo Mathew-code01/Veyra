@@ -16,20 +16,12 @@ export const HEALTH_STATES = Object.freeze({
   RECOVERING: "recovering",
 } as const);
 
-export type HealthState =
-  (typeof HEALTH_STATES)[keyof typeof HEALTH_STATES];
+export type HealthState = (typeof HEALTH_STATES)[keyof typeof HEALTH_STATES];
 
-export function isHealthyState(
-  state: HealthState,
-): boolean {
+export function isHealthyState(state: HealthState): boolean {
   return state === HEALTH_STATES.HEALTHY;
 }
 
-export function isAvailableState(
-  state: HealthState,
-): boolean {
-  return (
-    state === HEALTH_STATES.HEALTHY ||
-    state === HEALTH_STATES.DEGRADED
-  );
+export function isAvailableState(state: HealthState): boolean {
+  return state === HEALTH_STATES.HEALTHY || state === HEALTH_STATES.DEGRADED;
 }

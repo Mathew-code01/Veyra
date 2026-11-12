@@ -9,7 +9,7 @@
 // CONTRACTS
 // ============================================================================
 
-export * from "./contracts/contextTypes";
+export * from "./contracts/ContextTypes";
 
 export * from "./contracts/ContextQuery";
 

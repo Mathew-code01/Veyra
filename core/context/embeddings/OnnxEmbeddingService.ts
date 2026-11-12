@@ -5,8 +5,8 @@
 // Real local embedding implementation using ONNX Runtime (onnxruntime-node).
 //
 // This converts text into embedding vectors without any cloud API, API key,
-// or network access. It is the production replacement for MockEmbeddingService
-// when a compatible ONNX embedding model is available.
+// or network access. It provides semantic vectors only when supplied with a
+// compatible ONNX model and tokenizer; it never creates fallback vectors.
 //
 // IMPORTANT:
 //   - A model file must be supplied. This package does NOT bundle one.
@@ -32,6 +32,17 @@ export interface OnnxEmbeddingServiceOptions {
    */
   readonly modelPath: string;
 
+  /** Model-specific tokenizer returning IDs and its real attention mask. */
+  readonly tokenizer: {
+    encode(
+      text: string,
+      maxLength: number,
+    ): {
+      readonly inputIds: readonly number[];
+      readonly attentionMask: readonly number[];
+    };
+  };
+
   /**
    * Expected vector dimensionality.
    */
@@ -56,47 +67,8 @@ export interface OnnxEmbeddingServiceOptions {
 // ============================================================================
 // TOKENIZER
 //
-// Deterministic, dependency-free word-piece-like tokenizer.
-//
-// It builds a stable token id from each word via a hash. This avoids
-// requiring a vocabulary file. The model's own embedding table interprets
-// those ids, so embedding quality depends on the supplied model.
-//
-// NOTE:
-//   A production deployment should ship a real tokenizer + vocab with the
-//   model. This tokenizer keeps the service self-contained for the common
-//   small-model case.
+// Tokenization must be supplied by the caller and match the ONNX model.
 // ============================================================================
-
-function tokenize(text: string, maxLength: number): number[] {
-  const normalized = text.toLowerCase().trim();
-
-  if (!normalized) {
-    return [];
-  }
-
-  const words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
-
-  const ids: number[] = [];
-
-  for (let index = 0; index < words.length && ids.length < maxLength; index += 1) {
-    ids.push(stableHash(words[index]) % 30000);
-  }
-
-  return ids;
-}
-
-function stableHash(value: string): number {
-  let hash = 2166136261;
-
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return hash >>> 0;
-}
 
 // ============================================================================
 // VECTOR MATH
@@ -163,6 +135,8 @@ function meanPool(
 // ============================================================================
 
 export class OnnxEmbeddingService {
+  public readonly supportsSemanticEmbeddings = true;
+
   private readonly modelPath: string;
 
   private readonly dimensions: number;
@@ -173,6 +147,10 @@ export class OnnxEmbeddingService {
 
   private readonly meanPool: boolean;
 
+  private readonly tokenizer: OnnxEmbeddingServiceOptions["tokenizer"];
+
+  private successfulInference = false;
+
   private session: InferenceSession | null = null;
 
   private sessionPromise: Promise<InferenceSession> | null = null;
@@ -180,6 +158,12 @@ export class OnnxEmbeddingService {
   public constructor(options: OnnxEmbeddingServiceOptions) {
     if (!options.modelPath || !options.modelPath.trim()) {
       throw new Error("OnnxEmbeddingService requires a modelPath.");
+    }
+
+    if (!options.tokenizer || typeof options.tokenizer.encode !== "function") {
+      throw new Error(
+        "OnnxEmbeddingService requires a tokenizer compatible with the supplied model.",
+      );
     }
 
     this.modelPath = options.modelPath.trim();
@@ -200,6 +184,7 @@ export class OnnxEmbeddingService {
       options.maxLength ?? 128;
 
     this.meanPool = options.meanPool ?? true;
+    this.tokenizer = options.tokenizer;
   }
 
   public get modelId(): string {
@@ -208,6 +193,10 @@ export class OnnxEmbeddingService {
 
   public get embeddingDimensions(): number {
     return this.dimensions;
+  }
+
+  public get hasSuccessfulInference(): boolean {
+    return this.successfulInference;
   }
 
   private async ensureSession(): Promise<InferenceSession> {
@@ -277,22 +266,33 @@ export class OnnxEmbeddingService {
 
     const session = await this.ensureSession();
 
-    const inputIds = tokenize(text, this.maxLength);
-
-    const padded = this.pad(inputIds, this.maxLength);
-
-    const attentionMask = padded.map((id) => (id === 0 ? 0 : 1));
+    const encoded = this.tokenizer.encode(text, this.maxLength);
+    if (
+      encoded.inputIds.length !== encoded.attentionMask.length ||
+      encoded.inputIds.length === 0 ||
+      encoded.inputIds.length > this.maxLength ||
+      encoded.inputIds.some((id) => !Number.isSafeInteger(id) || id < 0) ||
+      encoded.attentionMask.some((mask) => mask !== 0 && mask !== 1)
+    ) {
+      throw new Error("The tokenizer returned invalid model input.");
+    }
+    const inputIds = [...encoded.inputIds];
+    const attentionMask = [...encoded.attentionMask];
+    while (inputIds.length < this.maxLength) {
+      inputIds.push(0);
+      attentionMask.push(0);
+    }
 
     const inputIdsTensor = new Tensor(
       "int64",
-      BigInt64Array.from(padded.map((id) => BigInt(id))),
-      [1, padded.length],
+      BigInt64Array.from(inputIds.map((id) => BigInt(id))),
+      [1, inputIds.length],
     );
 
     const attentionMaskTensor = new Tensor(
       "int64",
       BigInt64Array.from(attentionMask.map((m) => BigInt(m))),
-      [1, padded.length],
+      [1, inputIds.length],
     );
 
     const inputNames = session.inputNames;
@@ -309,8 +309,8 @@ export class OnnxEmbeddingService {
       } else if (lower.includes("token_type_ids")) {
         inputs[name] = new Tensor(
           "int64",
-          BigInt64Array.from(padded.map(() => BigInt(0))),
-          [1, padded.length],
+          BigInt64Array.from(inputIds.map(() => BigInt(0))),
+          [1, inputIds.length],
         );
       }
     }
@@ -366,17 +366,9 @@ export class OnnxEmbeddingService {
 
     this.throwIfAborted(options.signal);
 
-    return l2Normalize(pooled);
-  }
-
-  private pad(ids: number[], length: number): number[] {
-    const padded = ids.slice(0, length);
-
-    while (padded.length < length) {
-      padded.push(0);
-    }
-
-    return padded;
+    const normalized = l2Normalize(pooled);
+    this.successfulInference = true;
+    return normalized;
   }
 
   private throwIfAborted(signal?: AbortSignal): void {

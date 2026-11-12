@@ -67,6 +67,8 @@ import type { CloudHealth } from "./contracts/CloudHealth";
 
 import { CloudError } from "./contracts/CloudError";
 
+import { CloudExecutionPolicy } from "./CloudExecutionPolicy";
+
 import {
   ReliabilityManager,
   type ReliabilityExecutionResult,
@@ -97,6 +99,9 @@ export class CloudGateway {
     private readonly registry: CloudProviderRegistry,
 
     reliabilityManager: ReliabilityManager = new ReliabilityManager(),
+
+    private readonly executionPolicy: CloudExecutionPolicy =
+      new CloudExecutionPolicy(),
   ) {
     this.reliabilityManager = reliabilityManager;
   }
@@ -151,6 +156,7 @@ export class CloudGateway {
       },
 
       async () => {
+        this.executionPolicy.authorize(providerId, request);
         return provider.execute(request, options);
       },
     );
@@ -190,6 +196,8 @@ export class CloudGateway {
         },
       );
     }
+
+    this.executionPolicy.authorize(providerId, request);
 
     /**
      * Streaming intentionally does not use ReliabilityManager.execute().

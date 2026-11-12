@@ -9,7 +9,7 @@
 // virtual table (offline, no API key required).
 // ============================================================================
 
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, gt, isNull, or } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { getDatabase } from "../client";
 import { memories } from "../schema";
@@ -37,6 +37,8 @@ export interface MemoryContent {
 
 export interface CreateMemoryInput {
   readonly profileId: string;
+
+  readonly candidateId?: string;
 
   readonly category: MemoryCategory;
 
@@ -88,6 +90,8 @@ export interface MemoryRecord {
 
   readonly profileId: string;
 
+  readonly candidateId?: string;
+
   readonly category: MemoryCategory;
 
   readonly content: MemoryContent;
@@ -118,6 +122,8 @@ export interface MemoryRecord {
 export interface MemorySearchOptions {
   readonly query?: string;
 
+  readonly candidateId?: string | null;
+
   readonly category?: MemoryCategory;
 
   readonly sourceType?: string;
@@ -139,6 +145,7 @@ export class MemoryRepository {
   private readonly sqlite = getDatabase().sqlite;
 
   public create(input: CreateMemoryInput): MemoryRecord {
+    this.validateCandidateOwnership(input.profileId, input.candidateId);
     const id = randomUUID();
     const now = new Date().toISOString();
     const confidence = input.confidence ?? 50;
@@ -148,8 +155,9 @@ export class MemoryRepository {
       .values({
         id,
         profileId: input.profileId,
+        candidateId: input.candidateId ?? null,
         category: input.category,
-        content: JSON.stringify(input.content),
+        content: input.content,
         sourceType: input.sourceType,
         sourceId: input.sourceId ?? null,
         sourceName: input.sourceName ?? null,
@@ -169,6 +177,7 @@ export class MemoryRepository {
   }
 
   public createInTransaction(input: CreateMemoryInput, tx: any): MemoryRecord {
+    this.validateCandidateOwnership(input.profileId, input.candidateId);
     const id = randomUUID();
     const now = new Date().toISOString();
     const confidence = input.confidence ?? 50;
@@ -178,8 +187,9 @@ export class MemoryRepository {
       .values({
         id,
         profileId: input.profileId,
+        candidateId: input.candidateId ?? null,
         category: input.category,
-        content: JSON.stringify(input.content),
+        content: input.content,
         sourceType: input.sourceType,
         sourceId: input.sourceId ?? null,
         sourceName: input.sourceName ?? null,
@@ -199,10 +209,15 @@ export class MemoryRepository {
   }
 
   public getById(id: string, profileId: string): MemoryRecord | null {
+    const now = new Date().toISOString();
     const row = this.db
       .select()
       .from(memories)
-      .where(and(eq(memories.id, id), eq(memories.profileId, profileId)))
+      .where(and(
+        eq(memories.id, id),
+        eq(memories.profileId, profileId),
+        or(isNull(memories.expiresAt), gt(memories.expiresAt, now)),
+      ))
       .get();
 
     if (!row) {
@@ -218,12 +233,27 @@ export class MemoryRepository {
 
   public listByProfile(
     profileId: string,
-    options: { readonly category?: MemoryCategory; readonly limit?: number } = {},
+    options: {
+      readonly category?: MemoryCategory;
+      readonly candidateId?: string | null;
+      readonly limit?: number;
+    } = {},
   ): readonly MemoryRecord[] {
-    const conditions = [eq(memories.profileId, profileId), eq(memories.status, "active")];
+    const now = new Date().toISOString();
+    const conditions = [
+      eq(memories.profileId, profileId),
+      eq(memories.status, "active"),
+      or(isNull(memories.expiresAt), gt(memories.expiresAt, now)),
+    ];
 
     if (options.category) {
       conditions.push(eq(memories.category, options.category));
+    }
+
+    if (options.candidateId === null) {
+      conditions.push(isNull(memories.candidateId));
+    } else if (options.candidateId !== undefined) {
+      conditions.push(eq(memories.candidateId, options.candidateId));
     }
 
     const rows: any[] = this.db
@@ -248,10 +278,20 @@ export class MemoryRepository {
     const baseConditions = [
       eq(memories.profileId, profileId),
       eq(memories.status, "active"),
+      or(
+        isNull(memories.expiresAt),
+        gt(memories.expiresAt, new Date().toISOString()),
+      ),
     ];
 
     if (options.category) {
       baseConditions.push(eq(memories.category, options.category));
+    }
+
+    if (options.candidateId === null) {
+      baseConditions.push(isNull(memories.candidateId));
+    } else if (options.candidateId !== undefined) {
+      baseConditions.push(eq(memories.candidateId, options.candidateId));
     }
 
     if (options.sourceType) {
@@ -271,15 +311,10 @@ export class MemoryRepository {
 
     const fetchLimit = Math.min(finalLimit * 5, 1000);
 
-    let records: MemoryRecord[];
+    let records: readonly MemoryRecord[];
 
     if (options.query) {
-      records = this.searchFullText(
-        profileId,
-        baseConditions,
-        options,
-        fetchLimit,
-      ) as MemoryRecord[];
+      records = this.searchFullText(profileId, options, fetchLimit);
     } else {
       const rows: any[] = this.db
         .select()
@@ -303,23 +338,69 @@ export class MemoryRepository {
 
   private searchFullText(
     profileId: string,
-    baseConditions: any[],
     options: MemorySearchOptions,
     limit: number,
   ): readonly MemoryRecord[] {
-    const query = `%${options.query ?? ""}%`;
+    const terms = (options.query ?? "")
+      .match(/[\p{L}\p{N}_]+/gu)
+      ?.slice(0, 12) ?? [];
+    if (terms.length === 0) return [];
 
-    const rows: any[] = this.db
-      .select()
-      .from(memories)
-      .where(
-        and(...baseConditions, like(memories.content, query)),
-      )
-      .orderBy(memories.updatedAt)
-      .limit(limit)
-      .all();
+    const now = new Date().toISOString();
+    const whereParts: string[] = [
+      "m.profile_id = ?",
+      "m.status = 'active'",
+      "(m.expires_at IS NULL OR m.expires_at > ?)",
+      "f.content MATCH ?",
+    ];
 
-    return rows.map((row: any) => this.toRecord(row));
+    const ftsQuery = terms
+      .map((term) => `"${term.replace(/"/gu, '""')}"`)
+      .join(" OR ");
+    const params: unknown[] = [profileId, now, ftsQuery];
+
+    if (options.category) {
+      whereParts.push("m.category = ?");
+      params.push(options.category);
+    }
+
+    if (options.candidateId === null) {
+      whereParts.push("m.candidate_id IS NULL");
+    } else if (options.candidateId !== undefined) {
+      whereParts.push("m.candidate_id = ?");
+      params.push(options.candidateId);
+    }
+
+    const sql = `
+      SELECT m.*
+      FROM memories m
+      INNER JOIN memories_fts f ON f.id = m.id
+      WHERE ${whereParts.join(" AND ")}
+      ORDER BY bm25(memories_fts), m.updated_at DESC
+      LIMIT ?
+    `;
+
+    params.push(limit);
+
+    const rows: any[] = this.sqlite.prepare(sql).all(params);
+
+    let records = rows.map((row: any) => this.toRecord(row));
+
+    if (options.sourceType) {
+      records = records.filter((record) => record.sourceType === options.sourceType);
+    }
+
+    if (options.sourceId) {
+      records = records.filter((record) => record.sourceId === options.sourceId);
+    }
+
+    if (options.minConfidence !== undefined) {
+      records = records.filter(
+        (record) => record.confidence >= options.minConfidence!,
+      );
+    }
+
+    return records.slice(0, limit);
   }
 
   public update(
@@ -342,7 +423,7 @@ export class MemoryRepository {
     }
 
     if (changes.content !== undefined) {
-      setValues.content = JSON.stringify(changes.content);
+      setValues.content = changes.content;
     }
 
     if (changes.sourceType !== undefined) {
@@ -453,27 +534,45 @@ export class MemoryRepository {
     let content: MemoryContent;
 
     try {
-      content = typeof row.content === "string" ? JSON.parse(row.content) : row.content;
+      content =
+        typeof row.content === "string" ? JSON.parse(row.content) : row.content;
     } catch {
       content = { value: row.content };
     }
 
     return {
       id: row.id,
-      profileId: row.profileId,
+      profileId: row.profileId ?? row.profile_id,
+      candidateId: row.candidateId ?? row.candidate_id ?? undefined,
       category: row.category,
       content,
-      sourceType: row.sourceType,
-      sourceId: row.sourceId ?? undefined,
-      sourceName: row.sourceName ?? undefined,
+      sourceType: row.sourceType ?? row.source_type,
+      sourceId: row.sourceId ?? row.source_id,
+      sourceName: row.sourceName ?? row.source_name,
       confidence: row.confidence,
       status: row.status,
-      verificationStatus: row.verificationStatus,
-      extractionVersion: row.extractionVersion ?? undefined,
-      expiresAt: row.expiresAt ?? undefined,
-      lastAccessedAt: row.lastAccessedAt ?? undefined,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
+      verificationStatus:
+        row.verificationStatus ?? row.verification_status,
+      extractionVersion: row.extractionVersion ?? row.extraction_version,
+      expiresAt: row.expiresAt ?? row.expires_at,
+      lastAccessedAt: row.lastAccessedAt ?? row.last_accessed_at,
+      createdAt: row.createdAt ?? row.created_at,
+      updatedAt: row.updatedAt ?? row.updated_at,
     };
+  }
+
+  private validateCandidateOwnership(
+    profileId: string,
+    candidateId: string | undefined,
+  ): void {
+    if (!candidateId?.trim()) return;
+
+    const owner = this.sqlite.prepare(
+      `SELECT 1 FROM candidate_profiles
+       WHERE profile_id = ? AND candidate_id = ?`,
+    ).get(profileId, candidateId.trim());
+    if (!owner) {
+      throw new Error("Memory candidate does not belong to the supplied profile.");
+    }
   }
 }

@@ -3,14 +3,14 @@
 import type {
   ConversationTurn,
   RepetitionAnalysis,
-} from "../../shared/types/conversation";
+} from "../../../shared/types/conversation";
 
 export class RepetitionDetector {
   detect(
     current: ConversationTurn,
     previousQuestions: ConversationTurn[],
   ): RepetitionAnalysis {
-    if (current.speaker !== "interviewer" || !current.question?.isQuestion) {
+    if (!current.question?.isQuestion) {
       return {
         isRepeated: false,
         confidence: 0,

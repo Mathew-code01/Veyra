@@ -11,11 +11,11 @@ export class SessionRepository {
     return this.db.insert(sessions).values({ ...input, id: randomUUID(), createdAt: now, updatedAt: now }).returning().get();
   }
 
-  getById(id: string) {
+  getById(id: string): typeof sessions.$inferSelect | undefined {
     return this.db.select().from(sessions).where(eq(sessions.id, id)).get();
   }
 
-  listByProfile(profileId: string, limit = 50) {
+  listByProfile(profileId: string, limit = 50): typeof sessions.$inferSelect[] {
     return this.db.select()
       .from(sessions)
       .where(eq(sessions.profileId, profileId))
@@ -29,6 +29,16 @@ export class SessionRepository {
       .set({
         status,
         endedAt,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(sessions.id, id))
+      .returning().get();
+  }
+
+  updateSettings(id: string, settings: typeof sessions.$inferInsert.settings) {
+    return this.db.update(sessions)
+      .set({
+        settings,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(sessions.id, id))

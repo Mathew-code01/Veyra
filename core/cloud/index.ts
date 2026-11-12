@@ -20,6 +20,15 @@ export { CloudProviderRegistry } from "./CloudProviderRegistry";
 
 export { CloudGateway } from "./CloudGateway";
 
+export {
+  CloudExecutionPolicy,
+  cloudModelPolicyKey,
+  type CloudExecutionPolicyOptions,
+  type CloudModelCostClassification,
+  type CloudModelCostPolicy,
+  type CloudQuotaLedger,
+} from "./CloudExecutionPolicy";
+
 // ============================================================================
 // CLOUD REQUEST / RESPONSE CONTRACTS
 // ============================================================================

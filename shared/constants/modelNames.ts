@@ -13,7 +13,11 @@ import type { AIProvider } from "../types/ai";
 export const AI_PROVIDERS = Object.freeze([
   "gemini",
   "ollama",
+  "local",
   "mock",
+  "groq",
+  "mistral",
+  "cerebras",
 ] as const);
 
 export const MODEL_NAMES = Object.freeze({
@@ -45,7 +49,11 @@ export const DEFAULT_MODELS: Readonly<Record<AIProvider, ModelName>> =
   Object.freeze({
     gemini: MODEL_NAMES.GEMINI_FLASH,
     ollama: MODEL_NAMES.OLLAMA_DEFAULT,
+    local: MODEL_NAMES.OLLAMA_DEFAULT,
     mock: MODEL_NAMES.MOCK,
+    groq: MODEL_NAMES.GEMINI_FLASH,
+    mistral: MODEL_NAMES.GEMINI_FLASH,
+    cerebras: MODEL_NAMES.GEMINI_FLASH,
   });
 
 /**

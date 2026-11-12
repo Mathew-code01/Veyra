@@ -3,7 +3,7 @@
 import type {
   ConversationTurn,
   FollowUpAnalysis,
-} from "../../shared/types/conversation";
+} from "../../../shared/types/conversation";
 
 const FOLLOW_UP_PATTERNS = [
   /^why\b/i,
@@ -25,7 +25,7 @@ export class FollowUpDetector {
     current: ConversationTurn,
     previousQuestion?: ConversationTurn,
   ): FollowUpAnalysis {
-    if (current.speaker !== "interviewer" || !current.question?.isQuestion) {
+    if (!current.question?.isQuestion) {
       return {
         isFollowUp: false,
         confidence: 0,

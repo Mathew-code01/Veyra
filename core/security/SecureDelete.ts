@@ -58,7 +58,8 @@ export class SecureDelete {
       return;
     }
 
-    globalThis.crypto.getRandomValues(bytes);
+    const typed = bytes as Uint8Array<ArrayBuffer>;
+    globalThis.crypto.getRandomValues(typed);
 
     bytes.fill(0);
   }
@@ -79,9 +80,9 @@ export class SecureDelete {
 }
 
 function randomBytes(length: number): Uint8Array {
-  const bytes = new Uint8Array(length);
+  const bytes = new Uint8Array(new ArrayBuffer(length));
 
-  globalThis.crypto.getRandomValues(bytes);
+  globalThis.crypto.getRandomValues(bytes as Uint8Array<ArrayBuffer>);
 
   return bytes;
 }

@@ -59,6 +59,8 @@ export const memories = sqliteTable(
       .notNull()
       .references(() => profiles.id, { onDelete: "cascade" }),
 
+    candidateId: text("candidate_id"),
+
     category: text("category").$type<MemoryCategory>().notNull(),
 
     content: jsonText<MemoryContent>("content").notNull(),
@@ -92,6 +94,12 @@ export const memories = sqliteTable(
     index("memories_profile_idx").on(table.profileId),
     index("memories_category_idx").on(table.category),
     index("memories_profile_category_idx").on(table.profileId, table.category),
+    index("memories_profile_candidate_idx").on(
+      table.profileId,
+      table.candidateId,
+      table.status,
+      table.updatedAt,
+    ),
     index("memories_source_idx").on(table.sourceType, table.sourceId),
     uniqueIndex("memories_source_unique").on(
       table.profileId,

@@ -1,3 +1,5 @@
+// shared/contracts/candidate.contract.ts
+
 import type { CandidateReference, CandidateSummary } from "../types/candidate";
 
 export interface CandidateGetRequest {

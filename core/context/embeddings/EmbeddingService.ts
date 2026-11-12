@@ -62,6 +62,9 @@ export interface EmbeddingResult {
 // ============================================================================
 
 export interface EmbeddingService {
+  /** False for explicit keyword-only or test implementations. */
+  readonly supportsSemanticEmbeddings: boolean;
+
   /**
    * Generate embeddings for multiple texts.
    *
@@ -97,6 +100,8 @@ export interface EmbeddingService {
  * Production deployments should replace it with a real embedding service.
  */
 export class MockEmbeddingService implements EmbeddingService {
+  public readonly supportsSemanticEmbeddings = false;
+
   public readonly model: string;
 
   public readonly dimensions: number;
@@ -211,5 +216,27 @@ export class MockEmbeddingService implements EmbeddingService {
     throw signal.reason instanceof Error
       ? signal.reason
       : new Error("Embedding operation was cancelled.");
+  }
+}
+
+export class KeywordOnlyEmbeddingService implements EmbeddingService {
+  public readonly supportsSemanticEmbeddings = false;
+
+  public async embed(
+    _texts: readonly string[],
+    _options: EmbeddingOptions = {},
+  ): Promise<EmbeddingResult> {
+    throw new Error(
+      "Semantic embeddings are unavailable; keyword retrieval is active.",
+    );
+  }
+
+  public async embedOne(
+    _text: string,
+    _options: EmbeddingOptions = {},
+  ): Promise<readonly number[]> {
+    throw new Error(
+      "Semantic embeddings are unavailable; keyword retrieval is active.",
+    );
   }
 }

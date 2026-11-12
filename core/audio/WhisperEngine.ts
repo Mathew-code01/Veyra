@@ -1,5 +1,6 @@
 // core/audio/WhisperEngine.ts
 
+
 import type {
   PartialTranscription,
   TranscriptionProvider,
@@ -45,20 +46,20 @@ export class WhisperEngine implements TranscriptionProvider {
   private readonly fetchImpl: typeof fetch;
 
   public constructor(options: WhisperEngineOptions) {
-    if (!options.endpoint) {
-      throw new Error(
-        "WhisperEngine requires a transcription endpoint.",
-      );
+    const endpoint = options.endpoint.trim();
+
+    if (!endpoint) {
+      throw new Error("WhisperEngine requires a transcription endpoint.");
     }
 
-    this.endpoint = options.endpoint;
+    this.endpoint = endpoint;
     this.apiKey = options.apiKey;
-    this.model = options.model ?? "whisper-1";
-    this.name = options.providerName ?? "whisper";
+    this.model = options.model?.trim() || "whisper-1";
+    this.name = options.providerName?.trim() || "whisper";
 
     this.timeoutMs = Math.max(
       1_000,
-      options.timeoutMs ?? 30_000,
+      Math.floor(options.timeoutMs ?? 30_000),
     );
 
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -69,10 +70,9 @@ export class WhisperEngine implements TranscriptionProvider {
   ): Promise<TranscriptionResult> {
     const controller = new AbortController();
 
-    const timeout = setTimeout(
-      () => controller.abort(),
-      this.timeoutMs,
-    );
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, this.timeoutMs);
 
     try {
       if (request.signal?.aborted) {
@@ -84,52 +84,59 @@ export class WhisperEngine implements TranscriptionProvider {
 
       const body = new FormData();
 
-      const blob = new Blob([request.audio], {
+      /*
+       * TypeScript's DOM BlobPart typing requires an ArrayBuffer here.
+       *
+       * Creating a copy also guarantees that a SharedArrayBuffer-backed
+       * Uint8Array cannot leak into the Blob constructor.
+       */
+      const audioBuffer = new ArrayBuffer(request.audio.byteLength);
+
+      new Uint8Array(audioBuffer).set(request.audio);
+
+      const blob = new Blob([audioBuffer], {
         type: request.mimeType ?? "audio/wav",
       });
 
       body.append("file", blob, "audio.wav");
       body.append("model", this.model);
 
-      if (request.language) {
-        body.append("language", request.language);
+      if (request.language?.trim()) {
+        body.append("language", request.language.trim());
       }
 
-      if (request.prompt) {
-        body.append("prompt", request.prompt);
+      if (request.prompt?.trim()) {
+        body.append("prompt", request.prompt.trim());
       }
 
-      const response = await this.fetchImpl(
-        this.endpoint,
-        {
-          method: "POST",
-          headers: {
-            ...(this.apiKey
-              ? {
-                  Authorization: `Bearer ${this.apiKey}`,
-                }
-              : {}),
-          },
-          body,
-          signal: combineAbortSignals(
-            controller.signal,
-            request.signal,
-          ),
+      const response = await this.fetchImpl(this.endpoint, {
+        method: "POST",
+
+        headers: {
+          ...(this.apiKey
+            ? {
+                Authorization: `Bearer ${this.apiKey}`,
+              }
+            : {}),
         },
-      );
+
+        body,
+
+        signal: combineAbortSignals(
+          controller.signal,
+          request.signal,
+        ),
+      });
 
       if (!response.ok) {
-        const message = await safeReadResponseText(
-          response,
-        );
+        const message = await safeReadResponseText(response);
 
         throw new Error(
           `Whisper request failed (${response.status}): ${message}`,
         );
       }
 
-      const payload =
-        (await response.json()) as WhisperResponse;
+      const payload = (await response.json()) as WhisperResponse;
 
       return this.mapResponse(payload);
     } finally {
@@ -141,9 +148,10 @@ export class WhisperEngine implements TranscriptionProvider {
     request: TranscriptionRequest,
     onPartial: (partial: PartialTranscription) => void,
   ): Promise<TranscriptionResult> {
-    // Most Whisper HTTP endpoints are request/response based.
-    // We expose a stream-compatible contract and emit the final
-    // transcription as a final partial event.
+    if (typeof onPartial !== "function") {
+      throw new Error("Whisper transcribeStream requires onPartial.");
+    }
+
     const result = await this.transcribe(request);
 
     onPartial({
@@ -165,21 +173,25 @@ export class WhisperEngine implements TranscriptionProvider {
 
     for (const segment of segments) {
       for (const word of segment.words ?? []) {
-        if (!word.word) {
+        if (!word.word?.trim()) {
           continue;
         }
 
         words.push({
           word: word.word,
           startMs:
-            word.start != null
+            word.start != null && Number.isFinite(word.start)
               ? word.start * 1000
               : undefined,
           endMs:
-            word.end != null
+            word.end != null && Number.isFinite(word.end)
               ? word.end * 1000
               : undefined,
-          confidence: word.probability,
+          confidence:
+            word.probability != null &&
+            Number.isFinite(word.probability)
+              ? word.probability
+              : undefined,
         });
       }
     }
@@ -188,8 +200,7 @@ export class WhisperEngine implements TranscriptionProvider {
       .map((segment) => segment.avg_logprob)
       .filter(
         (value): value is number =>
-          typeof value === "number" &&
-          Number.isFinite(value),
+          typeof value === "number" && Number.isFinite(value),
       );
 
     const confidence =
@@ -204,17 +215,21 @@ export class WhisperEngine implements TranscriptionProvider {
 
     return {
       text: response.text?.trim() ?? "",
+
       language: response.language,
+
       durationMs:
-        response.duration != null
+        response.duration != null &&
+        Number.isFinite(response.duration)
           ? response.duration * 1000
           : undefined,
+
       confidence,
-      words:
-        words.length > 0
-          ? words
-          : undefined,
+
+      words: words.length > 0 ? words : undefined,
+
       provider: this.name,
+
       model: this.model,
     };
   }
@@ -239,10 +254,15 @@ function combineAbortSignals(
 
   const controller = new AbortController();
 
-  const abort = () => controller.abort();
+  const abort = (): void => {
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+  };
 
   if (primary.aborted || secondary.aborted) {
     controller.abort();
+
     return controller.signal;
   }
 

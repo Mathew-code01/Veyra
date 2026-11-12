@@ -20,7 +20,10 @@
 
 import type { ContextQuery, RetrievedContext } from "../contracts/ContextQuery";
 
-import type { ContextStore } from "../contracts/ContextStore";
+import type {
+  ContextStore,
+  ContextVectorSearchResult,
+} from "../contracts/ContextStore";
 
 import type { EmbeddingService } from "../embeddings/EmbeddingService";
 
@@ -96,13 +99,7 @@ export class SemanticRetriever implements Retriever {
 
     this.throwIfAborted(options.signal);
 
-    const embedding = await this.embeddings.embedOne(normalized, {
-      signal: options.signal,
-    });
-
-    this.throwIfAborted(options.signal);
-
-    const results = await this.vectorStore.search(embedding, {
+    const searchOptions = {
       limit,
 
       minScore,
@@ -118,7 +115,27 @@ export class SemanticRetriever implements Retriever {
       metadata: options.metadata,
 
       signal: options.signal,
-    });
+    };
+
+    let results: readonly ContextVectorSearchResult[];
+
+    if (this.embeddings.supportsSemanticEmbeddings) {
+      const embeddingResult = await this.embeddings.embed([normalized], {
+        signal: options.signal,
+      });
+      const embedding = embeddingResult.embeddings[0];
+
+      if (!embedding) {
+        throw new Error("Embedding service returned no query embedding.");
+      }
+
+      results = await this.vectorStore.search(embedding, {
+        ...searchOptions,
+        embeddingModel: embeddingResult.model,
+      });
+    } else {
+      results = await this.vectorStore.searchText(normalized, searchOptions);
+    }
 
     this.throwIfAborted(options.signal);
 

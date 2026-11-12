@@ -36,6 +36,8 @@ import type {
 
 import { getDatabase } from "../../../database/client";
 
+import { scoreKeywordOverlap, tokenizeSearchQuery } from "./KeywordSearch";
+
 // ============================================================================
 // SQL STATEMENTS (prepared once)
 // ============================================================================
@@ -75,10 +77,26 @@ const SEARCH_SQL = `
     {{sourceTypeFilter}}
     {{contentTypeFilter}}
     {{sourceIdFilter}}
+    {{embeddingModelFilter}}
     {{scopeFilter}}
-    {{metadataFilter}}
-  LIMIT {{limit}};
+    {{metadataFilter}};
 `;
+
+interface StoredContextVectorRow {
+  readonly id: string;
+  readonly context_id: string;
+  readonly text: string;
+  readonly vector: string;
+  readonly source_type: string;
+  readonly source_id: string | null;
+  readonly source_name: string | null;
+  readonly content_type: string;
+  readonly scope: string | null;
+  readonly metadata: string;
+  readonly embedding_model: string;
+  readonly dimensions: number;
+  readonly created_at: string;
+}
 
 const COUNT_SQL = "SELECT COUNT(*) AS count FROM context_vectors;";
 
@@ -154,6 +172,90 @@ function parseJson<T>(value: string | null, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function buildSearchQuery(
+  options: ContextVectorSearchOptions,
+  filterEmbeddingModel: boolean,
+): { sql: string; params: Record<string, unknown> } {
+  let sql = SEARCH_SQL;
+  const params: Record<string, unknown> = {};
+
+  const filters: Array<{
+    readonly values: readonly string[] | undefined;
+    readonly placeholder: string;
+    readonly column: string;
+    readonly parameterPrefix: string;
+  }> = [
+    {
+      values: options.sourceTypes,
+      placeholder: "{{sourceTypeFilter}}",
+      column: "source_type",
+      parameterPrefix: "sourceType",
+    },
+    {
+      values: options.contentTypes,
+      placeholder: "{{contentTypeFilter}}",
+      column: "content_type",
+      parameterPrefix: "contentType",
+    },
+    {
+      values: options.sourceIds,
+      placeholder: "{{sourceIdFilter}}",
+      column: "source_id",
+      parameterPrefix: "sourceId",
+    },
+  ];
+
+  for (const filter of filters) {
+    if (!filter.values || filter.values.length === 0) {
+      sql = sql.replace(filter.placeholder, "");
+      continue;
+    }
+
+    const placeholders = filter.values
+      .map((_value, index) => `@${filter.parameterPrefix}${index}`)
+      .join(", ");
+    sql = sql.replace(
+      filter.placeholder,
+      `AND ${filter.column} IN (${placeholders})`,
+    );
+    filter.values.forEach((value, index) => {
+      params[`${filter.parameterPrefix}${index}`] = value;
+    });
+  }
+
+  if (filterEmbeddingModel && options.embeddingModel) {
+    sql = sql.replace(
+      "{{embeddingModelFilter}}",
+      "AND embedding_model = @embeddingModel",
+    );
+    params.embeddingModel = options.embeddingModel;
+  } else {
+    sql = sql.replace("{{embeddingModelFilter}}", "");
+  }
+
+  return {
+    sql: sql.replace("{{scopeFilter}}", "").replace("{{metadataFilter}}", ""),
+    params,
+  };
+}
+
+function toContextVectorRecord(row: StoredContextVectorRow): ContextVectorRecord {
+  return {
+    id: row.id,
+    contextId: row.context_id,
+    text: row.text,
+    vector: parseJson(row.vector, [] as number[]),
+    sourceType: row.source_type as ContextSourceType,
+    sourceId: row.source_id ?? undefined,
+    sourceName: row.source_name ?? undefined,
+    contentType: row.content_type as ContextContentType,
+    scope: row.scope
+      ? (parseJson(row.scope, {}) as ContextScope)
+      : undefined,
+    metadata: parseJson(row.metadata, {}),
+  };
 }
 
 // ============================================================================
@@ -245,95 +347,8 @@ export class SqliteVectorStore implements ContextStore {
 
     const limit = Math.min(Math.max(options.limit ?? 8, 1), 1000);
 
-    let sql = SEARCH_SQL;
-
-    const params: Record<string, unknown> = {};
-
-    if (options.sourceTypes && options.sourceTypes.length > 0) {
-      const placeholders = options.sourceTypes
-        .map((_value, index) => `@sourceType${index}`)
-        .join(", ");
-
-      sql = sql.replace("{{sourceTypeFilter}}", `AND source_type IN (${placeholders})`);
-
-      options.sourceTypes.forEach((value, index) => {
-        params[`sourceType${index}`] = value;
-      });
-    } else {
-      sql = sql.replace("{{sourceTypeFilter}}", "");
-    }
-
-    if (options.contentTypes && options.contentTypes.length > 0) {
-      const placeholders = options.contentTypes
-        .map((_value, index) => `@contentType${index}`)
-        .join(", ");
-
-      sql = sql.replace(
-        "{{contentTypeFilter}}",
-        `AND content_type IN (${placeholders})`,
-      );
-
-      options.contentTypes.forEach((value, index) => {
-        params[`contentType${index}`] = value;
-      });
-    } else {
-      sql = sql.replace("{{contentTypeFilter}}", "");
-    }
-
-    if (options.sourceIds && options.sourceIds.length > 0) {
-      const placeholders = options.sourceIds
-        .map((_value, index) => `@sourceId${index}`)
-        .join(", ");
-
-      sql = sql.replace(
-        "{{sourceIdFilter}}",
-        `AND source_id IN (${placeholders})`,
-      );
-
-      options.sourceIds.forEach((value, index) => {
-        params[`sourceId${index}`] = value;
-      });
-    } else {
-      sql = sql.replace("{{sourceIdFilter}}", "");
-    }
-
-    // Scope filtering is applied in-memory because scope is stored as JSON.
-    sql = sql.replace("{{scopeFilter}}", "");
-
-    // Metadata filtering is applied in-memory.
-    sql = sql.replace("{{metadataFilter}}", "");
-
-    sql = sql.replace("{{limit}}", String(limit));
-
-    const stmt = this.db.prepare(sql);
-
-    const rows = stmt.all(params) as Array<{
-      readonly id: string;
-
-      readonly context_id: string;
-
-      readonly text: string;
-
-      readonly vector: string;
-
-      readonly source_type: string;
-
-      readonly source_id: string | null;
-
-      readonly source_name: string | null;
-
-      readonly content_type: string;
-
-      readonly scope: string | null;
-
-      readonly metadata: string;
-
-      readonly embedding_model: string;
-
-      readonly dimensions: number;
-
-      readonly created_at: string;
-    }>;
+    const { sql, params } = buildSearchQuery(options, true);
+    const rows = this.db.prepare(sql).all(params) as StoredContextVectorRow[];
 
     const normalizedQuery = normalizeVector(vector);
 
@@ -344,39 +359,12 @@ export class SqliteVectorStore implements ContextStore {
         throw new Error("Vector search was cancelled.");
       }
 
-      let recordVector: number[];
-
-      try {
-        recordVector = JSON.parse(row.vector) as number[];
-      } catch {
-        continue;
-      }
+      const record = toContextVectorRecord(row);
+      const recordVector = record.vector;
 
       if (recordVector.length !== normalizedQuery.length) {
         continue;
       }
-
-      const record: ContextVectorRecord = {
-        id: row.id,
-
-        contextId: row.context_id,
-
-        text: row.text,
-
-        vector: recordVector,
-
-        sourceType: row.source_type as ContextSourceType,
-
-        sourceId: row.source_id ?? undefined,
-
-        sourceName: row.source_name ?? undefined,
-
-        contentType: row.content_type as ContextContentType,
-
-        scope: (parseJson(row.scope, {}) as ContextScope) ?? undefined,
-
-        metadata: parseJson(row.metadata, {}),
-      };
 
       if (!matchesFilters(record, options)) {
         continue;
@@ -385,6 +373,51 @@ export class SqliteVectorStore implements ContextStore {
       const score = cosineSimilarity(normalizedQuery, recordVector);
 
       if (score < options.minScore) {
+        continue;
+      }
+
+      results.push({ record, score });
+    }
+
+    results.sort((left, right) => right.score - left.score);
+
+    return results.slice(0, limit);
+  }
+
+  public async searchText(
+    query: string,
+    options: ContextVectorSearchOptions,
+  ): Promise<readonly ContextVectorSearchResult[]> {
+    if (!options) {
+      throw new Error("Text search options are required.");
+    }
+
+    if (options.signal?.aborted) {
+      throw new Error("Context text search was cancelled.");
+    }
+
+    const terms = tokenizeSearchQuery(query);
+    if (terms.length === 0) {
+      return [];
+    }
+
+    const { sql, params } = buildSearchQuery(options, false);
+    const rows = this.db.prepare(sql).all(params) as StoredContextVectorRow[];
+    const limit = Math.min(Math.max(options.limit ?? 8, 1), 1000);
+    const results: ContextVectorSearchResult[] = [];
+
+    for (const row of rows) {
+      if (options.signal?.aborted) {
+        throw new Error("Context text search was cancelled.");
+      }
+
+      const record = toContextVectorRecord(row);
+      if (!matchesFilters(record, options)) {
+        continue;
+      }
+
+      const score = scoreKeywordOverlap(record.text, terms);
+      if (score === 0 || score < options.minScore) {
         continue;
       }
 
@@ -423,7 +456,10 @@ export class SqliteVectorStore implements ContextStore {
       throw new Error(`Vector record "${record.id}" requires text.`);
     }
 
-    this.validateVector(record.vector);
+    this.validateVector(
+      record.vector,
+      record.metadata.embeddingModel === "keyword-only",
+    );
 
     if (!record.sourceType) {
       throw new Error(`Vector record "${record.id}" requires sourceType.`);
@@ -434,12 +470,15 @@ export class SqliteVectorStore implements ContextStore {
     }
   }
 
-  private validateVector(vector: readonly number[]): void {
+  private validateVector(
+    vector: readonly number[],
+    allowEmpty = false,
+  ): void {
     if (!Array.isArray(vector)) {
       throw new TypeError("Vector must be an array.");
     }
 
-    if (vector.length === 0) {
+    if (vector.length === 0 && !allowEmpty) {
       throw new Error("Vector must not be empty.");
     }
 
@@ -484,6 +523,13 @@ function matchesFilters(
   }
 
   if (options.metadata && !matchesMetadata(record.metadata, options.metadata)) {
+    return false;
+  }
+
+  if (
+    options.embeddingModel &&
+    record.metadata.embeddingModel !== options.embeddingModel
+  ) {
     return false;
   }
 

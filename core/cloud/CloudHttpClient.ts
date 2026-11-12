@@ -163,7 +163,7 @@ export class CloudHttpClient {
 
       throw new CloudError(
         error instanceof Error ? error.message : "Unknown cloud network error.",
-        "NETWORK",
+        "NETWORK_ERROR",
         {
           retryable: true,
           cause: error,

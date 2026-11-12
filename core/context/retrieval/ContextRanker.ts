@@ -100,7 +100,7 @@ export class ContextRanker {
     const rankScore = context.score * priorityWeight;
 
     if (reasons.length === 0) {
-      reasons.push("semantic-similarity");
+      reasons.push("retrieval-score");
     }
 
     return {

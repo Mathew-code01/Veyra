@@ -20,11 +20,12 @@
 //   - OnnxEmbeddingService is used when a compatible ONNX embedding model is
 //     available (VEYRA_EMBEDDING_MODEL_PATH). It runs fully offline.
 //   - SqliteVectorStore persists vectors in SQLite (survives restart).
-//   - If no embedding model is available, MockEmbeddingService is used as a
-//     degraded fallback so indexing still works; semantic retrieval is then
-//     unavailable and callers should rely on keyword search. This fallback is
-//     exposed via `semanticAvailable` and is NOT production semantic search.
+//   - Without both a model file and its compatible tokenizer, Context uses
+//     lexical matching over stored text. It does not generate synthetic
+//     embeddings.
 // ============================================================================
+
+import { existsSync } from "node:fs";
 
 import { ContextManager } from "./ContextManager";
 
@@ -32,9 +33,15 @@ import { DefaultContextParser } from "./ingestion/ContextParser";
 
 import { DefaultChunker } from "./ingestion/Chunker";
 
-import { MockEmbeddingService } from "./embeddings/EmbeddingService";
+import {
+  KeywordOnlyEmbeddingService,
+  type EmbeddingService,
+} from "./embeddings/EmbeddingService";
 
-import { OnnxEmbeddingService } from "./embeddings/OnnxEmbeddingService";
+import {
+  OnnxEmbeddingService,
+  type OnnxEmbeddingServiceOptions,
+} from "./embeddings/OnnxEmbeddingService";
 
 import { SqliteVectorStore } from "./storage/SqliteVectorStore";
 
@@ -52,12 +59,13 @@ export interface ContextEngine {
   readonly manager: ContextManager;
 
   /**
-   * Whether real (non-mock) semantic embedding is available.
-   *
-   * When false, the embedding service is a degraded fallback and semantic
-   * similarity results are not meaningful. Keyword retrieval remains usable.
+   * Whether the configured ONNX model has completed a successful inference.
+   * This remains false before the first semantic query and in keyword mode.
    */
   readonly semanticAvailable: boolean;
+
+  /** Retrieval strategy selected from the available embedding configuration. */
+  readonly retrievalMode: "semantic" | "keyword";
 }
 
 // ============================================================================
@@ -66,6 +74,7 @@ export interface ContextEngine {
 
 export interface CreateContextEngineOptions {
   readonly embeddingModelPath?: string;
+  readonly embeddingTokenizer?: OnnxEmbeddingServiceOptions["tokenizer"];
 }
 
 export function createContextEngine(
@@ -74,36 +83,23 @@ export function createContextEngine(
   const modelPath =
     options.embeddingModelPath ?? process.env.VEYRA_EMBEDDING_MODEL_PATH;
 
-  let embeddings: import("./embeddings/EmbeddingService").EmbeddingService;
+  let embeddings: EmbeddingService;
 
-  let semanticAvailable = false;
+  if (modelPath && existsSync(modelPath) && options.embeddingTokenizer) {
+    embeddings = new OnnxEmbeddingService({
+      modelPath,
+      tokenizer: options.embeddingTokenizer,
 
-  if (modelPath) {
-    try {
-      embeddings = new OnnxEmbeddingService({
-        modelPath,
+      dimensions: 384,
 
-        dimensions: 384,
+      model: "onnx-embedding",
 
-        model: "onnx-embedding",
+      maxLength: 128,
 
-        maxLength: 128,
-
-        meanPool: true,
-      });
-
-      semanticAvailable = true;
-    } catch {
-      // No usable model: degrade to mock embeddings so indexing still works.
-      // Semantic retrieval will be unavailable; keyword search remains usable.
-      embeddings = new MockEmbeddingService(384);
-
-      semanticAvailable = false;
-    }
+      meanPool: true,
+    });
   } else {
-    embeddings = new MockEmbeddingService(384);
-
-    semanticAvailable = false;
+    embeddings = new KeywordOnlyEmbeddingService();
   }
 
   const vectorStore = new SqliteVectorStore();
@@ -142,6 +138,15 @@ export function createContextEngine(
   return {
     manager,
 
-    semanticAvailable,
+    get semanticAvailable() {
+      return (
+        embeddings instanceof OnnxEmbeddingService &&
+        embeddings.hasSuccessfulInference
+      );
+    },
+
+    get retrievalMode() {
+      return embeddings.supportsSemanticEmbeddings ? "semantic" : "keyword";
+    },
   };
 }

@@ -154,6 +154,43 @@ import {
   InterviewError,
 } from "../errors/InterviewError";
 
+import {
+  ProfessionalDomainClassifier,
+} from "../classification/ProfessionalDomainClassifier";
+
+import {
+  QuestionUnderstandingEngine,
+} from "../understanding/QuestionUnderstandingEngine";
+
+import {
+  AnswerPlanningEngine,
+  type CandidateEvidenceItem,
+} from "../planning/AnswerPlanningEngine";
+
+import {
+  AnswerEvaluationEngine,
+  type AnswerEvaluationInput,
+} from "../evaluation/AnswerEvaluationEngine";
+
+import {
+  CommunicationAssistanceEngine,
+} from "../communication/CommunicationAssistanceEngine";
+
+import {
+  FollowUpIntelligenceEngine,
+} from "../followup/FollowUpIntelligenceEngine";
+
+import type {
+  InterviewDomain,
+  InterviewDomainClassification,
+  QuestionUnderstanding,
+  AnswerPlan,
+  AnswerEvaluation,
+  CommunicationFeedback,
+  FollowUpQuestion,
+  ResponseMode,
+} from "../../../shared/types/interviews";
+
 // ============================================================================
 // RELIABILITY
 // ============================================================================
@@ -189,6 +226,23 @@ export interface InterviewIntelligenceOptions {
    * Provides supporting contextual evidence.
    */
   readonly contextManager?: ContextManager;
+
+  /** Trusted active profile scope from the desktop composition root. */
+  readonly resolveProfileId?: () => string | undefined;
+
+  /** Retrieves already-scoped, persistent memory without exposing storage to Interview. */
+  readonly retrieveMemory?: (
+    profileId: string,
+    candidateId: string | undefined,
+    query: string,
+    signal?: AbortSignal,
+  ) => Promise<readonly InterviewMemoryEvidence[]>;
+
+  /** Retrieves durable, profile-scoped candidate facts for prompt context. */
+  readonly retrieveCandidateContext?: (
+    candidateId: string,
+    signal?: AbortSignal,
+  ) => Promise<InterviewCandidateContext>;
 
   /**
    * Prompt subsystem.
@@ -248,6 +302,24 @@ export interface InterviewIntelligenceContext {
    * IDs of the context records used.
    */
   readonly contextIds: readonly string[];
+
+  /** IDs of persistent memory records used to prepare the prompt. */
+  readonly memoryIds?: readonly string[];
+
+  /** IDs of candidate-domain facts used to prepare the prompt. */
+  readonly candidateEvidenceIds?: readonly string[];
+}
+
+export interface InterviewCandidateContext {
+  readonly text: string;
+  readonly evidenceIds: readonly string[];
+}
+
+export interface InterviewMemoryEvidence {
+  readonly id: string;
+  readonly text: string;
+  readonly verificationStatus: string;
+  readonly sourceId?: string;
 }
 
 // ============================================================================
@@ -351,6 +423,12 @@ export class InterviewIntelligence {
 
   private readonly contextManager?: ContextManager;
 
+  private readonly resolveProfileId?: () => string | undefined;
+
+  private readonly retrieveMemory?: InterviewIntelligenceOptions["retrieveMemory"];
+
+  private readonly retrieveCandidateContext?: InterviewIntelligenceOptions["retrieveCandidateContext"];
+
   private readonly promptService: PromptService;
 
   private readonly reliabilityManager: ReliabilityManager;
@@ -363,6 +441,18 @@ export class InterviewIntelligence {
   >;
 
   private readonly timeoutMs?: number;
+
+  private readonly domainClassifier = new ProfessionalDomainClassifier();
+
+  private readonly questionUnderstandingEngine = new QuestionUnderstandingEngine();
+
+  private readonly answerPlanningEngine = new AnswerPlanningEngine();
+
+  private readonly answerEvaluationEngine = new AnswerEvaluationEngine();
+
+  private readonly communicationAssistanceEngine = new CommunicationAssistanceEngine();
+
+  private readonly followUpIntelligenceEngine = new FollowUpIntelligenceEngine();
 
   // ========================================================================
   // CONSTRUCTOR
@@ -380,6 +470,12 @@ export class InterviewIntelligence {
 
     this.contextManager =
       options.contextManager;
+
+    this.resolveProfileId = options.resolveProfileId;
+
+    this.retrieveMemory = options.retrieveMemory;
+
+    this.retrieveCandidateContext = options.retrieveCandidateContext;
 
     this.promptService =
       options.promptService ??
@@ -926,7 +1022,7 @@ export class InterviewIntelligence {
     request: InterviewAnalysisRequest,
     analysis: InterviewAnalysis,
   ): Promise<InterviewIntelligenceContext | undefined> {
-    if (!this.contextManager) {
+    if (!this.contextManager && !this.retrieveMemory && !this.retrieveCandidateContext) {
       return undefined;
     }
 
@@ -940,47 +1036,75 @@ export class InterviewIntelligence {
       return undefined;
     }
 
+    const profileId = this.resolveProfileId?.();
+    if ((this.resolveProfileId || this.retrieveMemory) && !profileId) {
+      return undefined;
+    }
+
     try {
-      const result =
-        await this.contextManager.query({
-          query,
+      const [result, memories, candidateContext] = await Promise.all([
+        this.contextManager
+          ? this.contextManager.query({
+              query,
+              limit: 8,
+              minScore: 0.35,
+              sourceIds: undefined,
+              scope: {
+                ...(profileId ? { profileId } : {}),
+                ...(request.candidateId ? { candidateId: request.candidateId } : {}),
+              },
+              signal: request.signal,
+            })
+          : undefined,
+        this.retrieveMemory && profileId
+          ? this.retrieveMemory(profileId, request.candidateId, query, request.signal)
+          : Promise.resolve([]),
+        this.retrieveCandidateContext && request.candidateId
+          ? this.retrieveCandidateContext(request.candidateId, request.signal)
+          : Promise.resolve(undefined),
+      ]);
 
-          limit: 8,
+      const contextIds = result?.contexts
+        .map(
+          (item) => item.id,
+        )
+        .filter(
+          (
+            id,
+          ): id is string =>
+            typeof id === "string" &&
+            id.trim().length > 0,
+        ) ?? [];
+      const memoryIds = memories.map((item) => item.id);
+      const memoryText = memories
+        .slice(0, 10)
+        .map((item) => {
+          const provenance = item.sourceId ? `; source ${item.sourceId}` : "";
+          return `[${item.verificationStatus}${provenance}] ${item.text.slice(0, 600)}`;
+        })
+        .join("\n");
+      const candidateText = candidateContext?.text.trim()
+        ? `Profile-scoped candidate knowledge:\n${candidateContext.text.slice(0, 6_000)}`
+        : undefined;
+      const text = [
+        candidateText,
+        result?.compressed.text,
+        memoryText ? `Relevant saved memory (respect verification labels):\n${memoryText}` : undefined,
+      ]
+        .filter((item): item is string => Boolean(item?.trim()))
+        .join("\n\n")
+        .slice(0, 12_000);
 
-          minScore: 0.35,
-
-          sourceIds:
-            request.candidateId
-              ? [request.candidateId]
-              : undefined,
-
-          signal:
-            request.signal,
-        });
-
-      const contextIds =
-        result.contexts
-          .map(
-            (item) => item.id,
-          )
-          .filter(
-            (
-              id,
-            ): id is string =>
-              typeof id === "string" &&
-              id.trim().length > 0,
-          );
+      if (!text) {
+        return undefined;
+      }
 
       return Object.freeze({
         query,
-
-        text:
-          result.compressed.text,
-
-        contextIds:
-          Object.freeze(
-            contextIds,
-          ),
+        text,
+        contextIds: Object.freeze(contextIds),
+        memoryIds: Object.freeze(memoryIds),
+        candidateEvidenceIds: Object.freeze(candidateContext?.evidenceIds ?? []),
       });
     } catch (error) {
       throw InterviewError.contextFailure(
@@ -1135,6 +1259,12 @@ export class InterviewIntelligence {
 
       contextIds:
         context.contextIds,
+
+      sources:
+        [
+          ...(context.candidateEvidenceIds ?? []).map((id) => `candidate:${id}`),
+          ...(context.memoryIds ?? []).map((id) => `memory:${id}`),
+        ],
     });
   }
 
@@ -1226,6 +1356,42 @@ export class InterviewIntelligence {
 
       response,
     });
+  }
+
+  public classifyDomain(questionText: string): InterviewDomainClassification {
+    return this.domainClassifier.classify(questionText);
+  }
+
+  public understandQuestion(
+    questionText: string,
+    candidateEvidenceTexts?: readonly string[],
+  ): QuestionUnderstanding {
+    return this.questionUnderstandingEngine.understand(questionText, candidateEvidenceTexts);
+  }
+
+  public planAnswer(
+    understanding: QuestionUnderstanding,
+    domain: InterviewDomain,
+    evidenceItems?: readonly CandidateEvidenceItem[],
+    responseMode?: ResponseMode,
+  ): AnswerPlan {
+    return this.answerPlanningEngine.plan(understanding, domain, evidenceItems, responseMode);
+  }
+
+  public evaluateAnswer(input: AnswerEvaluationInput): AnswerEvaluation {
+    return this.answerEvaluationEngine.evaluate(input);
+  }
+
+  public analyzeCommunication(transcriptOrText: string): CommunicationFeedback {
+    return this.communicationAssistanceEngine.analyze(transcriptOrText);
+  }
+
+  public generateFollowUps(
+    previousAnswerText: string,
+    understanding: QuestionUnderstanding,
+    domain: InterviewDomain,
+  ): readonly FollowUpQuestion[] {
+    return this.followUpIntelligenceEngine.generateFollowUps(previousAnswerText, understanding, domain);
   }
 
   // ========================================================================

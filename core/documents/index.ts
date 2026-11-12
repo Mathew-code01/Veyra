@@ -242,6 +242,10 @@ export {
   DefaultDocumentParserRegistry,
 } from "./DocumentService";
 
+export { PDFParser } from "./parsers/PDFParser";
+export { DOCXParser } from "./parsers/DOCXParser";
+export { SafePDFProvider, SafeDOCXProvider } from "./parsers/SafeDocumentAdapters";
+
 export type {
   DocumentParserAdapter,
   DocumentParserRegistry,

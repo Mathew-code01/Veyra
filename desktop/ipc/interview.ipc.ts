@@ -49,6 +49,9 @@ import { IPC_CHANNELS } from "../../shared/constants/events";
 import type {
   InterviewAnalysisRequest,
   InterviewTaskRequest,
+  InterviewDomain,
+  QuestionUnderstanding,
+  ResponseMode,
 } from "../../shared/types/interviews";
 
 import type {
@@ -57,6 +60,12 @@ import type {
   InterviewExecuteAIResult,
   InterviewExecuteAIResponse,
   InterviewAIRequestOptions,
+  InterviewDomainClassifyResult,
+  InterviewQuestionUnderstandResult,
+  InterviewPlanAnswerResult,
+  InterviewEvaluateAnswerResult,
+  InterviewCommunicationFeedbackResult,
+  InterviewFollowUpResult,
 } from "../../shared/contracts/interview.contract";
 
 export interface RegisterInterviewIpcOptions {
@@ -348,6 +357,121 @@ export function registerInterviewIpc(
     };
   };
 
+  const domainClassifyHandler = async (
+    event: IpcMainInvokeEvent,
+    rawInput: unknown,
+  ): Promise<InterviewDomainClassifyResult> => {
+    if (event.sender.isDestroyed()) {
+      return { success: false, error: new Error("IPC sender was destroyed before execution.") };
+    }
+    const input = assertRequestObject(rawInput);
+    const questionText = typeof input.question === "string" ? input.question : "";
+    try {
+      const classification = interviewIntelligence.classifyDomain(questionText);
+      return { success: true, data: { classification } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error : new Error("Domain classification failed.") };
+    }
+  };
+
+  const questionUnderstandHandler = async (
+    event: IpcMainInvokeEvent,
+    rawInput: unknown,
+  ): Promise<InterviewQuestionUnderstandResult> => {
+    if (event.sender.isDestroyed()) {
+      return { success: false, error: new Error("IPC sender was destroyed before execution.") };
+    }
+    const input = assertRequestObject(rawInput);
+    const questionText = typeof input.question === "string" ? input.question : "";
+    const evidenceTexts = Array.isArray(input.evidenceTexts) ? input.evidenceTexts.filter((s): s is string => typeof s === "string") : [];
+    try {
+      const understanding = interviewIntelligence.understandQuestion(questionText, evidenceTexts);
+      return { success: true, data: { understanding } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error : new Error("Question understanding failed.") };
+    }
+  };
+
+  const planAnswerHandler = async (
+    event: IpcMainInvokeEvent,
+    rawInput: unknown,
+  ): Promise<InterviewPlanAnswerResult> => {
+    if (event.sender.isDestroyed()) {
+      return { success: false, error: new Error("IPC sender was destroyed before execution.") };
+    }
+    const input = assertRequestObject(rawInput);
+    const understanding = input.understanding as QuestionUnderstanding;
+    const domain = (input.domain as InterviewDomain) ?? "general_employment";
+    const mode = (input.responseMode as ResponseMode) ?? "professional";
+    try {
+      const plan = interviewIntelligence.planAnswer(understanding, domain, undefined, mode);
+      return { success: true, data: { plan } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error : new Error("Answer planning failed.") };
+    }
+  };
+
+  const evaluateAnswerHandler = async (
+    event: IpcMainInvokeEvent,
+    rawInput: unknown,
+  ): Promise<InterviewEvaluateAnswerResult> => {
+    if (event.sender.isDestroyed()) {
+      return { success: false, error: new Error("IPC sender was destroyed before execution.") };
+    }
+    const input = assertRequestObject(rawInput);
+    const answerText = typeof input.answerText === "string" ? input.answerText : "";
+    const understanding = input.questionUnderstanding as QuestionUnderstanding;
+    const domain = (input.domain as InterviewDomain) ?? "general_employment";
+    const targetRole = typeof input.targetRole === "string" ? input.targetRole : undefined;
+    try {
+      const evaluation = interviewIntelligence.evaluateAnswer({
+        answerText,
+        questionUnderstanding: understanding,
+        domain,
+        targetRole,
+      });
+      return { success: true, data: { evaluation } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error : new Error("Answer evaluation failed.") };
+    }
+  };
+
+  const communicationFeedbackHandler = async (
+    event: IpcMainInvokeEvent,
+    rawInput: unknown,
+  ): Promise<InterviewCommunicationFeedbackResult> => {
+    if (event.sender.isDestroyed()) {
+      return { success: false, error: new Error("IPC sender was destroyed before execution.") };
+    }
+    const input = assertRequestObject(rawInput);
+    const text = typeof input.text === "string" ? input.text : "";
+    try {
+      const feedback = interviewIntelligence.analyzeCommunication(text);
+      return { success: true, data: { feedback } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error : new Error("Communication feedback analysis failed.") };
+    }
+  };
+
+  const followUpHandler = async (
+    event: IpcMainInvokeEvent,
+    rawInput: unknown,
+  ): Promise<InterviewFollowUpResult> => {
+    if (event.sender.isDestroyed()) {
+      return { success: false, error: new Error("IPC sender was destroyed before execution.") };
+    }
+    const input = assertRequestObject(rawInput);
+    const previousAnswer = typeof input.previousAnswer === "string" ? input.previousAnswer : "";
+    const understanding = input.understanding as QuestionUnderstanding;
+    const domain = (input.domain as InterviewDomain) ?? "general_employment";
+    try {
+      const followUps = interviewIntelligence.generateFollowUps(previousAnswer, understanding, domain);
+      return { success: true, data: { followUps } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error : new Error("Follow-up generation failed.") };
+    }
+  };
+
   /**
    * Register handlers.
    */
@@ -371,6 +495,36 @@ export function registerInterviewIpc(
     guidanceHandler,
   );
 
+  ipcMain.handle(
+    IPC_CHANNELS.INTERVIEW_DOMAIN_CLASSIFY,
+    domainClassifyHandler,
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.INTERVIEW_QUESTION_UNDERSTAND,
+    questionUnderstandHandler,
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.INTERVIEW_PLAN_ANSWER,
+    planAnswerHandler,
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.INTERVIEW_EVALUATE_ANSWER,
+    evaluateAnswerHandler,
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.INTERVIEW_COMMUNICATION_FEEDBACK,
+    communicationFeedbackHandler,
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.INTERVIEW_FOLLOW_UP,
+    followUpHandler,
+  );
+
   /**
    * Cleanup.
    *
@@ -391,6 +545,30 @@ export function registerInterviewIpc(
 
     ipcMain.removeHandler(
       IPC_CHANNELS.INTERVIEW_GUIDANCE,
+    );
+
+    ipcMain.removeHandler(
+      IPC_CHANNELS.INTERVIEW_DOMAIN_CLASSIFY,
+    );
+
+    ipcMain.removeHandler(
+      IPC_CHANNELS.INTERVIEW_QUESTION_UNDERSTAND,
+    );
+
+    ipcMain.removeHandler(
+      IPC_CHANNELS.INTERVIEW_PLAN_ANSWER,
+    );
+
+    ipcMain.removeHandler(
+      IPC_CHANNELS.INTERVIEW_EVALUATE_ANSWER,
+    );
+
+    ipcMain.removeHandler(
+      IPC_CHANNELS.INTERVIEW_COMMUNICATION_FEEDBACK,
+    );
+
+    ipcMain.removeHandler(
+      IPC_CHANNELS.INTERVIEW_FOLLOW_UP,
     );
   };
 }

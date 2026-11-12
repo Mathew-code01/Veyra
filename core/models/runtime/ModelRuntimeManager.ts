@@ -220,7 +220,19 @@ export class ModelRuntimeManager {
 
     if (!memory.safe) {
       warnings.push(
-        `Current memory availability is insufficient to safely load "${model.displayName}".`,
+        `Current memory is insufficient to safely load "${model.displayName}". ` +
+          `${memory.shortfallBytes} bytes of additional effective memory are required.`,
+      );
+
+      warnings.push(
+        `Veyra currently has ${memory.availablePercent.toFixed(1)}% of system RAM available ` +
+          `and reserves ${memory.safetyReservePercent}% for system stability.`,
+      );
+    }
+
+    if (memory.safe && memory.availablePercent < 25) {
+      warnings.push(
+        `System memory is currently under pressure even though this model passes the load-safety check.`,
       );
     }
 
@@ -268,12 +280,23 @@ export class ModelRuntimeManager {
 
     const runtime = this.resolveRuntime(model);
 
+    /*
+     * Re-check memory immediately before loading.
+     *
+     * This is important because the system may have changed since
+     * prepareLoad() was called.
+     */
     const memory = this.memoryPressureGuard.inspectModel(model);
 
     if (!memory.safe) {
       throw new Error(
-        `Cannot load "${model.displayName}" because current memory pressure is too high. ` +
-          `${memory.shortfallBytes} bytes of additional safe memory are required.`,
+        `Cannot load "${model.displayName}" because current memory is insufficient. ` +
+          `Available: ${memory.availableMemoryBytes} bytes. ` +
+          `Dynamic safety reserve: ${memory.totalReservedBytes} bytes ` +
+          `(${memory.safetyReservePercent}% of total RAM). ` +
+          `Effective available: ${memory.effectiveAvailableBytes} bytes. ` +
+          `Required: ${memory.requiredMemoryBytes} bytes. ` +
+          `Shortfall: ${memory.shortfallBytes} bytes.`,
       );
     }
 
@@ -293,8 +316,6 @@ export class ModelRuntimeManager {
 
     /*
      * The model path comes exclusively from trusted ModelStorage state.
-     *
-     * No caller can inject a filesystem path through this public method.
      */
     const loadOptions: ModelRuntimeLoadOptions = {
       ...options,
@@ -319,7 +340,7 @@ export class ModelRuntimeManager {
           await runtime.unload();
         } catch {
           /*
-           * Preserve the original health failure.
+           * Preserve original health failure.
            */
         }
 

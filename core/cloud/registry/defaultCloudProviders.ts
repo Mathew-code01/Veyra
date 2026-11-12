@@ -56,6 +56,15 @@ export interface DefaultCloudProviderOptions {
   readonly applicationName?: string;
 
   readonly applicationUrl?: string;
+
+  /**
+   * Optional credential resolver.
+   *
+   * When supplied, providers use this resolver (e.g. OS-backed secure
+   * storage for BYOK with environment fallback) instead of the default
+   * environment-variable resolver.
+   */
+  readonly credentialResolver?: CloudCredentialResolver;
 }
 
 // ============================================================================
@@ -120,9 +129,12 @@ const environmentCredentialResolver: CloudCredentialResolver = {
 // DEPENDENCIES
 // ============================================================================
 
-function createDefaultProviderDependencies(): CloudProviderDependencies {
+function createDefaultProviderDependencies(
+  options: { readonly credentialResolver?: CloudCredentialResolver },
+): CloudProviderDependencies {
   return {
-    credentialResolver: environmentCredentialResolver,
+    credentialResolver:
+      options.credentialResolver ?? environmentCredentialResolver,
   };
 }
 
@@ -227,7 +239,9 @@ export function createDefaultCloudProviders(
 
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
 
-  const dependencies = createDefaultProviderDependencies();
+  const dependencies = createDefaultProviderDependencies({
+    credentialResolver: options.credentialResolver,
+  });
 
   const providers: CloudProvider[] = [];
 

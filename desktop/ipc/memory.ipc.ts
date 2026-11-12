@@ -36,6 +36,8 @@ import type { IpcMain, IpcMainInvokeEvent } from "electron";
 
 import { MemoryRepository } from "../../database/repositories/memoryRepository";
 
+import type { ActiveProfileResolver } from "../main/activeProfile";
+
 import type {
   MemoryCategory,
   MemorySearchOptions,
@@ -48,6 +50,8 @@ export interface RegisterMemoryIpcOptions {
   readonly memoryRepository: MemoryRepository;
 
   readonly ipcMain: IpcMain;
+
+  readonly activeProfileResolver: ActiveProfileResolver;
 }
 
 /**
@@ -57,6 +61,8 @@ export interface MemorySearchRequest {
   readonly profileId: string;
 
   readonly query?: string;
+
+  readonly candidateId?: string;
 
   readonly category?: MemoryCategory;
 
@@ -77,6 +83,8 @@ export interface MemoryListRequest {
 
   readonly category?: MemoryCategory;
 
+  readonly candidateId?: string;
+
   readonly limit?: number;
 }
 
@@ -87,6 +95,8 @@ export interface MemoryCreateRequest {
   readonly profileId: string;
 
   readonly category: MemoryCategory;
+
+  readonly candidateId?: string;
 
   readonly content: { readonly value: unknown; readonly text?: string };
 
@@ -189,6 +199,8 @@ export function registerMemoryIpc(
 
   const ipcMain = options.ipcMain;
 
+  const activeProfileResolver = options.activeProfileResolver;
+
   /**
    * MEMORY_SEARCH
    *
@@ -206,17 +218,39 @@ export function registerMemoryIpc(
   }> => {
     assertValidIpcSender(event);
 
-    if (!request?.profileId?.trim()) {
+    const profileId = activeProfileResolver.getActiveProfile();
+
+    if (!profileId) {
       return {
         success: false,
 
-        error: new Error("A profileId is required."),
+        error: new Error("No active profile."),
+      };
+    }
+
+    if (!request) {
+      return {
+        success: false,
+
+        error: new Error("A request is required."),
+      };
+    }
+
+    if (request?.profileId && request.profileId !== profileId) {
+      return {
+        success: false,
+
+        error: new Error(
+          "The requested profile does not match the active profile.",
+        ),
       };
     }
 
     try {
       const options: MemorySearchOptions = {
         query: request.query,
+
+        candidateId: request.candidateId,
 
         category: request.category,
 
@@ -229,7 +263,7 @@ export function registerMemoryIpc(
         limit: request.limit,
       };
 
-      const records = memoryRepository.search(request.profileId, options);
+      const records = memoryRepository.search(profileId, options);
 
       return {
         success: true,
@@ -263,17 +297,39 @@ export function registerMemoryIpc(
   }> => {
     assertValidIpcSender(event);
 
-    if (!request?.profileId?.trim()) {
+    const profileId = activeProfileResolver.getActiveProfile();
+
+    if (!profileId) {
       return {
         success: false,
 
-        error: new Error("A profileId is required."),
+        error: new Error("No active profile."),
+      };
+    }
+
+    if (!request) {
+      return {
+        success: false,
+
+        error: new Error("A request is required."),
+      };
+    }
+
+    if (request?.profileId && request.profileId !== profileId) {
+      return {
+        success: false,
+
+        error: new Error(
+          "The requested profile does not match the active profile.",
+        ),
       };
     }
 
     try {
-      const records = memoryRepository.listByProfile(request.profileId, {
+      const records = memoryRepository.listByProfile(profileId, {
         category: request.category,
+
+        candidateId: request.candidateId,
 
         limit: request.limit,
       });
@@ -310,11 +366,31 @@ export function registerMemoryIpc(
   }> => {
     assertValidIpcSender(event);
 
-    if (!request?.profileId?.trim()) {
+    const profileId = activeProfileResolver.getActiveProfile();
+
+    if (!profileId) {
       return {
         success: false,
 
-        error: new Error("A profileId is required."),
+        error: new Error("No active profile."),
+      };
+    }
+
+    if (!request) {
+      return {
+        success: false,
+
+        error: new Error("A request is required."),
+      };
+    }
+
+    if (request?.profileId && request.profileId !== profileId) {
+      return {
+        success: false,
+
+        error: new Error(
+          "The requested profile does not match the active profile.",
+        ),
       };
     }
 
@@ -328,9 +404,11 @@ export function registerMemoryIpc(
 
     try {
       const record = memoryRepository.create({
-        profileId: request.profileId,
+        profileId,
 
         category: request.category,
+
+        candidateId: request.candidateId,
 
         content: request.content,
 
@@ -381,11 +459,31 @@ export function registerMemoryIpc(
   }> => {
     assertValidIpcSender(event);
 
-    if (!request?.profileId?.trim()) {
+    const profileId = activeProfileResolver.getActiveProfile();
+
+    if (!profileId) {
       return {
         success: false,
 
-        error: new Error("A profileId is required."),
+        error: new Error("No active profile."),
+      };
+    }
+
+    if (!request) {
+      return {
+        success: false,
+
+        error: new Error("A request is required."),
+      };
+    }
+
+    if (request?.profileId && request.profileId !== profileId) {
+      return {
+        success: false,
+
+        error: new Error(
+          "The requested profile does not match the active profile.",
+        ),
       };
     }
 
@@ -401,7 +499,7 @@ export function registerMemoryIpc(
       const updated = memoryRepository.update(
         request.memoryId,
 
-        request.profileId,
+        profileId,
 
         {
           category: request.category,
@@ -464,11 +562,31 @@ export function registerMemoryIpc(
   }> => {
     assertValidIpcSender(event);
 
-    if (!request?.profileId?.trim()) {
+    const profileId = activeProfileResolver.getActiveProfile();
+
+    if (!profileId) {
       return {
         success: false,
 
-        error: new Error("A profileId is required."),
+        error: new Error("No active profile."),
+      };
+    }
+
+    if (!request) {
+      return {
+        success: false,
+
+        error: new Error("A request is required."),
+      };
+    }
+
+    if (request?.profileId && request.profileId !== profileId) {
+      return {
+        success: false,
+
+        error: new Error(
+          "The requested profile does not match the active profile.",
+        ),
       };
     }
 
@@ -484,7 +602,7 @@ export function registerMemoryIpc(
       const deleted = memoryRepository.softDelete(
         request.memoryId,
 
-        request.profileId,
+        profileId,
       );
 
       if (!deleted) {

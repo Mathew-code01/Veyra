@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
@@ -9,9 +12,9 @@ export default defineConfig({
 
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./client/src"),
-      "@shared": path.resolve(__dirname, "./shared"),
-      "@core": path.resolve(__dirname, "./core"),
+      "@": path.resolve(projectRoot, "./client/src"),
+      "@shared": path.resolve(projectRoot, "./shared"),
+      "@core": path.resolve(projectRoot, "./core"),
     },
   },
 

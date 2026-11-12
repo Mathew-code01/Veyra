@@ -13,7 +13,7 @@
  *
  * Supported renderer operations:
  *
- *   1. document:pick    - Open an authorized file picker and return paths.
+ *   1. document:pick    - Open an authorized file picker and return opaque handles.
  *   2. document:import  - Ingest a document through DocumentService (validate,
  *                          classify, parse, normalize, chunk, index, store,
  *                          context-publish, AI-analysis, candidate-evidence).
@@ -24,7 +24,7 @@
  * Security:
  * - IPC handlers validate their sender state.
  * - Request payloads are treated as untrusted input.
- * - File paths returned by the picker are validated before crossing IPC.
+ * - File paths remain in the main process; only opaque handles cross IPC.
  * - No Node.js objects or provider secrets are exposed to the renderer.
  *
  * `ipcMain` and `dialog` are injected so this module can be unit-tested
@@ -32,6 +32,8 @@
  */
 
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
+import { open } from "node:fs/promises";
+import { basename } from "node:path";
 
 import { DocumentService } from "../../core/documents/DocumentService";
 
@@ -42,9 +44,10 @@ import {
 
 import { IPC_CHANNELS } from "../../shared/constants/events";
 
-import type {
-  DocumentProcessingRequest,
-  DocumentSource,
+import {
+  DocumentSourceType,
+  type DocumentProcessingRequest,
+  type DocumentSource,
 } from "../../core/documents/DocumentTypes";
 
 import type { DocumentAnalysis } from "../../shared/types/documents";
@@ -63,6 +66,8 @@ import type { ProcessedDocument } from "../../core/documents/DocumentTypes";
  */
 export interface DocumentImportRequest {
   readonly source: DocumentSource;
+
+  readonly fileHandle?: string;
 
   readonly candidateId?: string;
 
@@ -97,6 +102,13 @@ export interface DocumentPickRequest {
     readonly name: string;
 
     readonly extensions: readonly string[];
+  }[];
+}
+
+export interface DocumentPickerIpcResult {
+  readonly files: readonly {
+    readonly handle: string;
+    readonly filename: string;
   }[];
 }
 
@@ -160,6 +172,8 @@ export interface RegisterDocumentIpcOptions {
    */
   readonly dialog: any;
 }
+
+const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 
 /**
  * Asserts that unknown IPC input is an object.
@@ -261,6 +275,7 @@ export function registerDocumentIpc(
   const ipcMain = options.ipcMain;
 
   const dialog = options.dialog;
+  const selectedPathsBySender = new Map<number, Map<string, string>>();
 
   /**
    * DOCUMENT_PICK
@@ -275,7 +290,10 @@ export function registerDocumentIpc(
     readonly success: boolean;
 
     readonly data?: {
-      readonly filePaths: readonly string[];
+      readonly files: readonly {
+        readonly handle: string;
+        readonly filename: string;
+      }[];
     };
 
     readonly error?: Error;
@@ -294,20 +312,30 @@ export function registerDocumentIpc(
       } as unknown);
 
       if (result.canceled) {
+        selectedPathsBySender.delete(event.sender.id);
+
         return {
           success: true,
 
           data: {
-            filePaths: [],
+            files: [],
           },
         };
       }
+
+      const selectedFiles = new Map<string, string>();
+      const files = result.filePaths.map((filePath: string) => {
+        const handle = crypto.randomUUID();
+        selectedFiles.set(handle, filePath);
+        return Object.freeze({ handle, filename: basename(filePath) });
+      });
+      selectedPathsBySender.set(event.sender.id, selectedFiles);
 
       return {
         success: true,
 
         data: {
-          filePaths: Object.freeze(result.filePaths),
+          files: Object.freeze(files),
         },
       };
     } catch (error) {
@@ -355,14 +383,128 @@ export function registerDocumentIpc(
       };
     }
 
+    let source = request.source;
+
+    if (request.fileHandle !== undefined) {
+      if (
+        typeof request.fileHandle !== "string" ||
+        request.fileHandle.trim().length === 0
+      ) {
+        return {
+          success: false,
+
+          error: new Error("A valid selected file handle is required."),
+        };
+      }
+
+      if (source.type !== "file" || source.path || source.data) {
+        return {
+          success: false,
+
+          error: new Error(
+            "A selected file import must use only its opaque file handle.",
+          ),
+        };
+      }
+
+      const selectedFiles = selectedPathsBySender.get(event.sender.id);
+      const selectedPath = selectedFiles?.get(request.fileHandle);
+      if (!selectedPath || !selectedFiles?.delete(request.fileHandle)) {
+        return {
+          success: false,
+
+          error: new Error(
+            "The document handle was not selected by this application window.",
+          ),
+        };
+      }
+      if (selectedFiles.size === 0) {
+        selectedPathsBySender.delete(event.sender.id);
+      }
+
+      try {
+        const file = await open(selectedPath, "r");
+        try {
+          const stats = await file.stat();
+          if (!stats.isFile()) {
+            throw new Error("The selected document is not a regular file.");
+          }
+          if (stats.size > MAX_DOCUMENT_BYTES) {
+            throw new Error("The selected document exceeds the 25 MB limit.");
+          }
+
+          const buffer = Buffer.alloc(stats.size);
+          let bytesRead = 0;
+          while (bytesRead < buffer.length) {
+            const result = await file.read(
+              buffer,
+              bytesRead,
+              buffer.length - bytesRead,
+              bytesRead,
+            );
+            if (result.bytesRead === 0) {
+              break;
+            }
+            bytesRead += result.bytesRead;
+          }
+
+          source = {
+            type: DocumentSourceType.FILE,
+            filename: basename(selectedPath),
+            mimeType: source.mimeType,
+            data: buffer.subarray(0, bytesRead),
+          };
+        } finally {
+          await file.close();
+        }
+      } catch (error) {
+        return {
+          success: false,
+
+          error:
+            error instanceof Error
+              ? error
+              : new Error("The selected document could not be read."),
+        };
+      }
+    } else if (source.path) {
+      return {
+        success: false,
+
+        error: new Error(
+          "Filesystem paths must be selected through the document picker.",
+        ),
+      };
+    } else if (source.type === "file" && !source.data) {
+      return {
+        success: false,
+
+        error: new Error(
+          "File imports must provide bytes or a selected file handle.",
+        ),
+      };
+    } else if (
+      source.data &&
+      source.data.byteLength > MAX_DOCUMENT_BYTES
+    ) {
+      return {
+        success: false,
+
+        error: new Error("The selected document exceeds the 25 MB limit."),
+      };
+    }
+
     const processingRequest: DocumentProcessingRequest = {
-      documentId: request.source.externalId ?? crypto.randomUUID(),
+      documentId: source.externalId ?? crypto.randomUUID(),
 
       candidateId: request.candidateId,
 
-      source: request.source,
+      source,
 
-      options: request.options,
+      options: {
+        ...request.options,
+        maxFileSizeBytes: MAX_DOCUMENT_BYTES,
+      },
     };
 
     try {
@@ -546,6 +688,8 @@ export function registerDocumentIpc(
    * Cleanup.
    */
   return () => {
+    selectedPathsBySender.clear();
+
     ipcMain.removeHandler(IPC_CHANNELS.DOCUMENT_PICK);
 
     ipcMain.removeHandler(IPC_CHANNELS.DOCUMENT_IMPORT);

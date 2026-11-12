@@ -19,6 +19,14 @@ export class ProfileRepository {
     return this.db.select().from(profiles).where(eq(profiles.id, id)).get();
   }
 
+  list(): readonly Profile[] {
+    return this.db
+      .select()
+      .from(profiles)
+      .orderBy(profiles.createdAt, profiles.id)
+      .all() as Profile[];
+  }
+
   update(id: string, input: Partial<Omit<NewProfile, "id" | "createdAt">>): Profile | undefined {
     return this.db.update(profiles).set({ ...input, updatedAt: new Date().toISOString() }).where(eq(profiles.id, id)).returning().get();
   }
