@@ -1,97 +1,97 @@
-// ============================================================================
-// FILE: shared/contracts/interview.contract.ts
-//
-// PURPOSE:
+// shared/contracts/interview.contract.ts
 // Public cross-boundary contract for the Veyra Interview subsystem.
-//
-// IMPLEMENTATION:
-//
-//     core/interview/services/InterviewIntelligence.ts
-//
-// INTERNAL DOMAIN ENGINE:
-//
-//     core/interview/services/InterviewEngine.ts
-//
-// ARCHITECTURAL RULE:
-//
-// The shared contract defines what external consumers are allowed to request.
-// It does not expose InterviewClassifier, AnswerBuilder, individual engines,
-// ContextManager, CandidateService, or AI providers.
-//
-// This keeps core/interview internally replaceable without breaking callers.
-// ============================================================================
+// Implementation: core/interview/services/InterviewIntelligence.ts
 
+import type { AIRequest, AIResponse } from "../types/ai";
+import type { Result } from "../types/common";
 import type {
   InterviewAnalysis,
   InterviewAnalysisRequest,
   InterviewTask,
   InterviewTaskRequest,
+  InterviewDomainClassification,
+  QuestionUnderstanding,
+  AnswerPlan,
+  AnswerEvaluation,
+  CommunicationFeedback,
+  FollowUpQuestion,
 } from "../types/interviews";
 
-// ============================================================================
-// ANALYSIS RESPONSE
-// ============================================================================
-
-/**
- * Response returned from the public Interview analysis boundary.
- */
+/** Response returned from the public Interview analysis boundary. */
 export interface InterviewAnalysisResponse {
   readonly analysis: InterviewAnalysis;
 }
 
-// ============================================================================
-// TASK RESPONSE
-// ============================================================================
-
-/**
- * Response returned when a caller explicitly requests task extraction.
- */
+/** Response returned when a caller explicitly requests task extraction. */
 export interface InterviewTaskResponse {
-  /**
-   * Detected task.
-   *
-   * Undefined is valid when the current conversation does not contain a
-   * sufficiently identifiable interview task.
-   */
   readonly task?: InterviewTask;
 }
 
-// ============================================================================
-// INTERVIEW SERVICE
-// ============================================================================
+/** Response returned when classifying professional interview domain. */
+export interface InterviewDomainClassifyResponse {
+  readonly classification: InterviewDomainClassification;
+}
 
-/**
- * Public cross-boundary Interview service.
- *
- * Typical consumers:
- *
- * - Electron main process
- * - IPC handlers
- * - copilot orchestration
- * - UI-facing application services
- * - higher-level Veyra orchestration
- *
- * The implementation must remain responsible for:
- *
- * - validation
- * - classification
- * - task detection
- * - candidate/context enrichment
- * - deterministic answer guidance
- *
- * AI answer generation remains outside this contract.
- */
+/** Response returned when performing deep question understanding. */
+export interface InterviewQuestionUnderstandResponse {
+  readonly understanding: QuestionUnderstanding;
+}
+
+/** Response returned when generating structured answer plan. */
+export interface InterviewPlanAnswerResponse {
+  readonly plan: AnswerPlan;
+}
+
+/** Response returned when evaluating answer quality. */
+export interface InterviewEvaluateAnswerResponse {
+  readonly evaluation: AnswerEvaluation;
+}
+
+/** Response returned when analyzing candidate communication & grammar. */
+export interface InterviewCommunicationFeedbackResponse {
+  readonly feedback: CommunicationFeedback;
+}
+
+/** Response returned when generating grounded follow-up questions. */
+export interface InterviewFollowUpResponse {
+  readonly followUps: readonly FollowUpQuestion[];
+}
+
+/** Options for preparing an interview AI request (runtime signal excluded for IPC). */
+export interface InterviewAIRequestOptions {
+  readonly requestId: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly stream?: boolean;
+  readonly timeoutMs?: number;
+  readonly responseStyle?: "concise" | "balanced" | "detailed" | "interview-ready";
+}
+
+/** Prepared interview result including optional AI request (not executed). */
+export interface InterviewPrepareAIResponse extends InterviewAnalysisResponse {
+  readonly aiRequest?: AIRequest;
+  readonly candidateId?: string;
+  readonly contextText?: string;
+}
+
+/** Executed interview AI response (preparation + execution via core/ai). */
+export interface InterviewExecuteAIResponse extends InterviewPrepareAIResponse {
+  readonly response?: AIResponse;
+}
+
+export type InterviewAnalysisResult = Result<InterviewAnalysisResponse>;
+export type InterviewTaskResult = Result<InterviewTaskResponse>;
+export type InterviewPrepareAIResult = Result<InterviewPrepareAIResponse>;
+export type InterviewExecuteAIResult = Result<InterviewExecuteAIResponse>;
+export type InterviewDomainClassifyResult = Result<InterviewDomainClassifyResponse>;
+export type InterviewQuestionUnderstandResult = Result<InterviewQuestionUnderstandResponse>;
+export type InterviewPlanAnswerResult = Result<InterviewPlanAnswerResponse>;
+export type InterviewEvaluateAnswerResult = Result<InterviewEvaluateAnswerResponse>;
+export type InterviewCommunicationFeedbackResult = Result<InterviewCommunicationFeedbackResponse>;
+export type InterviewFollowUpResult = Result<InterviewFollowUpResponse>;
+
+/** Public cross-boundary Interview service. */
 export interface InterviewServiceContract {
-  /**
-   * Analyze the current conversation as an interview task.
-   */
-  analyze(
-    request: InterviewAnalysisRequest,
-  ): Promise<InterviewAnalysisResponse>;
-
-  /**
-   * Detect the current interview task without requiring the complete
-   * interview-intelligence pipeline.
-   */
+  analyze(request: InterviewAnalysisRequest): Promise<InterviewAnalysisResponse>;
   detectTask(request: InterviewTaskRequest): Promise<InterviewTaskResponse>;
 }

@@ -1,4 +1,3 @@
-//
 // ============================================================================
 // FILE: shared/types/interviews.ts
 //
@@ -36,10 +35,44 @@
 // - perform network requests
 //
 // The actual implementation belongs to core/interview.
+//
+// TYPE OWNERSHIP:
+//
+// InterviewType is canonically owned by:
+//
+//     shared/constants/interviewTypes.ts
+//
+// This file re-exports InterviewType so consumers that naturally work with
+// the Interview domain types can import the type from this module without
+// creating duplicate definitions.
+//
+// IMPORTANT:
+//
+// There is still only ONE InterviewType definition.
 // ============================================================================
 
 import type { ConversationAnalysis } from "./conversation";
+
 import type { InterviewType } from "../constants/interviewTypes";
+
+// ============================================================================
+// PUBLIC TYPE RE-EXPORT
+// ============================================================================
+//
+// InterviewType is owned by shared/constants/interviewTypes.ts.
+//
+// Re-exporting it here provides a convenient Interview-domain boundary:
+//
+//     import type { InterviewType } from "shared/types/interviews";
+//
+// while preserving the canonical source:
+//
+//     shared/constants/interviewTypes.ts
+//
+// This also keeps existing prompt/interview consumers compatible.
+// ============================================================================
+
+export type { InterviewType } from "../constants/interviewTypes";
 
 // ============================================================================
 // CLASSIFICATION
@@ -194,8 +227,8 @@ export interface InterviewTask {
  * - fabricate company information
  * - generate unsupported factual claims
  *
- * It gives core/ai enough structured information to generate an appropriate
- * answer later.
+ * It gives downstream prompt/AI orchestration enough structured information
+ * to generate an appropriate answer later.
  */
 export interface InterviewAnswerGuidance {
   /**
@@ -390,3 +423,145 @@ export interface InterviewTaskRequest {
    */
   readonly signal?: AbortSignal;
 }
+
+// ============================================================================
+// PROFESSIONAL DOMAIN & QUESTION UNDERSTANDING EXTENSIONS
+// ============================================================================
+
+export type {
+  InterviewDomain,
+  AnswerFramework,
+  ResponseMode,
+  QuestionArchetype,
+} from "../constants/interviewDomains";
+
+import type {
+  InterviewDomain,
+  AnswerFramework,
+  ResponseMode,
+  QuestionArchetype,
+} from "../constants/interviewDomains";
+
+export interface InterviewDomainClassification {
+  readonly primaryDomain: InterviewDomain;
+  readonly confidence: number;
+  readonly secondaryDomains: readonly { readonly domain: InterviewDomain; readonly confidence: number }[];
+  readonly signals: readonly string[];
+  readonly isMixedDomain: boolean;
+}
+
+export type ExpectedResponseType =
+  | "experience_based"
+  | "knowledge_based"
+  | "opinion_reasoning"
+  | "calculation_analytical"
+  | "case_recommendation"
+  | "scenario_action";
+
+export interface QuestionRequirements {
+  readonly requiresFactualKnowledge: boolean;
+  readonly requiresPersonalExperience: boolean;
+  readonly requiresReasoning: boolean;
+  readonly requiresCalculations: boolean;
+  readonly requiresConcreteExamples: boolean;
+}
+
+export interface QuestionUnderstanding {
+  readonly rawQuestion: string;
+  readonly coreIntent: string;
+  readonly archetype: QuestionArchetype;
+  readonly assessedCompetencies: readonly string[];
+  readonly expectedResponseType: ExpectedResponseType;
+  readonly requirements: QuestionRequirements;
+  readonly isAmbiguous: boolean;
+  readonly ambiguityReason?: string;
+  readonly isMultiPart: boolean;
+  readonly parts?: readonly string[];
+  readonly clarificationRecommended: boolean;
+  readonly suggestedClarification?: string;
+  readonly profileEvidenceAvailable: boolean;
+  readonly relevantProfileItems?: readonly string[];
+}
+
+export interface AnswerPlanStep {
+  readonly phase: string;
+  readonly instruction: string;
+  readonly keyTalkingPoints: readonly string[];
+  readonly requiredEvidenceType?: string;
+}
+
+export interface AnswerPlan {
+  readonly question: string;
+  readonly domain: InterviewDomain;
+  readonly framework: AnswerFramework;
+  readonly headline: string;
+  readonly steps: readonly AnswerPlanStep[];
+  readonly targetOutcome: string;
+  readonly recommendedEvidenceIds?: readonly string[];
+  readonly cautions: readonly string[];
+  readonly responseMode: ResponseMode;
+}
+
+export interface AnswerEvaluationDimension {
+  readonly score: number; // 0 - 100
+  readonly feedback: string;
+}
+
+export interface AnswerEvaluation {
+  readonly overallScore: number; // 0 - 100
+  readonly dimensions: {
+    readonly relevance: AnswerEvaluationDimension;
+    readonly completeness: AnswerEvaluationDimension;
+    readonly clarity: AnswerEvaluationDimension;
+    readonly structure: AnswerEvaluationDimension;
+    readonly accuracy: AnswerEvaluationDimension;
+    readonly evidenceGrounding: AnswerEvaluationDimension;
+    readonly professionalism: AnswerEvaluationDimension;
+    readonly communication: AnswerEvaluationDimension;
+    readonly reasoningConfidence: AnswerEvaluationDimension;
+    readonly conciseness: AnswerEvaluationDimension;
+    readonly roleAlignment: AnswerEvaluationDimension;
+  };
+  readonly demonstratedCompetencies: readonly string[];
+  readonly strengths: readonly string[];
+  readonly gaps: readonly string[];
+  readonly ambiguities: readonly string[];
+  readonly actionableImprovements: readonly string[];
+  readonly suggestedRevision?: string;
+  readonly supportingEvidenceIds?: readonly string[];
+}
+
+export interface GrammarIssue {
+  readonly originalText: string;
+  readonly suggestedCorrection: string;
+  readonly explanation: string;
+  readonly severity: "low" | "medium" | "high";
+}
+
+export interface CommunicationFeedback {
+  readonly overallRating: "excellent" | "good" | "needs_improvement" | "poor";
+  readonly fillerWordsCount: number;
+  readonly fillerWordsDetected: readonly { readonly word: string; readonly occurrences: number }[];
+  readonly grammarIssues: readonly GrammarIssue[];
+  readonly awkwardPhrasings: readonly string[];
+  readonly repetitionInstances: readonly string[];
+  readonly concisenessFeedback: string;
+  readonly toneAssessment: "professional" | "casual" | "unprofessional" | "hesitant" | "overly_formal";
+  readonly pacingNotes?: string;
+}
+
+export interface FollowUpQuestion {
+  readonly questionText: string;
+  readonly rationale: string;
+  readonly type:
+    | "probe_evidence"
+    | "challenge_assumption"
+    | "learning_reflection"
+    | "numerical_detail"
+    | "decision_deep_dive"
+    | "failure_handling";
+  readonly relevantPreviousAnswerExcerpt?: string;
+}
+
+
+
