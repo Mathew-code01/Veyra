@@ -30,7 +30,6 @@ import type { TranscriptionAdapter } from "../../core/audio/TranscriptionAdapter
 
 import { AudioCaptureLifecycle } from "../audio/AudioCaptureLifecycle";
 import { AudioTranscriptionBridge } from "../audio/AudioTranscriptionBridge";
-import { createMockTranscriptionAdapter } from "../../core/audio/TranscriptionAdapter";
 
 // ============================================================================
 // TYPES
@@ -48,8 +47,8 @@ export interface RegisterAudioRuntimeIpcOptions {
   readonly createCaptureLifecycle?: () => AudioCaptureLifecycle;
 
   /**
-   * Factory for the transcription adapter. Defaults to a mock adapter.
-   * Production injects a real adapter with explicit consent.
+   * Factory for the transcription adapter. When omitted, microphone-to-runtime
+   * transcription is unavailable rather than returning fabricated text.
    */
   readonly createTranscriptionAdapter?: () => TranscriptionAdapter;
 
@@ -82,10 +81,6 @@ export function registerAudioRuntimeIpc(
   const createCaptureLifecycle =
     options.createCaptureLifecycle ?? (() => new AudioCaptureLifecycle());
 
-  const createTranscriptionAdapter =
-    options.createTranscriptionAdapter ?? (() =>
-      createMockTranscriptionAdapter("Mock transcript segment."));
-
   const bridges = new Map<string, AudioRuntimeBridgeHandle>();
 
   const requireProfile = (event: IpcMainInvokeEvent): string => {
@@ -103,8 +98,13 @@ export function registerAudioRuntimeIpc(
   ): Promise<AudioTranscriptionBridge> => {
     let handle = bridges.get(sessionId);
     if (!handle) {
+      if (!options.createTranscriptionAdapter) {
+        throw new Error(
+          "Audio transcription is unavailable: no transcription provider is configured.",
+        );
+      }
       const captureLifecycle = createCaptureLifecycle();
-      const transcriptionAdapter = createTranscriptionAdapter();
+      const transcriptionAdapter = options.createTranscriptionAdapter();
       const bridge = new AudioTranscriptionBridge({
         runtime,
         captureLifecycle,
