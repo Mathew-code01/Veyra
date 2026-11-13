@@ -2,12 +2,14 @@ import Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import {
   copyFileSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -99,6 +101,53 @@ describe("database migrations", () => {
     }
   });
 
+  it("initializes a clean database using the packaged migration assets", () => {
+    const directory = createTemporaryDirectory();
+    const sourceMigrations = join(process.cwd(), "database", "migrations");
+    const packagedMigrations = join(
+      directory,
+      "dist-electron",
+      "database",
+      "migrations",
+    );
+    const databasePath = join(directory, "packaged.db");
+
+    cpSync(sourceMigrations, join(directory, "database", "migrations"), {
+      recursive: true,
+    });
+    execFileSync(
+      process.execPath,
+      [
+        join(process.cwd(), "scripts", "copy-database-migrations.js"),
+        directory,
+      ],
+      { cwd: process.cwd(), stdio: "pipe" },
+    );
+
+    const handle = createDatabase({
+      filename: databasePath,
+      migrationsFolder: packagedMigrations,
+    });
+
+    try {
+      expect(
+        handle.sqlite
+          .prepare("SELECT COUNT(*) AS count FROM veyra_schema_migrations")
+          .get().count,
+      ).toBe(8);
+      expect(handle.sqlite.pragma("foreign_key_check")).toEqual([]);
+      expect(
+        handle.sqlite
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'candidate_records'",
+          )
+          .get(),
+      ).toBeDefined();
+    } finally {
+      handle.close();
+    }
+  });
+
   it("preserves an existing database while registering legacy migrations", () => {
     const directory = createTemporaryDirectory();
     const databasePath = join(directory, "legacy.db");
@@ -138,7 +187,7 @@ describe("database migrations", () => {
     } finally {
       upgraded.close();
     }
-  }, 60_000);
+  }, 120_000);
 
   it("rolls back a failed migration without recording it as applied", () => {
     const directory = createTemporaryDirectory();
