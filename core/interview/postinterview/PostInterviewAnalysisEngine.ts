@@ -29,8 +29,8 @@ import type { SessionRepository } from "../../../database/repositories/sessionRe
 import type {
   AnswerEvaluation,
   AnswerPlan,
+  AnswerEvaluationDimension,
   CommunicationFeedback,
-  EvaluationDimensionSummary,
   FollowUpQuestion,
   InterviewDomain,
   QuestionUnderstanding,
@@ -401,7 +401,14 @@ export class PostInterviewAnalysisEngine {
     evaluation: AnswerEvaluation,
     evidence: readonly ReviewEvidence[],
   ): TransparentEvaluation {
-    const dimensions: readonly EvaluationDimensionSummary[] = Object.entries(
+    const dimensions: readonly {
+      readonly dimension: string;
+      readonly score: number;
+      readonly feedback: string;
+      readonly criteria: readonly string[];
+      readonly evidence: readonly string[];
+      readonly confidence: number;
+    }[] = Object.entries(
       evaluation.dimensions as Record<string, { score: number; feedback: string }>,
     ).map(([dimension, value]) => ({
       dimension,
@@ -468,15 +475,21 @@ export class PostInterviewAnalysisEngine {
     ] as const;
 
     const dimensionAverages: Record<string, number> = {};
-    const dimensionFeedback: Record<string, string[]> = {};
+    const dimensionFeedback: Record<string, string> = {};
     for (const dim of dimensionNames) {
-      const vals = reviews
-        .map((r) => r.evaluation.dimensions.find((d) => d.dimension === dim))
-        .filter((d): d is EvaluationDimensionSummary => Boolean(d));
-      if (vals.length > 0) {
-        dimensionAverages[dim] =
-          vals.reduce((s, v) => s + v.score, 0) / vals.length;
-        dimensionFeedback[dim] = vals.map((v) => v.feedback ?? "").join("; ");
+      const allScores: number[] = [];
+      const allFeedback: string[] = [];
+      for (const r of reviews) {
+        const entry = r.evaluation.dimensions.find((d) => d.dimension === dim);
+        if (entry) {
+          allScores.push(entry.score);
+          allFeedback.push(entry.feedback);
+        }
+      }
+      if (allScores.length > 0) {
+        dimensionAverages[dim as string] =
+          allScores.reduce((s, v) => s + v, 0) / allScores.length;
+        dimensionFeedback[dim as string] = allFeedback.join("; ");
       }
     }
 
@@ -531,7 +544,7 @@ export class PostInterviewAnalysisEngine {
         severity: "minor" as const,
         type: "strength" as const,
       })),
-    );
+    ) as StrengthWeakness[];
   }
 
   private aggregateWeaknesses(reviews: readonly QuestionReview[]): StrengthWeakness[] {
@@ -545,15 +558,15 @@ export class PostInterviewAnalysisEngine {
         severity: "moderate" as const,
         type: "weakness" as const,
       })),
-    );
+    ) as StrengthWeakness[];
   }
 
   private aggregateCommunication(
     answers: readonly { readonly payload?: unknown }[],
   ): CommunicationFeedback | null {
     const answerTexts = answers
-      .map((a) => a.payload?.candidateAnswerText)
-      .filter((t): t is string => Boolean(t) && t.trim().length > 0);
+      .map((a) => (a.payload as { candidateAnswerText?: string })?.candidateAnswerText)
+      .filter((t): t is string => t !== undefined && Boolean(t) && t.trim().length > 0);
     if (answerTexts.length === 0) {
       return null;
     }
