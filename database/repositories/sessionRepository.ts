@@ -48,4 +48,12 @@ export class SessionRepository {
   deleteForProfile(id: string, profileId: string) {
     return this.db.delete(sessions).where(and(eq(sessions.id, id), eq(sessions.profileId, profileId))).run();
   }
+
+  listActiveSessions(): typeof sessions.$inferSelect[] {
+    return this.db.select()
+      .from(sessions)
+      .where(eq(sessions.status, "active"))
+      .orderBy(desc(sessions.updatedAt))
+      .all();
+  }
 }

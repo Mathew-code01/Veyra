@@ -3,7 +3,25 @@
 import { BrowserWindow, screen, shell } from "electron";
 import path from "node:path";
 
+import {
+  createOverlayWindow,
+  destroyOverlayWindow,
+  focusOverlayWindow,
+  getOverlayState,
+  getOverlayWindow,
+  hideOverlayWindow,
+  isOverlayAvailable,
+  registerOverlayIpcHandlers,
+  setOverlayAlwaysOnTop,
+  setOverlayOpacity,
+  setOverlayPosition,
+  setOverlaySize,
+  showOverlayWindow,
+  toggleOverlayWindow,
+} from "../windows/overlayWindow";
+
 let mainWindow: BrowserWindow | null = null;
+let overlayCleanup: (() => void) | null = null;
 
 const isDevelopment = process.env.NODE_ENV === "development";
 
@@ -94,6 +112,81 @@ export function destroyMainWindow(): void {
 
   window.destroy();
   mainWindow = null;
+}
+
+export function registerOverlayIpc(ipcMain: import("electron").IpcMain): void {
+  if (overlayCleanup) {
+    return;
+  }
+  overlayCleanup = registerOverlayIpcHandlers(ipcMain);
+}
+
+export function cleanupOverlayIpc(): void {
+  if (overlayCleanup) {
+    overlayCleanup();
+    overlayCleanup = null;
+  }
+}
+
+// --------------------------------------------------------------------------
+// Overlay window management
+// --------------------------------------------------------------------------
+
+export function createOverlayWindowExported(opts?: {
+  readonly x?: number;
+  readonly y?: number;
+  readonly width?: number;
+  readonly height?: number;
+  readonly opacity?: number;
+  readonly alwaysOnTop?: boolean;
+  readonly showOnCreate?: boolean;
+  readonly sessionId?: string;
+}): BrowserWindow | null {
+  return createOverlayWindow(opts);
+}
+
+export function getOverlayWindowExported(): BrowserWindow | null {
+  return getOverlayWindow();
+}
+
+export function isOverlayAvailableExported(): boolean {
+  return isOverlayAvailable();
+}
+
+export function focusOverlayWindowExported(): void {
+  focusOverlayWindow();
+}
+
+export function hideOverlayWindowExported(): void {
+  hideOverlayWindow();
+}
+
+export function showOverlayWindowExported(sessionId?: string): void {
+  showOverlayWindow(sessionId);
+}
+
+export function toggleOverlayWindowExported(): void {
+  toggleOverlayWindow();
+}
+
+export function setOverlayOpacityExported(opacity: number): void {
+  setOverlayOpacity(opacity);
+}
+
+export function setOverlayAlwaysOnTopExported(alwaysOnTop: boolean): void {
+  setOverlayAlwaysOnTop(alwaysOnTop);
+}
+
+export function setOverlayPositionExported(x: number, y: number): void {
+  setOverlayPosition(x, y);
+}
+
+export function setOverlaySizeExported(width: number, height: number): void {
+  setOverlaySize(width, height);
+}
+
+export function getOverlayStateExported() {
+  return getOverlayState();
 }
 
 function configureWindow(window: BrowserWindow): void {

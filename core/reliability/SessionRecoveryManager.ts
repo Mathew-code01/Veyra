@@ -1,5 +1,6 @@
 // ============================================================================
 // FILE: core/reliability/SessionRecoveryManager.ts
+//
 // PURPOSE:
 // Session recovery manager for Phase 19.
 //
@@ -7,8 +8,8 @@
 // process crashes, and unexpected interruptions.
 // ============================================================================
 
-import type { SessionRepository } from "../../../database/repositories/sessionRepository";
-import type { UnifiedInterviewRuntime } from "../../interview/runtime/UnifiedInterviewRuntime";
+import type { SessionRepository } from "../../database/repositories/sessionRepository";
+import type { UnifiedInterviewRuntime } from "../interview/runtime/UnifiedInterviewRuntime";
 
 export interface SessionRecoveryManagerOptions {
   readonly sessionRepository: SessionRepository;
@@ -82,6 +83,6 @@ export class SessionRecoveryManager {
    */
   public async getSessionsNeedingRecovery(): Promise<string[]> {
     const sessions = await this.sessionRepository.listActiveSessions();
-    return sessions.map((s) => s.id);
+    return sessions.map((s: typeof sessions[number]) => s.id);
   }
 }

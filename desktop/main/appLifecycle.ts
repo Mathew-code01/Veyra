@@ -26,6 +26,10 @@ import { registerHardwareIpc } from "../ipc/hardware.ipc";
 import { registerAiIpc } from "../ipc/ai.ipc";
 import { registerInterviewIpc } from "../ipc/interview.ipc";
 import { registerProvidersIpc } from "../ipc/providers.ipc";
+import {
+  cleanupOverlayIpc,
+  registerOverlayIpc,
+} from "../main/windowManager";
 import { closeDatabase, createDatabase, getDatabase } from "../../database/client";
 
 import { CandidateContextBuilder } from "../../core/candidate/services/CandidateContextBuilder";
@@ -93,6 +97,7 @@ import { registerDocumentIpc } from "../ipc/document.ipc";
 import { registerMemoryIpc } from "../ipc/memory.ipc";
 
 import { registerCandidateIpc } from "../ipc/candidate.ipc";
+import { registerWorkspaceProfileIpc } from "../ipc/workspace-profile.ipc";
 
 import { registerPracticeIpc } from "../ipc/practice.ipc";
 import { registerInterviewRuntimeIpc } from "../ipc/interview-runtime.ipc";
@@ -150,6 +155,8 @@ let cleanupDocumentIpc: (() => void) | null = null;
 let cleanupMemoryIpc: (() => void) | null = null;
 
 let cleanupCandidateIpc: (() => void) | null = null;
+
+let cleanupWorkspaceProfileIpc: (() => void) | null = null;
 
 let cleanupPracticeIpc: (() => void) | null = null;
 let cleanupInterviewRuntimeIpc: (() => void) | null = null;
@@ -279,6 +286,7 @@ async function initializeApplicationServices(): Promise<void> {
 
   databaseHandle = createDatabase({
     filename: databasePath,
+    migrationsFolder: join(__dirname, "../../database/migrations"),
   });
 
   const profileRepository = new ProfileRepository();
@@ -643,6 +651,12 @@ async function initializeApplicationServices(): Promise<void> {
     activeProfileResolver: activeProfileService,
   });
 
+  cleanupWorkspaceProfileIpc = registerWorkspaceProfileIpc({
+    repository: profileRepository,
+    activeProfileService,
+    ipcMain,
+  });
+
   /*
    * --------------------------------------------------------------------------
    * Practice session engine + IPC.
@@ -789,6 +803,8 @@ async function initializeApplicationServices(): Promise<void> {
   cleanupHardwareIpc = registerHardwareIpc({
     service: hardware,
   });
+
+  registerOverlayIpc(ipcMain);
 }
 
 async function shutdownApplicationServices(): Promise<void> {
@@ -842,6 +858,11 @@ async function shutdownApplicationServices(): Promise<void> {
     cleanupCandidateIpc = null;
   }
 
+  if (cleanupWorkspaceProfileIpc) {
+    cleanupWorkspaceProfileIpc();
+    cleanupWorkspaceProfileIpc = null;
+  }
+
   if (cleanupPracticeIpc) {
     cleanupPracticeIpc();
 
@@ -879,6 +900,8 @@ async function shutdownApplicationServices(): Promise<void> {
 
     cleanupProvidersIpc = null;
   }
+
+  cleanupOverlayIpc();
 
   /*
    * --------------------------------------------------------------------------

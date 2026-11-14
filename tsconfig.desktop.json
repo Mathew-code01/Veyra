@@ -1,20 +1,30 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "ignoreDeprecations": "6.0",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
+    "baseUrl": ".",
     "types": ["node", "electron"],
+    "paths": {
+      "kokoro-js": ["node_modules/kokoro-js/types/kokoro.d.ts"]
+    },
     "outDir": "dist-electron",
     "rootDir": ".",
     "sourceMap": true,
     "declaration": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["desktop/**/*.ts", "shared/**/*.ts", "core/**/*.ts"]
+  "include": [
+    "desktop/**/*.ts",
+    "shared/**/*.ts",
+    "core/**/*.ts",
+    "database/**/*.ts"
+  ]
 }

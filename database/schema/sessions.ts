@@ -40,6 +40,13 @@ export interface SessionSettings {
   candidateId?: string;
   cancellationReason?: string;
   runtimeGuidance?: any;
+  /** Session recovery state (Phase 19, additive). */
+  runtimeState?: {
+    status: string;
+    mode: string;
+    lastQuestionId?: string;
+    lastUpdated: string;
+  };
   /** Post-interview analysis results (Phase 15, additive). */
   interviewReview?: any;
   learningPlan?: any;
