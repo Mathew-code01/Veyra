@@ -3,6 +3,13 @@ import { useNavigate } from "react-router-dom";
 import { ArrowRight, Check, Cpu, HardDrive, MemoryStick, RefreshCw, ShieldCheck, Sparkles, UserRound, WandSparkles, Download, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import type { HardwareAssessmentResponse, ModelInstallProgress } from "../../../../shared/types/hardware";
+import {
+  loadHardwareAssessment,
+  installHardwareModel,
+  uninstallHardwareModel,
+  cancelHardwareInstall,
+  subscribeHardwareInstallProgress,
+} from "@/services/ipc/hardwareClient";
 
 const steps = ["Welcome", "Profile", "AI setup", "Privacy"];
 const bytes = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${Math.round(value / 1024 ** 2)} MB`;
@@ -22,45 +29,62 @@ export function Onboarding({ initialStep = 0 }: { initialStep?: number }) {
   const loadAssessment = useCallback(async (forceRefresh = false) => {
     setBusy(true); setError(""); setHardwareState("loading");
     try {
-      const hardware = window.veyra?.hardware;
-      if (!hardware || typeof hardware.getAssessment !== "function") {
-        setHardwareState("unsupported"); setAssessment(undefined); return;
+      const result = await loadHardwareAssessment({ forceRefresh });
+      if (result.state === "unsupported") {
+        setHardwareState("unsupported");
+        setAssessment(undefined);
+        return;
       }
-      const result = await hardware.getAssessment({ forceRefresh });
-      if (!result || typeof result !== "object" || !result.profile || !Array.isArray(result.models) || !Array.isArray(result.runtimeNames)) throw new Error("The Desktop returned an invalid hardware assessment. Retry the scan or restart VEYRA.");
-      setAssessment(result);
-      const cpuKnown = Boolean(result.profile.cpu?.brand) && Number.isFinite(result.profile.cpu?.logicalCores) && result.profile.cpu.logicalCores > 0;
-      const memoryKnown = Number.isFinite(result.profile.memory?.totalGB) && result.profile.memory.totalGB > 0;
-      const storageKnown = Number.isFinite(result.profile.storage?.freeGB);
-      setHardwareState(cpuKnown && memoryKnown && storageKnown ? "ready" : "partial");
+      if (result.state === "error") {
+        setHardwareState("error");
+        setAssessment(undefined);
+        setError(result.error);
+        return;
+      }
+      setAssessment(result.assessment);
+      setHardwareState(result.state);
+    } catch (cause) {
+      setHardwareState("error");
+      setAssessment(undefined);
+      setError(cause instanceof Error ? cause.message : "Hardware assessment could not be loaded.");
+    } finally {
+      setBusy(false);
     }
-    catch (cause) { setHardwareState("error"); setAssessment(undefined); setError(cause instanceof Error ? cause.message : "Hardware assessment could not be loaded."); }
-    finally { setBusy(false); }
   }, []);
   useEffect(() => { if (step === 2 && !assessment) void loadAssessment(); }, [step, assessment, loadAssessment]);
-  useEffect(() => window.veyra?.hardware?.onInstallProgress?.(setProgress), []);
+  useEffect(() => subscribeHardwareInstallProgress(setProgress), []);
   const signIn = async () => {
     setBusy(true); setError("");
-    try { if (!window.veyra?.platform?.browserSignIn) throw new Error('Desktop platform service unavailable in this environment.');
-    await window.veyra.platform.browserSignIn(); setStep(1); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Sign-in did not complete. Check your connection and try again."); }
-    finally { setBusy(false); }
+    try {
+      if (!window.veyra?.platform?.browserSignIn) throw new Error("Desktop platform service unavailable in this environment.");
+      await window.veyra.platform.browserSignIn();
+      setStep(1);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Sign-in did not complete. Check your connection and try again.");
+    } finally {
+      setBusy(false);
+    }
   };
   const install = async (modelId: string) => {
     setInstalling(modelId); setProgress(undefined); setError("");
-      try {
-        if (!window.veyra?.hardware?.installModel) throw new Error('Hardware installation service unavailable in this environment.');
-        const result = await window.veyra.hardware?.installModel(modelId);
-        if (!result?.installed) throw new Error("The download finished but the model is not registered as installed.");
-        await loadAssessment(true);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Model installation failed. You can retry from AI settings."); }
-    finally { setInstalling(""); setProgress(undefined); }
+    try {
+      const result = await installHardwareModel(modelId);
+      if (!result?.installed) throw new Error("The download finished but the model is not registered as installed.");
+      await loadAssessment(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Model installation failed. You can retry from AI settings.");
+    } finally {
+      setInstalling(""); setProgress(undefined);
+    }
   };
   const uninstall = async (modelId: string) => {
     setError("");
-    try { if (!window.veyra?.hardware?.uninstallModel) throw new Error('Hardware uninstall service unavailable in this environment.');
-    await window.veyra.hardware?.uninstallModel(modelId); await loadAssessment(true); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not remove this model."); }
+    try {
+      await uninstallHardwareModel(modelId);
+      await loadAssessment(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not remove this model.");
+    }
   };
   const finish = () => { localStorage.setItem("veyra.firstLaunch.setupComplete", "true"); window.dispatchEvent(new Event("veyra:setup-complete")); navigate("/", { replace: true }); };
   const titles = ["Meet VEYRA", "Make it yours", "Let's prepare VEYRA for your computer", "Your privacy stays in view"];
@@ -92,7 +116,7 @@ export function Onboarding({ initialStep = 0 }: { initialStep?: number }) {
           </div>}
           {step === 3 && <div className="mt-8 space-y-4"><div className="rounded-xl border border-slate-200 p-4 text-sm leading-6 text-slate-600"><Check className="mr-2 inline text-emerald-600" size={16}/>Microphone and screen access are requested only when you start a feature that needs them.</div><Button onClick={finish}>Finish setup <ArrowRight size={16}/></Button></div>}
           {busy && step === 0 && <button className="mt-3 w-full text-sm text-slate-500 hover:text-slate-900" onClick={() => void window.veyra?.platform?.cancelBrowserSignIn?.()}>Cancel sign-in</button>}
-          {installing && <button className="mt-2 text-xs text-slate-500 underline" onClick={async () => { await window.veyra?.hardware?.cancelInstall?.(installing); }}>Cancel model installation</button>}
+          {installing && <button className="mt-2 text-xs text-slate-500 underline" onClick={async () => { await cancelHardwareInstall(installing); }}>Cancel model installation</button>}
           {installing && progress?.phase === "verifying" && <p className="sr-only" aria-live="polite">Verifying downloaded model integrity.</p>}
           {error && <p role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
           {step > 0 && <div className="mt-6 flex justify-between"><button className="text-sm text-slate-500 hover:text-slate-900" onClick={() => setStep((current) => Math.max(0, current - 1))}>Back</button>{step < steps.length - 1 && <button className="text-sm text-slate-500 hover:text-slate-900" onClick={continueSetup}>Skip setup step</button>}</div>}

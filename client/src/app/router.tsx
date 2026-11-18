@@ -1,4 +1,4 @@
-﻿import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, createHashRouter } from "react-router-dom";
 
 import { AppShell } from "@/components/layout/AppShell";
 
@@ -16,18 +16,54 @@ import { SessionDetails } from "@/pages/History/SessionDetails";
 import { InterviewSetup } from "@/pages/InterviewSetup/InterviewSetup";
 import { LiveInterview } from "@/pages/LiveInterview/LiveInterview";
 import { QuestionPractice } from "@/pages/Preparation/QuestionPractice";
+import { CopilotOverlay } from "@/features/overlay/CopilotOverlay";
+import { Account } from "@/pages/Account/Account";
+import { Onboarding } from "@/pages/Onboarding/Onboarding";
+import { Assessments } from "@/pages/Assessments/Assessments";
+import { useEffect, useState } from "react";
 
-function Placeholder({ title }: { title: string }) {
-  return (
-    <div className="p-8">
-      <h1 className="text-2xl font-semibold">{title}</h1>
-      <p className="mt-2 text-sm text-zinc-500">This workspace is not implemented in this build.</p>
-    </div>
-  );
+function EntryGate() {
+  const [destination, setDestination] = useState<"checking" | "onboarding" | "app">("checking");
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      if (localStorage.getItem("veyra.firstLaunch.setupComplete") !== "true") {
+        if (active) setDestination("onboarding");
+        return;
+      }
+      if (!window.veyra?.platform?.getState) {
+        if (active) setDestination("onboarding");
+        return;
+      }
+      try {
+        const state = await window.veyra.platform.getState();
+        if (!state.authenticated) throw new Error("not signed in");
+        try {
+          if (!window.veyra?.platform?.refreshAccount) throw new Error("platform unavailable");
+          const account = await window.veyra.platform.refreshAccount();
+          if (account.authorization !== "authorized") throw new Error(account.authorization === "revoked" ? "device revoked" : "device not authorized");
+        } catch (error) {
+          const status = typeof error === "object" && error !== null && "status" in error ? Number(error.status) : 0;
+          const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+          if (status === 401 || status === 403 || ["DEVICE_REVOKED", "UNAUTHORIZED", "SESSION_EXPIRED"].includes(code)) throw error;
+          // Local capabilities remain available during a network outage.
+        }
+        if (active) setDestination("app");
+      } catch {
+        if (active) setDestination("onboarding");
+      }
+    };
+    const complete = () => setDestination("app");
+    window.addEventListener("veyra:setup-complete", complete);
+    void check();
+    return () => { active = false; window.removeEventListener("veyra:setup-complete", complete); };
+  }, []);
+  if (destination === "checking") return <div className="grid min-h-screen place-items-center bg-[#f8f8fc] text-sm text-slate-500">Checking your VEYRA account…</div>;
+  return destination === "app" ? <AppShell><Dashboard /></AppShell> : <Onboarding />;
 }
 
-export const router = createBrowserRouter([
-  { path: "/", element: <AppShell><Dashboard /></AppShell> },
+const applicationRoutes = [
+  { path: "/", element: <EntryGate /> },
   { path: "/preparation", element: <AppShell><Preparation /></AppShell> },
   { path: "/interview/setup", element: <AppShell><InterviewSetup /></AppShell> },
   { path: "/practice", element: <AppShell><QuestionPractice /></AppShell> },
@@ -40,6 +76,14 @@ export const router = createBrowserRouter([
   { path: "/stories", element: <AppShell><Stories /></AppShell> },
   { path: "/history", element: <AppShell><History /></AppShell> },
   { path: "/history/:sessionId", element: <AppShell><SessionDetails /></AppShell> },
-  { path: "/analytics", element: <AppShell><Placeholder title="Analytics" /></AppShell> },
+  { path: "/assessments", element: <AppShell><Assessments /></AppShell> },
+  { path: "/analytics", element: <AppShell><Assessments /></AppShell> },
   { path: "/settings", element: <AppShell><Settings /></AppShell> },
-]);
+  { path: "/ai-setup", element: <Onboarding initialStep={2} /> },
+  { path: "/account", element: <AppShell><Account /></AppShell> },
+  { path: "/overlay", element: <CopilotOverlay /> },
+];
+
+export const router = window.location.hash.startsWith("#/overlay")
+  ? createHashRouter([{ path: "/overlay", element: <CopilotOverlay /> }])
+  : createBrowserRouter(applicationRoutes);
