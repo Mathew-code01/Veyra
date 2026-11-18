@@ -57,6 +57,18 @@ export function LiveInterview() {
   const pause = async () => { if (!sessionId) return; await runtime.pauseSession({ sessionId }); await refresh(sessionId); };
   const resume = async () => { if (!sessionId) return; await runtime.resumeSession({ sessionId }); await refresh(sessionId); };
   const stop = async () => { if (!sessionId) return; await runtime.completeSession({ sessionId }); await refresh(sessionId); };
+  const openOverlay = async () => {
+    try {
+      if (!window.veyra?.overlay?.show) {
+        setError("VEYRA Desktop overlay is unavailable in this environment.");
+        return;
+      }
+      const result = await window.veyra.overlay.show(sessionId ? { sessionId } : undefined);
+      if (!result.success) throw new Error(result.error?.message ?? "Could not open the overlay.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not open the overlay.");
+    }
+  };
 
   const startAudio = async () => {
     if (!sessionId) { setAudioStatus("Create/start a live session first."); return; }
@@ -85,7 +97,7 @@ export function LiveInterview() {
           <h1 className="text-2xl font-semibold">Live Interview Workspace</h1>
           <p className="mt-2 text-sm text-zinc-500">Foundation for live assistance using the unified runtime. Audio/screen capture are explicit, user-controlled actions; unavailable hardware/providers are reported honestly (no fake transcripts or hidden capture).</p>
         </div>
-        <div className="flex gap-2"><Link to="/interview/setup"><Button variant="outline">Setup</Button></Link><Button onClick={()=>void createLive()} loading={busy && !sessionId}>New live session</Button></div>
+        <div className="flex gap-2"><Link to="/interview/setup"><Button variant="outline">Setup</Button></Link><Button variant="outline" onClick={()=>void openOverlay()}>Open floating overlay</Button><Button onClick={()=>void createLive()} loading={busy && !sessionId}>New live session</Button></div>
       </div>
       {error && <p role="alert" className="mt-4 text-sm text-red-400">{error}</p>}
 
