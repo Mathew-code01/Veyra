@@ -15,7 +15,7 @@ import { PromptService } from "../../core/prompts/services/PromptService";
 
 import { ReliabilityManager } from "../../core/reliability";
 
-import { ModelSystem } from "./ModelSystem";
+import type { ModelSystem } from "./ModelSystem";
 
 import { HardwareService } from "../services/ai/HardwareService";
 
@@ -26,6 +26,7 @@ import { registerHardwareIpc } from "../ipc/hardware.ipc";
 import { registerAiIpc } from "../ipc/ai.ipc";
 import { registerInterviewIpc } from "../ipc/interview.ipc";
 import { registerProvidersIpc } from "../ipc/providers.ipc";
+import { registerPlatformIpc } from "../ipc/platform.ipc";
 import {
   cleanupOverlayIpc,
   registerOverlayIpc,
@@ -129,6 +130,7 @@ let databaseHandle: ReturnType<typeof createDatabase> | null = null;
 let analyticsManager: AnalyticsManager | null = null;
 
 let modelSystem: ModelSystem | null = null;
+let modelSystemInitializationError: string | null = null;
 
 let hardwareService: HardwareService | null = null;
 
@@ -172,6 +174,7 @@ let interviewRuntime: UnifiedInterviewRuntime | null = null;
 let cleanupAudioRuntimeIpc: (() => void) | null = null;
 
 let cleanupProvidersIpc: (() => void) | null = null;
+let cleanupPlatformIpc: (() => void) | null = null;
 
 let credentialStore: SecureCredentialStore | null = null;
 
@@ -203,7 +206,10 @@ export async function shutdownApplication(): Promise<void> {
 
 export function getModelSystem(): ModelSystem {
   if (!modelSystem) {
-    throw new Error("Veyra ModelSystem has not been initialized.");
+    throw new Error(
+      modelSystemInitializationError ??
+        "Veyra ModelSystem has not been initialized.",
+    );
   }
 
   return modelSystem;
@@ -284,6 +290,7 @@ function configureApplication(): void {
 async function initializeApplicationServices(): Promise<void> {
   const databasePath = join(app.getPath("userData"), "veyra.db");
 
+  console.info("[VEYRA startup] Opening the local profile database.");
   databaseHandle = createDatabase({
     filename: databasePath,
     migrationsFolder: join(__dirname, "../../database/migrations"),
@@ -330,23 +337,40 @@ async function initializeApplicationServices(): Promise<void> {
    * 1. Create the single application ModelSystem.
    * --------------------------------------------------------------------------
    */
-  const system = new ModelSystem({
-    applicationDataDirectory: app.getPath("userData"),
-  });
+  let system: ModelSystem | null = null;
+  try {
+    console.info("[VEYRA startup] Preparing local model storage and runtime registry.");
+    // Load native model dependencies only after core account and local data
+    // services are available. A broken optional runtime must not prevent the
+    // user from opening VEYRA to manage their account or use remote providers.
+    const { ModelSystem: ModelSystemConstructor } = await import("./ModelSystem");
+    system = new ModelSystemConstructor({
+      applicationDataDirectory: app.getPath("userData"),
+    });
 
-  /*
-   * --------------------------------------------------------------------------
-   * 2. Initialize model infrastructure.
-   * --------------------------------------------------------------------------
-   *
-   * This does NOT download a model.
-   *
-   * It only initializes storage, queue state,
-   * recovery and already-installed verified models.
-   */
-  await system.initialize();
-
-  modelSystem = system;
+    /*
+     * This initializes model storage, queue recovery, and already-installed
+     * verified models. It does not download a model.
+     */
+    await system.initialize();
+    console.info("[VEYRA startup] Local model registry is ready.");
+    modelSystem = system;
+    modelSystemInitializationError = null;
+  } catch (error) {
+    modelSystem = null;
+    modelSystemInitializationError =
+      "Local model runtime is unavailable. Check the installed runtime dependencies and restart VEYRA.";
+    console.error("[VEYRA startup] Optional local model runtime initialization failed.", error);
+    analyticsManager.record({
+      type: "model_runtime_initialization_failed",
+      category: "application",
+      severity: "error",
+      success: false,
+      metadata: {
+        error: error instanceof Error ? error.message.slice(0, 300) : "Unknown runtime initialization error",
+      },
+    });
+  }
 
   /*
    * --------------------------------------------------------------------------
@@ -366,10 +390,12 @@ async function initializeApplicationServices(): Promise<void> {
     recover: true,
   });
 
-  runtimeAIManager.registerLocalModelProvider(system.getModelManager(), {
-    name: "local",
-    autoInstall: false,
-  });
+  if (system) {
+    runtimeAIManager.registerLocalModelProvider(system.getModelManager(), {
+      name: "local",
+      autoInstall: false,
+    });
+  }
 
   /*
    * Secure cloud credential resolver.
@@ -790,7 +816,12 @@ async function initializeApplicationServices(): Promise<void> {
    * --------------------------------------------------------------------------
    */
   const hardware = new HardwareService({
-    modelManager: system.getModelManager(),
+    ...(system
+      ? {
+          modelManager: system.getModelManager(),
+          modelStoragePath: system.getPaths().getModelsDirectory(),
+        }
+      : {}),
   });
 
   hardwareService = hardware;
@@ -802,6 +833,12 @@ async function initializeApplicationServices(): Promise<void> {
    */
   cleanupHardwareIpc = registerHardwareIpc({
     service: hardware,
+  });
+
+  cleanupPlatformIpc = registerPlatformIpc({
+    credentialStore: credentialStore!,
+    baseUrl: process.env.VEYRA_PLATFORM_API_URL,
+    websiteUrl: process.env.VEYRA_WEBSITE_URL,
   });
 
   registerOverlayIpc(ipcMain);
@@ -899,6 +936,11 @@ async function shutdownApplicationServices(): Promise<void> {
     cleanupProvidersIpc();
 
     cleanupProvidersIpc = null;
+  }
+
+  if (cleanupPlatformIpc) {
+    cleanupPlatformIpc();
+    cleanupPlatformIpc = null;
   }
 
   cleanupOverlayIpc();

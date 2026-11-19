@@ -16,77 +16,32 @@ import type {
   JobDescriptionAnalysis,
   RoleRequirement,
   Seniority,
-} from "../../../shared/types/preparation";
+} from "../../shared/types/preparation";
+import type { InterviewDomain } from "../../shared/types/interviews";
+
+export interface JobDescriptionAnalysisInput {
+  readonly jobTitle?: string;
+  readonly jobDescriptionText: string;
+  readonly company?: string;
+}
 
 const SENIORITY_KEYWORDS: ReadonlyMap<Seniority, readonly string[]> = new Map([
-  [
-    "executive",
-    ["vp", "vice president", "director", "head of", "chief", "cxo", "svp"],
-  ],
-  [
-    "lead",
-    ["lead", "principal", "staff", "senior lead", "team lead"],
-  ],
-  [
-    "senior",
-    ["senior", "sr.", "sr ", "advanced"],
-  ],
-  [
-    "mid",
-    ["mid", "intermediate", "experienced"],
-  ],
-  [
-    "entry",
-    ["entry", "junior", "associate", "graduate", "new grad"],
-  ],
+  ["executive", ["vp", "vice president", "director", "head of", "chief", "cxo", "svp"]],
+  ["lead", ["lead", "principal", "staff", "senior lead", "team lead"]],
+  ["senior", ["senior", "sr.", "sr ", "advanced"]],
+  ["mid", ["mid", "intermediate", "experienced"]],
+  ["entry", ["entry", "junior", "associate", "graduate", "new grad"]],
 ]);
 
 const DOMAIN_KEYWORDS: ReadonlyMap<string, readonly string[]> = new Map([
-  [
-    "software_engineering",
-    [
-      "software", "engineer", "developer", "coding", "git", "api", "frontend",
-      "backend", "fullstack", "react", "node", "typescript", "javascript",
-      "python", "java", "microservice", "database", "system design",
-    ],
-  ],
-  [
-    "data_and_analytics",
-    [
-      "data science", "analytics", "sql", "machine learning", "pandas",
-      "tableau", "power bi", "etl", "dashboard", "statistics",
-    ],
-  ],
-  [
-    "finance_and_accounting",
-    ["finance", "financial", "accounting", "dcf", "valuation", "ebitda",
-     "gaap", "audit", "budget", "forecast"],
-  ],
-  [
-    "business_and_management",
-    ["business", "management", "strategy", "operations", "p&l", "kpi",
-     "stakeholder", "executive"],
-  ],
-  [
-    "sales_and_marketing",
-    ["sales", "marketing", "revenue", "quota", "prospecting", "campaign",
-     "customer acquisition", "crm"],
-  ],
-  [
-    "healthcare_and_clinical",
-    ["healthcare", "clinical", "patient", "nursing", "medical", "diagnosis",
-     "triage", "hospital"],
-  ],
-  [
-    "education_and_academic",
-    ["education", "teaching", "academic", "curriculum", "lesson", "student",
-     "pedagogy"],
-  ],
+  ["software_engineering", ["software", "engineer", "developer", "coding", "git", "api", "frontend", "backend", "fullstack", "react", "node", "typescript", "javascript", "python", "java", "microservice", "database", "system design"]],
+  ["data_and_analytics", ["data science", "analytics", "sql", "machine learning", "pandas", "tableau", "power bi", "etl", "dashboard", "statistics"]],
+  ["finance_and_accounting", ["finance", "financial", "accounting", "dcf", "valuation", "ebitda", "gaap", "audit", "budget", "forecast"]],
+  ["business_and_management", ["business", "management", "strategy", "operations", "p&l", "kpi", "stakeholder", "executive"]],
+  ["sales_and_marketing", ["sales", "marketing", "revenue", "quota", "prospecting", "campaign", "customer acquisition", "crm"]],
+  ["healthcare_and_clinical", ["healthcare", "clinical", "patient", "nursing", "medical", "diagnosis", "triage", "hospital"]],
+  ["education_and_academic", ["education", "teaching", "academic", "curriculum", "lesson", "student", "pedagogy"]],
 ]);
-
-// ============================================================================
-// ANALYZER
-// ============================================================================
 
 export class JobDescriptionAnalyzer {
   public analyze(input: JobDescriptionAnalysisInput): JobDescriptionAnalysis {
@@ -173,7 +128,7 @@ export class JobDescriptionAnalyzer {
   private inferSeniority(jobTitle: string, normalizedJd?: string): Seniority {
     const haystack = jobTitle.toLowerCase();
     for (const [seniority, keywords] of SENIORITY_KEYWORDS) {
-      if (keywords.some((k) => haystack.includes(k))) {
+      if (keywords.some((k: string) => haystack.includes(k))) {
         return seniority;
       }
     }
@@ -181,24 +136,24 @@ export class JobDescriptionAnalyzer {
     // like "Office Assistant" with a body mentioning "data entry" is entry.
     if (normalizedJd) {
       const entryKeywords = ["entry", "junior", "associate", "graduate", "new grad"];
-      if (entryKeywords.some((k) => normalizedJd.includes(k))) {
+      if (entryKeywords.some((k: string) => normalizedJd.includes(k))) {
         return "entry";
       }
     }
     return "mid";
   }
 
-  private inferDomain(normalized: string): string {
+  private inferDomain(normalized: string): InterviewDomain {
     let best = "general_employment";
     let bestCount = 0;
-    for (const [domain, keywords] of DOMAIN_KEYWORDS) {
-      const count = keywords.filter((k) => normalized.includes(k)).length;
-      if (count > bestCount) {
-        best = domain as any;
-        bestCount = count;
+    DOMAIN_KEYWORDS.forEach((keywords, domain) => {
+      const matchCount = keywords.filter((k: string) => normalized.includes(k)).length;
+      if (matchCount > bestCount) {
+        best = domain as InterviewDomain;
+        bestCount = matchCount;
       }
-    }
-    return bestCount >= 2 ? best : "general_employment";
+    });
+    return bestCount >= 2 ? (best as InterviewDomain) : "general_employment";
   }
 
   private domainConfidence(normalized: string, domain: string): number {

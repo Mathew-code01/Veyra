@@ -16,7 +16,7 @@ import type {
   CompanyResearch,
   CompanyResearchSource,
   ResearchSourceType,
-} from "../../../shared/types/preparation";
+} from "../../shared/types/preparation";
 
 export interface CompanyResearchInput {
   readonly companyName: string;
@@ -39,12 +39,12 @@ export class CompanyResearchService {
       contentSummary: this.summarize(s.content),
     }));
 
-    const industry = this.inferIndustry(sources);
-    const businessModel = this.inferBusinessModel(sources);
-    const recentDevelopments = this.extractDevelopments(sources);
-    const valuesAndCulture = this.extractValues(sources);
-    const roleRelevance = this.inferRoleRelevance(sources);
-    const candidateQuestions = this.generateQuestions(sources, industry);
+    const industry = this.inferIndustry(sources.map((s) => s.contentSummary));
+    const businessModel = this.inferBusinessModel(sources.map((s) => s.contentSummary));
+    const recentDevelopments = this.extractDevelopments(sources.map((s) => s.contentSummary));
+    const valuesAndCulture = this.extractValues(sources.map((s) => s.contentSummary));
+    const roleRelevance = this.inferRoleRelevance(sources.map((s) => s.contentSummary));
+    const candidateQuestions = this.generateQuestions(sources.map((s) => s.contentSummary), industry);
 
     return Object.freeze({
       companyName: input.companyName,
@@ -69,8 +69,8 @@ export class CompanyResearchService {
     return sentences.slice(0, 3).map((s) => s.trim()).join(" ").slice(0, 400);
   }
 
-  private inferIndustry(sources: readonly { readonly content: string }[]): string | undefined {
-    const text = sources.map((s) => (s.content ?? "").toLowerCase()).join(" ");
+  private inferIndustry(sources: readonly string[]): string | undefined {
+    const text = sources.map((s) => s.toLowerCase()).join(" ");
     const industries: ReadonlyArray<[string, readonly string[]]> = [
       ["technology", ["software", "saas", "platform", "api", "cloud"]],
       ["healthcare", ["patient", "clinical", "hospital", "medical"]],
@@ -84,8 +84,8 @@ export class CompanyResearchService {
     return undefined;
   }
 
-  private inferBusinessModel(sources: readonly { readonly content: string }[]): string | undefined {
-    const text = sources.map((s) => (s.content ?? "").toLowerCase()).join(" ");
+  private inferBusinessModel(sources: readonly string[]): string | undefined {
+    const text = sources.map((s) => s.toLowerCase()).join(" ");
     if (text.includes("subscription") || text.includes("saas")) return "Subscription/SaaS";
     if (text.includes("marketplace")) return "Marketplace";
     if (text.includes("advertis") || text.includes("ad ") ) return "Advertising";
@@ -93,10 +93,10 @@ export class CompanyResearchService {
     return undefined;
   }
 
-  private extractDevelopments(sources: readonly { readonly content: string }[]): string[] {
+  private extractDevelopments(sources: readonly string[]): string[] {
     const developments: string[] = [];
     for (const s of sources) {
-      for (const sentence of (s.content ?? "").split(/[.!?]+/)) {
+      for (const sentence of s.split(/[.!?]+/)) {
         const t = sentence.trim();
         if (/^(recently|launched|announced|acquired|raised|expanded|partnered)/i.test(t)) {
           developments.push(t);
@@ -106,27 +106,27 @@ export class CompanyResearchService {
     return developments.slice(0, 5);
   }
 
-  private extractValues(sources: readonly { readonly content: string }[]): string[] {
+  private extractValues(sources: readonly string[]): string[] {
     const values: string[] = [];
     const valueKeywords = ["integrity", "innovation", "customer", "excellence", "collaboration", "transparency", "respect"];
-    const text = sources.map((s) => (s.content ?? "").toLowerCase()).join(" ");
+    const text = sources.map((s) => s.toLowerCase()).join(" ");
     for (const v of valueKeywords) {
       if (text.includes(v)) values.push(v.charAt(0).toUpperCase() + v.slice(1));
     }
     return values.slice(0, 6);
   }
 
-  private inferRoleRelevance(sources: readonly { readonly content: string }[]): string[] {
+  private inferRoleRelevance(sources: readonly string[]): string[] {
     const relevance: string[] = [];
     const roleKeywords = ["engineer", "manager", "analyst", "designer", "sales", "product"];
-    const text = sources.map((s) => (s.content ?? "").toLowerCase()).join(" ");
+    const text = sources.map((s) => s.toLowerCase()).join(" ");
     for (const r of roleKeywords) {
       if (text.includes(r)) relevance.push(r);
     }
     return relevance.slice(0, 5);
   }
 
-  private generateQuestions(sources: readonly { readonly content: string }[], industry: string | undefined): string[] {
+  private generateQuestions(sources: readonly string[], industry: string | undefined): string[] {
     const questions: string[] = [
       "How does this role contribute to the company's top priorities?",
       "What does success look like in this role after six months?",
@@ -134,10 +134,11 @@ export class CompanyResearchService {
     if (industry) {
       questions.push(`How is ${industry} changing the company's strategy right now?`);
     }
-    if (sources.some((s) => (s.content ?? "").toLowerCase().includes("growth"))) {
+    if (sources.some((s) => s.toLowerCase().includes("growth"))) {
       questions.push("What are the company's growth plans for the next year?");
     }
     questions.push("What do you enjoy most about working here?");
     return questions.slice(0, 5);
   }
 }
+

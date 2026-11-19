@@ -128,6 +128,51 @@ describe("MemoryRepository", () => {
     expect(repo.getById(recA.id, profileB)).toBeNull();
   });
 
+  it("isolates interview memory by candidate and returns profile preferences separately", () => {
+    const candidateOne = "8f0b2f3e-4678-4bdb-97f6-06e1e4482b01";
+    const candidateTwo = "e84079af-dd13-41c8-9d8b-44b2022a7055";
+    const sqlite = getTestDatabase().sqlite;
+    sqlite.prepare(
+      `INSERT INTO candidate_profiles
+         (profile_id, candidate_id, full_name, payload, created_at, updated_at)
+       VALUES (?, ?, ?, '{}', 'now', 'now'), (?, ?, ?, '{}', 'now', 'now')`,
+    ).run(profileA, candidateOne, "Candidate One", profileA, candidateTwo, "Candidate Two");
+    const repo = new MemoryRepository();
+    repo.create({
+      profileId: profileA,
+      candidateId: candidateOne,
+      category: "candidate",
+      content: { text: "Led a forecasting project." },
+      sourceType: "manual",
+    });
+    repo.create({
+      profileId: profileA,
+      candidateId: candidateTwo,
+      category: "candidate",
+      content: { text: "Prepared a forecasting model." },
+      sourceType: "manual",
+    });
+    repo.create({
+      profileId: profileA,
+      category: "preference",
+      content: { text: "Prefers concise interview answers." },
+      sourceType: "manual",
+    });
+
+    expect(
+      repo.search(profileA, { query: "forecasting", category: "candidate", candidateId: candidateOne })
+        .map((record) => record.content.text),
+    ).toEqual(["Led a forecasting project."]);
+    expect(
+      repo.search(profileA, { query: "forecasting", category: "candidate", candidateId: candidateTwo })
+        .map((record) => record.content.text),
+    ).toEqual(["Prepared a forecasting model."]);
+    expect(
+      repo.search(profileA, { query: "concise", category: "preference", candidateId: null })
+        .map((record) => record.content.text),
+    ).toEqual(["Prefers concise interview answers."]);
+  });
+
   it("filters list by category", () => {
     const repo = new MemoryRepository();
 
@@ -277,7 +322,7 @@ describe("MemoryRepository", () => {
     );
   });
 
-  it("performs keyword (FTS5) search scoped to profile", () => {
+  it("performs genuine FTS5 search scoped to profile", () => {
     const repo = new MemoryRepository();
 
     repo.create({
@@ -312,6 +357,45 @@ describe("MemoryRepository", () => {
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results.every((r) => r.profileId === profileA)).toBe(true);
+    expect(results.some((r) => r.content.text === "TypeScript and React expertise")).toBe(true);
+
+    // Profile B's matching record must not leak into profile A's results.
+    expect(results.some((r) => r.profileId === profileB)).toBe(false);
+
+    // A term present only in profile B returns nothing for profile A.
+    repo.create({
+      profileId: profileB,
+
+      category: "candidate",
+
+      content: { text: "profile B exclusive Svelte fact" },
+
+      sourceType: "document",
+
+      sourceId: "doc-3",
+
+      confidence: 90,
+    });
+
+    const exclusive = repo.search(profileA, { query: "Svelte", limit: 10 });
+
+    expect(exclusive.length).toBe(0);
+  });
+
+  it("excludes expired memory from FTS search and profile listing", () => {
+    const repo = new MemoryRepository();
+    const expired = repo.create({
+      profileId: profileA,
+      category: "knowledge",
+      content: { text: "expired React fact" },
+      sourceType: "document",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+
+    expect(repo.listByProfile(profileA)).toEqual([]);
+    expect(repo.search(profileA, { query: "React" })).toEqual([]);
+    expect(repo.getById(expired.id, profileA)).toBeNull();
+    expect(repo.expireOlderThan(new Date().toISOString())).toBe(1);
   });
 
   it("applies minConfidence filtering", () => {
@@ -385,7 +469,7 @@ describe("MemoryRepository", () => {
 
     expect(expiredCount).toBe(1);
 
-    expect(repo.getById(oldRecord.id, profileA)?.status).toBe("expired");
+    expect(repo.getById(oldRecord.id, profileA)).toBeNull();
     expect(repo.getById(current.id, profileA)?.status).toBe("active");
   });
 });

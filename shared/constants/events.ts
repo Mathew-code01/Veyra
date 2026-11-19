@@ -26,6 +26,20 @@ export const IPC_CHANNELS = Object.freeze({
   APP_GET_ENVIRONMENT: "app:get-environment",
 
   // --------------------------------------------------------------------------
+  // PLATFORM ACCOUNT
+  // --------------------------------------------------------------------------
+
+  PLATFORM_GET_STATE: "platform:get-state",
+  PLATFORM_SIGN_IN: "platform:sign-in",
+  PLATFORM_SIGN_OUT: "platform:sign-out",
+  PLATFORM_REGISTER_DEVICE: "platform:register-device",
+  PLATFORM_REFRESH_ACCOUNT: "platform:refresh-account",
+  PLATFORM_BROWSER_SIGN_IN: "platform:browser-sign-in",
+  PLATFORM_CANCEL_BROWSER_SIGN_IN: "platform:cancel-browser-sign-in",
+  PLATFORM_UPDATE_PROFILE: "platform:update-profile",
+  PLATFORM_OPEN_WEBSITE: "platform:open-website",
+
+  // --------------------------------------------------------------------------
   // WINDOW
   // --------------------------------------------------------------------------
 
@@ -111,6 +125,10 @@ export const IPC_CHANNELS = Object.freeze({
   // --------------------------------------------------------------------------
   // CANDIDATE
   // --------------------------------------------------------------------------
+
+  WORKSPACE_PROFILE_LIST: "workspace-profile:list",
+  WORKSPACE_PROFILE_ACTIVATE: "workspace-profile:activate",
+  WORKSPACE_PROFILE_CREATE: "workspace-profile:create",
 
   CANDIDATE_PROFILE_GET: "candidate:profile:get",
   CANDIDATE_PROFILE_LIST: "candidate:profile:list",

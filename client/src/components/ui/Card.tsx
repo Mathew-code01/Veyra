@@ -10,7 +10,7 @@ export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
       className={cn(
         "rounded-xl border border-border",
         "bg-card/80 backdrop-blur-xl",
-        "shadow-[0_10px_40px_rgba(0,0,0,0.18)]",
+        "shadow-[0_12px_36px_-28px_rgba(24,32,68,0.34)]",
         className,
       )}
       {...props}

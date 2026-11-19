@@ -107,6 +107,9 @@ export const QUESTION_ARCHETYPES = [
   "salary_expectations",
   "cv_experience",
   "project_achievement",
+  "system_design",
+  "code_review",
+  "behavioral_and_competency",
   "general",
 ] as const;
 

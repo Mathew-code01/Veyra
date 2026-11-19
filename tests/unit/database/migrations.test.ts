@@ -124,6 +124,35 @@ describe("database migrations", () => {
       { cwd: process.cwd(), stdio: "pipe" },
     );
 
+    const packagedMainDirectory = join(
+      directory,
+      "dist-electron",
+      "desktop",
+      "main",
+    );
+    mkdirSync(packagedMainDirectory, { recursive: true });
+    writeFileSync(join(packagedMainDirectory, "index.js"), "", "utf8");
+    execFileSync(
+      process.execPath,
+      [
+        join(process.cwd(), "scripts", "prepare-electron-runtime.js"),
+        directory,
+      ],
+      { cwd: process.cwd(), stdio: "pipe" },
+    );
+
+    expect(
+      JSON.parse(
+        readFileSync(join(directory, "dist-electron", "package.json"), "utf8"),
+      ),
+    ).toEqual({ type: "commonjs" });
+    expect(
+      readFileSync(
+        join(packagedMainDirectory, "index.cjs"),
+        "utf8",
+      ),
+    ).toBe('require("./index.js");\n');
+
     const handle = createDatabase({
       filename: databasePath,
       migrationsFolder: packagedMigrations,

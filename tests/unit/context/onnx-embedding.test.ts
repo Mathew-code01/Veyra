@@ -32,6 +32,7 @@ describe("OnnxEmbeddingService", () => {
     expect(() =>
       new OnnxEmbeddingService({
         modelPath: join(tmpdir(), "does-not-exist.onnx"),
+        tokenizer: { encode: () => ({ inputIds: [1], attentionMask: [1] }) },
 
         dimensions: 384,
       }),
@@ -48,6 +49,7 @@ describe("OnnxEmbeddingService", () => {
   it("reports the configured model id and dimensions", () => {
     const service = new OnnxEmbeddingService({
       modelPath,
+      tokenizer: { encode: () => ({ inputIds: [1], attentionMask: [1] }) },
 
       dimensions: 256,
 
@@ -57,6 +59,18 @@ describe("OnnxEmbeddingService", () => {
     expect(service.modelId).toBe("test-embedding-model");
 
     expect(service.embeddingDimensions).toBe(256);
+    expect(service.hasSuccessfulInference).toBe(false);
+  });
+
+  it("requires a model-compatible tokenizer", () => {
+    expect(
+      () =>
+        new OnnxEmbeddingService({
+          modelPath,
+          // @ts-expect-error - a model without its tokenizer is not usable
+          tokenizer: undefined,
+        }),
+    ).toThrow(/tokenizer compatible with the supplied model/);
   });
 
   it("embedding one text fails with a clear error when the model cannot run", async () => {
@@ -65,6 +79,7 @@ describe("OnnxEmbeddingService", () => {
     // silently returning mock vectors.
     const service = new OnnxEmbeddingService({
       modelPath,
+      tokenizer: { encode: () => ({ inputIds: [1], attentionMask: [1] }) },
 
       dimensions: 384,
     });
@@ -75,6 +90,7 @@ describe("OnnxEmbeddingService", () => {
   it("embedding an array fails with a clear error when the model cannot run", async () => {
     const service = new OnnxEmbeddingService({
       modelPath,
+      tokenizer: { encode: () => ({ inputIds: [1], attentionMask: [1] }) },
 
       dimensions: 384,
     });
@@ -85,6 +101,7 @@ describe("OnnxEmbeddingService", () => {
   it("rejects non-string inputs", async () => {
     const service = new OnnxEmbeddingService({
       modelPath,
+      tokenizer: { encode: () => ({ inputIds: [1], attentionMask: [1] }) },
 
       dimensions: 384,
     });
@@ -100,6 +117,7 @@ describe("OnnxEmbeddingService", () => {
 
     const service = new OnnxEmbeddingService({
       modelPath,
+      tokenizer: { encode: () => ({ inputIds: [1], attentionMask: [1] }) },
 
       dimensions: 384,
     });

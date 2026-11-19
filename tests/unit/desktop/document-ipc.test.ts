@@ -1,4 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 
 import type { IpcMain } from "electron";
 
@@ -8,8 +12,9 @@ import { registerDocumentIpc } from "../../../desktop/ipc/document.ipc";
 
 import type { DocumentService } from "../../../core/documents/DocumentService";
 
-function makeSender(destroyed = false) {
+function makeSender(destroyed = false, id = 1) {
   return {
+    id,
     isDestroyed: () => destroyed,
   };
 }
@@ -69,7 +74,7 @@ describe("registerDocumentIpc", () => {
     expect(handlers.has(IPC_CHANNELS.DOCUMENT_LIST)).toBe(true);
   });
 
-  it("document:pick returns selected file paths", async () => {
+  it("document:pick returns opaque handles without exposing paths", async () => {
     const documentService = makeDocumentService();
     const ipcMain = makeIpcMain();
     const dialog = makeDialog();
@@ -83,7 +88,15 @@ describe("registerDocumentIpc", () => {
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.DOCUMENT_PICK,
-    ) as (event: unknown, request?: unknown) => unknown;
+    ) as (
+      event: unknown,
+      request?: unknown,
+    ) => Promise<{
+      success: boolean;
+      data?: {
+        files: readonly { handle: string; filename: string }[];
+      };
+    }>;
 
     const result = await handler(
       { sender: makeSender() },
@@ -94,7 +107,10 @@ describe("registerDocumentIpc", () => {
 
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.filePaths).toEqual(["/tmp/cv.pdf"]);
+      expect(result.data?.files).toHaveLength(1);
+      expect(result.data?.files[0].filename).toBe("cv.pdf");
+      expect(result.data?.files[0].handle).toBeTruthy();
+      expect(JSON.stringify(result.data)).not.toContain("/tmp/cv.pdf");
     }
 
     expect(dialog.showOpenDialog).toHaveBeenCalledTimes(1);
@@ -114,14 +130,115 @@ describe("registerDocumentIpc", () => {
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.DOCUMENT_PICK,
-    ) as (event: unknown, request?: unknown) => unknown;
+    ) as (
+      event: unknown,
+      request?: unknown,
+    ) => Promise<{ success: boolean; data?: { files: readonly unknown[] } }>;
 
     const result = await handler({ sender: makeSender() }, undefined);
 
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.filePaths).toEqual([]);
+      expect(result.data?.files).toEqual([]);
     }
+  });
+
+  it("reads a picker-selected file in the main process before import", async () => {
+    const filePath = join(tmpdir(), `veyra-${randomUUID()}.txt`);
+    const bytes = Buffer.from("Candidate document content.", "utf8");
+    await writeFile(filePath, bytes);
+
+    try {
+      const process = vi.fn().mockResolvedValue({
+        document: {
+          identity: { id: "doc-1", filename: basename(filePath) },
+          type: "text",
+          text: "Candidate document content.",
+          metadata: {},
+          paragraphs: [],
+          headings: [],
+          sections: [],
+          tables: [],
+          chunks: [],
+          status: "completed",
+          processedAt: "2026-01-01T00:00:00.000Z",
+          warnings: [],
+        },
+        indexBatch: { documentId: "doc-1", documents: [], createdAt: "t" },
+        validation: { valid: true, warnings: [] },
+        classification: {
+          type: "text",
+          confidence: 1,
+          source: "extension",
+          warnings: [],
+        },
+      } as never);
+      const documentService = { process } as unknown as DocumentService;
+      const ipcMain = makeIpcMain();
+      const dialog = makeDialog();
+      dialog.showOpenDialog.mockResolvedValue({
+        canceled: false,
+        filePaths: [filePath],
+      });
+
+      registerDocumentIpc({ documentService, ipcMain, dialog });
+      const handlers = handlerMap(ipcMain);
+      const sender = makeSender();
+      const pick = handlers.get(IPC_CHANNELS.DOCUMENT_PICK) as (
+        event: unknown,
+        request?: unknown,
+      ) => Promise<{
+        success: boolean;
+        data?: {
+          files: readonly { handle: string; filename: string }[];
+        };
+      }>;
+      const importDocument = handlers.get(IPC_CHANNELS.DOCUMENT_IMPORT) as (
+        event: unknown,
+        request?: unknown,
+      ) => Promise<unknown>;
+
+      const picked = await pick({ sender });
+      expect(picked.success).toBe(true);
+      const fileHandle = picked.data?.files[0]?.handle;
+      expect(fileHandle).toBeTruthy();
+      const result = await importDocument(
+        { sender },
+        {
+          source: { type: "file" },
+          fileHandle,
+          candidateId: "candidate-1",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(process).toHaveBeenCalledOnce();
+      const request = process.mock.calls[0][0];
+      expect(request.source.filename).toBe(basename(filePath));
+      expect(Buffer.from(request.source.data)).toEqual(bytes);
+      expect(request.options.maxFileSizeBytes).toBe(25 * 1024 * 1024);
+    } finally {
+      await rm(filePath, { force: true });
+    }
+  });
+
+  it("rejects a renderer path that was not selected by the same window", async () => {
+    const process = vi.fn();
+    const documentService = { process } as unknown as DocumentService;
+    const ipcMain = makeIpcMain();
+    const dialog = makeDialog();
+    registerDocumentIpc({ documentService, ipcMain, dialog });
+
+    const handler = handlerMap(ipcMain).get(
+      IPC_CHANNELS.DOCUMENT_IMPORT,
+    ) as (event: unknown, request?: unknown) => Promise<unknown>;
+    const result = await handler(
+      { sender: makeSender() },
+      { source: { type: "file", path: join(tmpdir(), "not-selected.txt") } },
+    );
+
+    expect(result.success).toBe(false);
+    expect(process).not.toHaveBeenCalled();
   });
 
   it("document:import runs the ingestion pipeline", async () => {
@@ -178,7 +295,6 @@ describe("registerDocumentIpc", () => {
       {
         source: {
           type: "file",
-          path: "/tmp/cv.pdf",
           filename: "cv.pdf",
           mimeType: "application/pdf",
           data: new Uint8Array([1, 2, 3]),
@@ -232,7 +348,6 @@ describe("registerDocumentIpc", () => {
       {
         source: {
           type: "file",
-          path: "/tmp/cv.pdf",
           filename: "cv.pdf",
           mimeType: "application/pdf",
           data: new Uint8Array([1]),

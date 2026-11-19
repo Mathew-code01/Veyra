@@ -3,8 +3,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { KokoroTTS } from "kokoro-js";
-import { env } from "@huggingface/transformers";
+import type { KokoroTTS } from "kokoro-js";
 
 import type { ModelDefinition } from "../ModelRegistry";
 
@@ -125,6 +124,15 @@ export class KokoroRuntime implements SpeechSynthesisRuntime {
      * Veyra's package installer owns downloads.
      * Runtime loading therefore remains offline/local-only.
      */
+    // Transformers imports optional native image support (Sharp) at module
+    // load time. Load it only when a verified Kokoro model is actually
+    // requested so a broken TTS native binary cannot disable unrelated
+    // hardware assessment, LLM, or interview functionality at app startup.
+    const [{ KokoroTTS }, { env }] = await Promise.all([
+      import("kokoro-js"),
+      import("@huggingface/transformers"),
+    ]);
+
     env.allowLocalModels = true;
 
     env.allowRemoteModels = false;

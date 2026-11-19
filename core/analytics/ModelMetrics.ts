@@ -138,7 +138,7 @@ function percentile(sorted: readonly number[], value: number): number {
 }
 
 function sumOptional(values: readonly (number | undefined)[]): number {
-  return values.reduce(
+  return values.reduce<number>(
     (sum, value) => sum + (typeof value === "number" ? value : 0),
     0,
   );

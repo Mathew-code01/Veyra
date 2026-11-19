@@ -18,7 +18,7 @@ import type {
   GapAnalysis,
   JobDescriptionAnalysis,
   MatchType,
-} from "../../../shared/types/preparation";
+} from "../../shared/types/preparation";
 
 export interface CandidateEvidenceInput {
   readonly id: string;
@@ -193,3 +193,4 @@ function candidateEvidenceById(
   }
   return undefined;
 }
+

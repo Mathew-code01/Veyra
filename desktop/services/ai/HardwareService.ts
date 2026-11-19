@@ -28,6 +28,7 @@
  */
 
 import { HardwareProfiler } from "../../../core/hardware/HardwareProfiler";
+import { statfs } from "node:fs/promises";
 
 import type { HardwareProfile } from "../../../core/hardware/HardwareProfile";
 
@@ -43,6 +44,7 @@ import type {
   HardwareSnapshotResponse,
   SharedAccelerationBackend,
 } from "../../../shared/types/hardware";
+import type { HardwareAssessmentResponse, LocalModelAssessment } from "../../../shared/types/hardware";
 
 /**
  * Renderer-safe acceleration backend allow-list.
@@ -188,12 +190,14 @@ export interface HardwareServiceOptions {
    * construct ModelManager.
    */
   readonly modelDirectory?: string;
+  readonly modelStoragePath?: string;
 }
 
 export class HardwareService {
   private readonly profiler: HardwareProfiler;
 
   private readonly modelManager: ModelManager;
+  private readonly modelStoragePath?: string;
 
   private profileCache: HardwareProfile | null = null;
 
@@ -203,6 +207,7 @@ export class HardwareService {
 
   public constructor(options: HardwareServiceOptions = {}) {
     this.profiler = new HardwareProfiler();
+    this.modelStoragePath = options.modelStoragePath;
 
     /*
      * Production Electron startup injects
@@ -265,13 +270,29 @@ export class HardwareService {
     return profile;
   }
 
+  private async getProfileWithModelStorage(forceRefresh = false): Promise<HardwareProfile> {
+    const detectedProfile = await this.getProfile(forceRefresh);
+    if (!this.modelStoragePath) return detectedProfile;
+    try {
+      const fs = await statfs(this.modelStoragePath);
+      const totalBytes = Number(fs.blocks * fs.bsize);
+      const freeBytes = Number(fs.bavail * fs.bsize);
+      if (Number.isFinite(totalBytes) && Number.isFinite(freeBytes) && totalBytes > 0 && freeBytes >= 0) {
+        return Object.freeze({ ...detectedProfile, storage: Object.freeze({ ...detectedProfile.storage, totalBytes, freeBytes, usedBytes: Math.max(0, totalBytes - freeBytes), freeGB: freeBytes / 1024 ** 3 }) });
+      }
+    } catch {
+      // Keep the profiler's system-volume reading when model storage cannot be inspected.
+    }
+    return detectedProfile;
+  }
+
   /**
    * Returns a renderer-safe hardware snapshot.
    */
   public async getSnapshot(
     forceRefresh = false,
   ): Promise<HardwareSnapshotResponse> {
-    const profile = await this.getProfile(forceRefresh);
+    const profile = await this.getProfileWithModelStorage(forceRefresh);
 
     return Object.freeze({
       profile: toSharedHardwareProfile(profile),
@@ -286,7 +307,7 @@ export class HardwareService {
     readonly profile: HardwareProfile;
     readonly plan: ModelSelectionPlan;
   }> {
-    const profile = await this.getProfile(forceRefresh);
+    const profile = await this.getProfileWithModelStorage(forceRefresh);
 
     if (!forceRefresh && this.selectionPlan) {
       return Object.freeze({
@@ -330,6 +351,47 @@ export class HardwareService {
    */
   public getModelManager(): ModelManager {
     return this.modelManager;
+  }
+
+  /** Explainable, local-only assessment sourced from the existing profiler and registry. */
+  public async getAssessment(forceRefresh = false): Promise<HardwareAssessmentResponse> {
+    const profile = await this.getProfileWithModelStorage(forceRefresh);
+    const manager = this.modelManager;
+    const installed = new Set(manager.listInstalled().map((model) => model.modelId));
+    // Hardware remains useful when an optional local runtime failed to load.
+    // Keep the hardware/catalog assessment available and report that no
+    // runtime is ready instead of rejecting the entire IPC contract.
+    let runtimeNames: readonly string[] = [];
+    try {
+      runtimeNames = manager.listRuntimes();
+    } catch {
+      runtimeNames = [];
+    }
+    const models: LocalModelAssessment[] = manager.listAvailableModels()
+      .filter((model) => model.modality !== "embedding")
+      .map((model) => {
+        const compatibility = manager.evaluateModel(model.id, profile);
+        const isInstalled = installed.has(model.id);
+        const artifact = model.package?.artifacts.find((item) => item.role === "model") ?? model.artifact;
+        const canLoad = compatibility.level !== "incompatible" && model.availability === "available";
+        const benchmark = manager.getBenchmark(model.id);
+        const limitations = [...compatibility.warnings, ...compatibility.blockingReasons];
+        if (!manager.supportsModel(model.id)) limitations.push(`The ${model.runtime} runtime is not currently registered.`);
+        if (!benchmark) limitations.push("Inference speed has not been measured on this computer.");
+        const classification = !canLoad ? "unsupported" : compatibility.level === "compatible" && compatibility.score >= 85 && profile.systemLoad.cpuUsagePercent < 75 && profile.memory.availableBytes >= model.requirements.recommendedRamBytes ? "highly_recommended" : compatibility.level === "compatible_with_warning" || compatibility.score < 85 ? "supported_with_limitations" : "not_recommended";
+        return Object.freeze({
+          modelId: model.id, name: model.displayName, modality: model.modality as LocalModelAssessment["modality"], runtime: model.runtime,
+          quantization: model.quantization, version: model.version, classification, canLoad,
+          canRunAcceptably: null,
+          supportsConcurrentWorkload: null, installed: isInstalled, ready: isInstalled && benchmark?.metrics.success === true, measuredPerformance: Boolean(benchmark?.metrics.success),
+          minimumRamBytes: model.requirements.minimumRamBytes, recommendedRamBytes: model.requirements.recommendedRamBytes,
+          minimumVramBytes: model.requirements.minimumVramBytes, estimatedDiskBytes: model.requirements.estimatedDiskBytes,
+          artifact: artifact && artifact.sizeBytes > 0 && /^[a-f0-9]{64}$/i.test(artifact.sha256) ? { url: artifact.url, filename: artifact.filename, sizeBytes: artifact.sizeBytes, sha256: artifact.sha256 } : undefined,
+          license: { name: model.license.name, url: model.license.url, commercialUse: model.license.commercialUse, notes: model.license.notes },
+          reasons: Object.freeze([...compatibility.reasons]), limitations: Object.freeze(limitations),
+        });
+      });
+    return Object.freeze({ profile: toSharedHardwareProfile(profile), models: Object.freeze(models), localRuntimeReady: runtimeNames.length > 0, runtimeNames: Object.freeze([...runtimeNames]) });
   }
 
   public clearCache(): void {

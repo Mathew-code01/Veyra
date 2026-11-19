@@ -185,6 +185,16 @@ function assertExecutionMode(value: unknown): AiExecutionMode {
   );
 }
 
+function safeProviderHealthMessage(status: string): string {
+  // Provider error bodies are not trusted: some providers echo request data or
+  // diagnostic headers. Keep renderer-visible failures generic and actionable.
+  switch (status) {
+    case "healthy": return "Provider authentication succeeded.";
+    case "degraded": return "Provider rejected or could not fully validate this key. Check the key and account access.";
+    default: return "Provider could not be reached. Check connectivity and try again.";
+  }
+}
+
 // ============================================================================
 // REGISTRATION
 // ============================================================================
@@ -356,11 +366,20 @@ export function registerProvidersIpc(
       };
     }
 
+    const providerId = payload.providerId.trim();
+    if (!cloudRegistry.has(providerId)) {
+      return { success: false, error: new Error("Unsupported provider.") };
+    }
+
+    if (payload.secret.length > 4096 || /[\r\n\0]/.test(payload.secret)) {
+      return { success: false, error: new Error("The provider key has an invalid format.") };
+    }
+
     try {
       await credentialStore.storeCredential(
         profileId,
 
-        payload.providerId.trim(),
+        providerId,
 
         payload.secret.trim(),
       );
@@ -369,7 +388,7 @@ export function registerProvidersIpc(
         success: true,
 
         data: {
-          providerId: payload.providerId.trim(),
+          providerId,
 
           configured: true,
         },
@@ -422,6 +441,10 @@ export function registerProvidersIpc(
 
         error: new Error("A provider id is required."),
       };
+    }
+
+    if (!cloudRegistry.has(payload.providerId.trim())) {
+      return { success: false, error: new Error("Unsupported provider.") };
     }
 
     const deleted = credentialStore.deleteCredential(
@@ -540,7 +563,7 @@ export function registerProvidersIpc(
 
           latencyMs: health.latencyMs,
 
-          error: health.error,
+          error: safeProviderHealthMessage(health.status),
         },
       };
     } catch (error) {
@@ -554,12 +577,7 @@ export function registerProvidersIpc(
 
           status: "unavailable",
 
-          error:
-            error instanceof Error
-
-              ? error.message
-
-              : "Provider verification failed.",
+          error: "Provider verification failed. Check connectivity and try again.",
 
           latencyMs: Date.now() - startedAt,
         },
@@ -675,6 +693,14 @@ export function registerProvidersIpc(
 
         error: new Error("A model id is required."),
       };
+    }
+
+    const provider = cloudRegistry.tryGet(payload.providerId.trim());
+    if (!provider) {
+      return { success: false, error: new Error("Unsupported provider.") };
+    }
+    if (!(provider.models ?? []).some((model) => model.modelId === payload.modelId.trim())) {
+      return { success: false, error: new Error("The selected model is not in this provider's supported catalogue.") };
     }
 
     const existing = settingsRepository.get(

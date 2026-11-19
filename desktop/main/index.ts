@@ -112,8 +112,8 @@ function registerSecurityHandlers(): void {
     contents.on("will-navigate", (event, navigationUrl) => {
       if (isDevelopment) {
         const developmentOrigins = [
-          "http://localhost:5173",
-          "http://127.0.0.1:5173",
+          "http://localhost:5174",
+          "http://127.0.0.1:5174",
         ];
 
         if (
@@ -170,11 +170,14 @@ function registerApplicationEvents(): void {
 
 async function bootstrap(): Promise<void> {
   try {
+    console.info("[VEYRA startup] Waiting for Electron readiness.");
     await app.whenReady();
+    console.info("[VEYRA startup] Electron is ready; initializing application services.");
 
     app.setAppUserModelId("com.veyra.desktop");
 
     await initializeApplication();
+    console.info("[VEYRA startup] Application services initialized; creating the main window.");
 
     registerIPC();
     registerSecurityHandlers();

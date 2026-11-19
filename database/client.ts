@@ -3,7 +3,6 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as schema from "./schema";
 
 export interface DatabaseHandle {
@@ -21,7 +20,7 @@ export interface DatabaseOptions {
   readonly?: boolean;
 }
 
-const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const REPO_ROOT = resolve(process.cwd());
 
 function resolveDatabasePath(filename?: string): string {
   const configured =

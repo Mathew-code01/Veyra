@@ -15,6 +15,8 @@
 import type {
   HardwareModelPlanResponse,
   HardwareSnapshotResponse,
+  HardwareAssessmentResponse,
+  ModelInstallProgress,
 } from "../../shared/types/hardware";
 
 import type {
@@ -58,6 +60,12 @@ import type {
   CandidateSkill,
   CandidateStory,
 } from "../../core/candidate/contracts/CandidateTypes";
+
+import type {
+  WorkspaceProfileCreateRequest,
+  WorkspaceProfileSelectionRequest,
+  WorkspaceProfileSummary,
+} from "../ipc/workspace-profile.ipc";
 
 import type {
   ProvidersGetStatusResult,
@@ -125,6 +133,27 @@ export interface WindowOperationResult {
   readonly maximized?: boolean;
 }
 
+export interface VeyraWorkspaceProfileApi {
+  list(): Promise<{
+    readonly success: boolean;
+    readonly data?: {
+      readonly profiles: readonly WorkspaceProfileSummary[];
+      readonly activeProfileId?: string;
+    };
+    readonly error?: Error;
+  }>;
+  activate(request: WorkspaceProfileSelectionRequest): Promise<{
+    readonly success: boolean;
+    readonly data?: { readonly profileId: string };
+    readonly error?: Error;
+  }>;
+  create(request: WorkspaceProfileCreateRequest): Promise<{
+    readonly success: boolean;
+    readonly data?: { readonly profileId: string };
+    readonly error?: Error;
+  }>;
+}
+
 /**
  * Hardware API exposed to the renderer.
  */
@@ -151,6 +180,11 @@ export interface VeyraHardwareApi {
       readonly forceRefresh?: boolean;
     },
   ): Promise<HardwareModelPlanResponse>;
+  getAssessment(options?: { readonly forceRefresh?: boolean }): Promise<HardwareAssessmentResponse>;
+  installModel(modelId: string): Promise<{ readonly installed: boolean }>;
+  uninstallModel(modelId: string): Promise<{ readonly removed: boolean }>;
+  cancelInstall(modelId: string): Promise<{ readonly cancelled: boolean }>;
+  onInstallProgress(callback: (progress: ModelInstallProgress) => void): () => void;
 }
 
 /**
@@ -179,6 +213,47 @@ export interface VeyraWindowApi {
   isMaximized(): Promise<boolean>;
 
   isAvailable(): Promise<boolean>;
+}
+
+/**
+ * Overlay window management API.
+ *
+ * The overlay is a transparent, frameless, always-on-top floating window that
+ * renders interview guidance on top of the user's application. All window
+ * operations go through IPC; the renderer never touches Electron internals.
+ */
+export interface VeyraOverlayApi {
+  show(request?: { readonly sessionId?: string }): Promise<{ readonly success: boolean; readonly error?: Error }>;
+
+  hide(): Promise<{ readonly success: boolean; readonly error?: Error }>;
+
+  toggle(): Promise<{
+    readonly success: boolean;
+    readonly data?: { readonly visible: boolean; readonly opacity: number; readonly alwaysOnTop: boolean };
+    readonly error?: Error;
+  }>;
+
+  getState(): Promise<{
+    readonly success: boolean;
+    readonly data?: {
+      readonly visible: boolean;
+      readonly opacity: number;
+      readonly alwaysOnTop: boolean;
+      readonly x?: number;
+      readonly y?: number;
+      readonly width?: number;
+      readonly height?: number;
+    };
+    readonly error?: Error;
+  }>;
+
+  setOpacity(opacity: number): Promise<{ readonly success: boolean; readonly error?: Error }>;
+
+  setAlwaysOnTop(alwaysOnTop: boolean): Promise<{ readonly success: boolean; readonly error?: Error }>;
+
+  setPosition(x: number, y: number): Promise<{ readonly success: boolean; readonly error?: Error }>;
+
+  setSize(width: number, height: number): Promise<{ readonly success: boolean; readonly error?: Error }>;
 }
 
 /**
@@ -510,6 +585,8 @@ export interface VeyraDesktopAPI {
 
   readonly window: VeyraWindowApi;
 
+  readonly overlay: VeyraOverlayApi;
+
   readonly hardware: VeyraHardwareApi;
 
   readonly ai: VeyraAiApi;
@@ -522,6 +599,8 @@ export interface VeyraDesktopAPI {
 
   readonly candidate: VeyraCandidateApi;
 
+  readonly workspaceProfiles: VeyraWorkspaceProfileApi;
+
   readonly providers: VeyraProvidersApi;
 
     readonly audio: VeyraAudioApi;
@@ -530,6 +609,31 @@ export interface VeyraDesktopAPI {
   readonly practice: VeyraPracticeApi;
 
   readonly runtime: VeyraRuntimeApi;
+
+  readonly platform: VeyraPlatformApi;
+}
+
+export interface VeyraPlatformApi {
+  getState(): Promise<{ authenticated: boolean; secureStorageAvailable: boolean; user?: { id: string; email: string; emailConfirmed: boolean }; deviceId?: string }>;
+  signIn(request: { email: string; password: string }): Promise<{ authenticated: boolean; user: { id: string; email: string; emailConfirmed: boolean }; deviceId?: string }>;
+  signOut(): Promise<{ authenticated: false }>;
+  registerDevice(): Promise<{ deviceId: string }>;
+  browserSignIn(): Promise<{ authenticated: true; user: { id: string; email: string; emailConfirmed: boolean }; deviceId?: string }>;
+  cancelBrowserSignIn(): Promise<{ cancelled: boolean }>;
+  updateProfile(profile: { displayName?: string; locale?: string }): Promise<unknown>;
+  openWebsite(destination: "account" | "billing"): Promise<{ opened: boolean }>;
+  refreshAccount(): Promise<{
+    user: { id: string; email: string; emailConfirmed: boolean };
+    profile: Record<string, unknown>;
+    devices: Array<Record<string, unknown>>;
+    currentDevice: Record<string, unknown> | null;
+    entitlements: Array<{ capability: string; entitled: boolean; reason?: string; expiresAt?: string }>;
+    subscription: Record<string, unknown> | null;
+    credits: { balanceCents: number; currency: string } | null;
+    usage: Array<Record<string, unknown>>;
+    sessionExpiresAt: string;
+    authorization: "authorized" | "revoked" | "pending" | "not_registered";
+  }>;
 }
 
 /**

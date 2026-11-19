@@ -15,15 +15,15 @@ interface BadgeProps {
 }
 
 const variants: Record<BadgeVariant, string> = {
-  default: "bg-white/8 text-zinc-300",
+  default: "border border-slate-200 bg-slate-100 text-slate-600",
 
-  success: "bg-success/10 text-success",
+  success: "border border-emerald-200 bg-emerald-50 text-emerald-700",
 
-  warning: "bg-warning/10 text-warning",
+  warning: "border border-amber-200 bg-amber-50 text-amber-800",
 
-  danger: "bg-danger/10 text-danger",
+  danger: "border border-rose-200 bg-rose-50 text-rose-700",
 
-  info: "bg-info/10 text-info",
+  info: "border border-blue-200 bg-blue-50 text-blue-700",
 };
 
 export function Badge({

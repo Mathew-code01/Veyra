@@ -257,6 +257,8 @@ describe("registerProvidersIpc", () => {
 
   it("save-credential stores without returning the raw secret", async () => {
     const credentialStore = makeCredentialStore();
+    const registry = new CloudProviderRegistry();
+    registry.register(makeProvider("gemini", "Google Gemini"));
 
     const ipcMain = makeIpcMain();
 
@@ -265,7 +267,7 @@ describe("registerProvidersIpc", () => {
 
       settingsRepository: makeSettingsRepository(),
 
-      cloudRegistry: new CloudProviderRegistry(),
+      cloudRegistry: registry,
 
       cloudExecutionPolicy: {} as unknown as CloudExecutionPolicy,
 
@@ -302,6 +304,24 @@ describe("registerProvidersIpc", () => {
 
     // The raw secret must not be in the response.
     expect(JSON.stringify(result)).not.toContain("super-secret-key");
+  });
+
+  it("rejects credentials for providers without a registered adapter", async () => {
+    const credentialStore = makeCredentialStore();
+    const ipcMain = makeIpcMain();
+    registerProvidersIpc({
+      credentialStore,
+      settingsRepository: makeSettingsRepository(),
+      cloudRegistry: new CloudProviderRegistry(),
+      cloudExecutionPolicy: {} as unknown as CloudExecutionPolicy,
+      aiManager: {} as never,
+      activeProfileResolver: makeActiveProfileResolver("profile-1"),
+      ipcMain,
+    });
+    const handler = handlerMap(ipcMain).get(IPC_CHANNELS.PROVIDERS_SAVE_CREDENTIAL) as (event: unknown, request?: unknown) => Promise<unknown>;
+    const result = await handler({ sender: makeSender() }, { providerId: "unknown", secret: "not-a-real-key" });
+    expect(result.success).toBe(false);
+    expect(credentialStore.storeCredential).not.toHaveBeenCalled();
   });
 
   it("save-credential fails closed when no active profile", async () => {
@@ -435,6 +455,10 @@ describe("registerProvidersIpc", () => {
 
   it("set-preferred-model persists the model selection", async () => {
     const settingsRepository = makeSettingsRepository();
+    const registry = new CloudProviderRegistry();
+    registry.register(makeProvider("gemini", "Google Gemini", [
+      { modelId: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash", capabilities: { textGeneration: true } },
+    ]));
 
     const ipcMain = makeIpcMain();
 
@@ -443,7 +467,7 @@ describe("registerProvidersIpc", () => {
 
       settingsRepository,
 
-      cloudRegistry: new CloudProviderRegistry(),
+      cloudRegistry: registry,
 
       cloudExecutionPolicy: {} as unknown as CloudExecutionPolicy,
 

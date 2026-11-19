@@ -1,8 +1,10 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 import { IPC_CHANNELS } from "../../../shared/constants/events";
 
 import { registerMemoryIpc } from "../../../desktop/ipc/memory.ipc";
+
+import { activeProfileService } from "../../../desktop/main/activeProfile";
 
 import type { IpcMain } from "electron";
 
@@ -59,6 +61,12 @@ function makeRepository(): MemoryRepository {
 describe("registerMemoryIpc", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    activeProfileService.setActiveProfile("profile-1");
+  });
+
+  afterEach(() => {
+    activeProfileService.clearActiveProfile();
   });
 
   it("registers memory search, list, create, update, and delete handlers", () => {
@@ -66,7 +74,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handlers = handlerMap(ipcMain);
 
@@ -77,7 +91,7 @@ describe("registerMemoryIpc", () => {
     expect(handlers.has(IPC_CHANNELS.MEMORY_DELETE)).toBe(true);
   });
 
-  it("memory:search returns records scoped to profile", async () => {
+  it("memory:search returns records scoped to the active profile", async () => {
     const repository = makeRepository();
 
     const search = vi.fn().mockReturnValue([{ id: "mem-1" }]);
@@ -86,7 +100,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.MEMORY_SEARCH,
@@ -117,12 +137,20 @@ describe("registerMemoryIpc", () => {
     });
   });
 
-  it("memory:search rejects when no profileId is supplied", async () => {
+  it("memory:search rejects when no active profile is set", async () => {
+    activeProfileService.clearActiveProfile();
+
     const repository = makeRepository();
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.MEMORY_SEARCH,
@@ -131,14 +159,49 @@ describe("registerMemoryIpc", () => {
     const result = await handler(
       { sender: makeSender() },
 
-      { query: "React" },
+      {
+        profileId: "profile-1",
+
+        query: "React",
+      },
     );
 
     expect(result.success).toBe(false);
     expect(repository.search).not.toHaveBeenCalled();
   });
 
-  it("memory:list returns records for a profile", async () => {
+  it("memory:search rejects a profile that does not match the active profile", async () => {
+    const repository = makeRepository();
+
+    const ipcMain = makeIpcMain();
+
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
+
+    const handler = handlerMap(ipcMain).get(
+      IPC_CHANNELS.MEMORY_SEARCH,
+    ) as (event: unknown, request?: unknown) => unknown;
+
+    const result = await handler(
+      { sender: makeSender() },
+
+      {
+        profileId: "other-profile",
+
+        query: "React",
+      },
+    );
+
+    expect(result.success).toBe(false);
+    expect(repository.search).not.toHaveBeenCalled();
+  });
+
+  it("memory:list returns records for the active profile", async () => {
     const repository = makeRepository();
 
     const listByProfile = vi.fn().mockReturnValue([{ id: "mem-1" }]);
@@ -147,7 +210,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.MEMORY_LIST,
@@ -177,7 +246,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.MEMORY_CREATE,
@@ -233,7 +308,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.MEMORY_CREATE,
@@ -258,7 +339,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.MEMORY_UPDATE,
@@ -282,7 +369,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.MEMORY_DELETE,
@@ -307,7 +400,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.MEMORY_DELETE,
@@ -327,7 +426,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     const handler = handlerMap(ipcMain).get(
       IPC_CHANNELS.MEMORY_SEARCH,
@@ -343,7 +448,13 @@ describe("registerMemoryIpc", () => {
 
     const ipcMain = makeIpcMain();
 
-    const cleanup = registerMemoryIpc({ memoryRepository: repository, ipcMain });
+    const cleanup = registerMemoryIpc({
+      memoryRepository: repository,
+
+      ipcMain,
+
+      activeProfileResolver: activeProfileService,
+    });
 
     cleanup();
 

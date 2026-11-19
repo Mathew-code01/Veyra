@@ -855,3 +855,35 @@ Tests: 42 new tests (memory-repository, document-store, vector-store, onnx-embed
 **Report location:** `C:\Users\MATTHEW\Desktop\Veyra\VEYRA_BACKEND_AUDIT.md`
 
 **Recommended next task:** P2 local/cloud AI routing + free-usage enforcement (cost-aware router, ZERO_PAID_USAGE default, Nebius provider investigation).
+
+## P2 EXECUTION POLICY FOLLOW-UP — 2026-11-09
+
+The current cloud inference path is `AIManager` → `CloudAIProvider` → `CloudGateway` → registered `CloudProvider`. Before this follow-up, the gateway did not enforce pricing classification or external-processing authorization. `CloudModel.pricing` is descriptive metadata and is not sufficient authorization.
+
+The gateway now applies `CloudExecutionPolicy` to non-streaming and streaming calls before invoking a provider. The default policy denies cloud processing. Explicitly configured models are allowed only when external processing is authorized and their classification is `FREE_CONFIRMED`, or `FREE_QUOTA_LIMITED` with a functioning quota ledger; `PAID`, `UNKNOWN`, `DISABLED`, missing model IDs, and quota-ledger failures are denied.
+
+**Status: PARTIALLY VERIFIED.** Twelve tests cover the gateway boundary, confirmed-free authorization, quota reservation/denial, and the `CloudAIProvider` adapter; no real API calls were made. The full suite passes 105/105, and `npm run typecheck` plus direct core/desktop TypeScript checks pass. There is currently no production model classification, durable quota-ledger implementation, or user-facing authorization setting wired. Therefore all production cloud inference is blocked until those pieces are safely completed. This is intentionally fail-closed and does not constitute completion of P2 local-first routing or provider verification.
+
+## IMPLEMENTATION FOLLOW-UP — DOCUMENT AND MIGRATION SAFETY
+
+The following changes were made in a later local implementation pass and have
+not been committed:
+
+- `database/client.ts` uses a transactional migration ledger with SHA-256
+  checksums, rejects changed or missing applied migrations, validates required
+  schema tables, and checks foreign keys. The base migration
+  `database/migrations/0000_initial.sql` is present in the worktree but remains
+  untracked.
+- Document picker paths remain in the main process. Renderer imports use
+  sender-bound, single-use opaque handles; the main process enforces a 25 MiB
+  read bound and rejects renderer-supplied paths.
+- SQLite document size metadata is mapped from parser output. Document deletion
+  checks profile scope before removing context and candidate evidence.
+- The production `SqliteDocumentStore` is still constructed without active
+  profile scope in `desktop/main/appLifecycle.ts`; deletion therefore fails
+  closed. Candidate evidence remains in-memory and PDF/DOCX parser wiring,
+  durable evidence storage, BYOK, local model lifecycle, and remaining UI work
+  remain outstanding.
+- Targeted migration/document verification passed 30/30 tests; the earlier
+  105/105 full-suite result predates these changes. Final typecheck status is
+  recorded in `VEYRA_UNIFIED_IMPLEMENTATION_REPORT.md`.

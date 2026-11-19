@@ -163,3 +163,24 @@ export interface HardwareModelPlanResponse {
   readonly profile: SharedHardwareProfile;
   readonly plan: HardwareModelPlan;
 }
+
+export type LocalModelClassification = "highly_recommended" | "supported_with_limitations" | "not_recommended" | "unsupported";
+export interface LocalModelAssessment {
+  readonly modelId: string; readonly name: string; readonly modality: "llm" | "stt" | "vision" | "tts"; readonly runtime: string;
+  readonly quantization: string; readonly version?: string; readonly classification: LocalModelClassification;
+  readonly canLoad: boolean; readonly canRunAcceptably: boolean | null; readonly supportsConcurrentWorkload: boolean | null;
+  readonly installed: boolean; readonly ready: boolean; readonly measuredPerformance: boolean;
+  readonly minimumRamBytes: number; readonly recommendedRamBytes: number; readonly minimumVramBytes: number; readonly estimatedDiskBytes: number;
+  readonly artifact?: { readonly url: string; readonly filename: string; readonly sizeBytes: number; readonly sha256: string };
+  readonly license: { readonly name: string; readonly url?: string; readonly commercialUse: boolean; readonly notes?: string };
+  readonly reasons: readonly string[]; readonly limitations: readonly string[];
+}
+export interface HardwareAssessmentResponse {
+  readonly profile: SharedHardwareProfile; readonly models: readonly LocalModelAssessment[]; readonly localRuntimeReady: boolean;
+  readonly runtimeNames: readonly string[];
+}
+export interface ModelInstallProgress {
+  readonly modelId: string; readonly filename: string; readonly bytesDownloaded: number; readonly totalBytes: number | null;
+  readonly percentage: number | null; readonly speedBytesPerSecond: number;
+  readonly phase: "preparing" | "downloading" | "verifying" | "completed";
+}

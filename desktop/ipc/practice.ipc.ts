@@ -17,6 +17,7 @@ import type {
   PracticeSessionState,
 } from "../../core/interview/practice/PracticeSessionEngine";
 import type { PracticeSessionReport } from "../../database/schema/sessions";
+import { INTERVIEW_DOMAINS } from "../../shared/constants/interviewDomains";
 
 export interface RegisterPracticeIpcOptions {
   readonly practiceEngine: PracticeSessionEngine;
@@ -50,6 +51,12 @@ export function registerPracticeIpc(options: RegisterPracticeIpcOptions): () => 
     }
     return profileId;
   };
+  const requireOwnedSession = async (event: IpcMainInvokeEvent, sessionId: string): Promise<PracticeSessionState> => {
+    const profileId = requireActiveProfile(event);
+    const session = await practiceEngine.getSessionState(sessionId);
+    if (session.profileId !== profileId) throw new Error("Practice session does not belong to the active candidate profile.");
+    return session;
+  };
 
   const createHandler = async (
     event: IpcMainInvokeEvent,
@@ -59,20 +66,24 @@ export function registerPracticeIpc(options: RegisterPracticeIpcOptions): () => 
       const profileId = requireActiveProfile(event);
       const input = assertRequestObject(rawInput);
       const targetRole = typeof input.targetRole === "string" ? input.targetRole.trim() : "";
-      if (!targetRole) {
-        return { success: false, error: new Error("Target role is required.") };
+      if (!targetRole || targetRole.length > 160) {
+        return { success: false, error: new Error("Enter a target role of 1–160 characters.") };
       }
+      const modeValues = ["behavioral", "technical", "coding", "system_design", "product", "case", "communication", "mixed"] as const;
+      const difficultyValues = ["beginner", "intermediate", "advanced"] as const;
+      const experienceValues = ["entry", "mid", "senior", "lead", "executive"] as const;
 
       const config: PracticeSessionConfig = {
         profileId,
         targetRole,
         title: typeof input.title === "string" ? input.title.trim() : undefined,
-        jobDescription: typeof input.jobDescription === "string" ? input.jobDescription.trim() : undefined,
-        domain: input.domain as any,
-        interviewType: input.interviewType as any,
-        experienceLevel: input.experienceLevel as any,
-        difficulty: input.difficulty as any,
-        questionCount: typeof input.questionCount === "number" ? input.questionCount : undefined,
+        jobDescription: typeof input.jobDescription === "string" ? input.jobDescription.trim().slice(0, 8000) : undefined,
+        domain: INTERVIEW_DOMAINS.includes(input.domain as typeof INTERVIEW_DOMAINS[number]) ? input.domain as PracticeSessionConfig["domain"] : undefined,
+        interviewType: modeValues.includes(input.interviewType as typeof modeValues[number]) ? input.interviewType as PracticeSessionConfig["interviewType"] : "mixed",
+        experienceLevel: experienceValues.includes(input.experienceLevel as typeof experienceValues[number]) ? input.experienceLevel as PracticeSessionConfig["experienceLevel"] : "mid",
+        difficulty: difficultyValues.includes(input.difficulty as typeof difficultyValues[number]) ? input.difficulty as PracticeSessionConfig["difficulty"] : "intermediate",
+        candidateId: typeof input.candidateId === "string" ? input.candidateId.trim().slice(0, 80) : undefined,
+        questionCount: typeof input.questionCount === "number" && Number.isInteger(input.questionCount) ? Math.min(20, Math.max(3, input.questionCount)) : 5,
       };
 
       const session = await practiceEngine.createSession(config);
@@ -89,11 +100,12 @@ export function registerPracticeIpc(options: RegisterPracticeIpcOptions): () => 
     rawInput: unknown,
   ): Promise<PracticeSessionResult> => {
     try {
-      requireActiveProfile(event);
+      const profileId = requireActiveProfile(event);
       const input = assertRequestObject(rawInput);
       const sessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
       if (!sessionId) return { success: false, error: new Error("Session ID is required.") };
       const session = await practiceEngine.getSessionState(sessionId);
+      if (session.profileId !== profileId) throw new Error("Practice session does not belong to the active candidate profile.");
       return { success: true, data: session };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error : new Error("Failed to retrieve practice session.") };
@@ -125,6 +137,9 @@ export function registerPracticeIpc(options: RegisterPracticeIpcOptions): () => 
       if (!sessionId || !questionId) {
         return { success: false, error: new Error("Session ID and Question ID are required.") };
       }
+      const session = await requireOwnedSession(event, sessionId);
+      if (session.status !== "active") return { success: false, error: new Error("Resume this practice session before submitting an answer.") };
+      if (typeof input.answerText !== "string" || !input.answerText.trim() || input.answerText.length > 12000) return { success: false, error: new Error("Answer must contain 1–12,000 characters.") };
       const result = await practiceEngine.submitAnswer(sessionId, questionId, text);
       return { success: true, data: result };
     } catch (error) {
@@ -137,10 +152,10 @@ export function registerPracticeIpc(options: RegisterPracticeIpcOptions): () => 
     rawInput: unknown,
   ): Promise<PracticeQuestionIpcResult> => {
     try {
-      requireActiveProfile(event);
       const input = assertRequestObject(rawInput);
       const sessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
       if (!sessionId) return { success: false, error: new Error("Session ID is required.") };
+      await requireOwnedSession(event, sessionId);
       const nextQ = await practiceEngine.nextQuestion(sessionId);
       return { success: true, data: nextQ };
     } catch (error) {
@@ -153,10 +168,10 @@ export function registerPracticeIpc(options: RegisterPracticeIpcOptions): () => 
     rawInput: unknown,
   ): Promise<PracticeSessionResult> => {
     try {
-      requireActiveProfile(event);
       const input = assertRequestObject(rawInput);
       const sessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
       if (!sessionId) return { success: false, error: new Error("Session ID is required.") };
+      await requireOwnedSession(event, sessionId);
       const paused = await practiceEngine.pauseSession(sessionId);
       return { success: true, data: paused };
     } catch (error) {
@@ -169,10 +184,10 @@ export function registerPracticeIpc(options: RegisterPracticeIpcOptions): () => 
     rawInput: unknown,
   ): Promise<PracticeSessionResult> => {
     try {
-      requireActiveProfile(event);
       const input = assertRequestObject(rawInput);
       const sessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
       if (!sessionId) return { success: false, error: new Error("Session ID is required.") };
+      await requireOwnedSession(event, sessionId);
       const resumed = await practiceEngine.resumeSession(sessionId);
       return { success: true, data: resumed };
     } catch (error) {
@@ -185,14 +200,30 @@ export function registerPracticeIpc(options: RegisterPracticeIpcOptions): () => 
     rawInput: unknown,
   ): Promise<PracticeReportIpcResult> => {
     try {
-      requireActiveProfile(event);
+      const profileId = requireActiveProfile(event);
       const input = assertRequestObject(rawInput);
       const sessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
       if (!sessionId) return { success: false, error: new Error("Session ID is required.") };
+      const session = await practiceEngine.getSessionState(sessionId);
+      if (session.profileId !== profileId) throw new Error("Practice session does not belong to the active candidate profile.");
       const report = await practiceEngine.completeSession(sessionId);
       return { success: true, data: report };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error : new Error("Failed to complete session.") };
+    }
+  };
+
+  const reportHandler = async (event: IpcMainInvokeEvent, rawInput: unknown): Promise<PracticeReportIpcResult> => {
+    try {
+      const profileId = requireActiveProfile(event);
+      const input = assertRequestObject(rawInput);
+      const sessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
+      if (!sessionId) return { success: false, error: new Error("Session ID is required.") };
+      const session = await practiceEngine.getSessionState(sessionId);
+      if (session.profileId !== profileId) throw new Error("Practice session does not belong to the active candidate profile.");
+      return { success: true, data: practiceEngine.getSessionReport(sessionId) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error : new Error("Failed to retrieve practice report.") };
     }
   };
 
@@ -204,7 +235,7 @@ export function registerPracticeIpc(options: RegisterPracticeIpcOptions): () => 
   ipcMain.handle(IPC_CHANNELS.PRACTICE_PAUSE_SESSION, pauseHandler);
   ipcMain.handle(IPC_CHANNELS.PRACTICE_RESUME_SESSION, resumeHandler);
   ipcMain.handle(IPC_CHANNELS.PRACTICE_COMPLETE_SESSION, completeHandler);
-  ipcMain.handle(IPC_CHANNELS.PRACTICE_GET_REPORT, completeHandler);
+  ipcMain.handle(IPC_CHANNELS.PRACTICE_GET_REPORT, reportHandler);
 
   return () => {
     ipcMain.removeHandler(IPC_CHANNELS.PRACTICE_CREATE_SESSION);

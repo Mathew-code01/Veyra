@@ -16,6 +16,10 @@ export function QuestionPractice() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [statusMsg, setStatusMsg] = useState<string>();
+  const [targetRole, setTargetRole] = useState("");
+  const [domain, setDomain] = useState("general_employment");
+  const [interviewType, setInterviewType] = useState("mixed");
+  const [questionCount, setQuestionCount] = useState(5);
 
   const api = (window as any).veyra?.practice;
   const currentQuestion = state?.currentQuestion;
@@ -39,7 +43,7 @@ export function QuestionPractice() {
     setBusy(true); setError(undefined); setStatusMsg(undefined); setResult(undefined); setReport(undefined);
     try {
       if (!api) throw new Error("Practice API unavailable.");
-      const created = await api.createSession({ targetRole: "Interview Candidate", questionCount: 5, interviewType: "mixed", domain: "general_employment" });
+      const created = await api.createSession({ targetRole: targetRole.trim() || "Interview Candidate", questionCount, interviewType, domain });
       if (!created?.success || !created?.data?.id) throw new Error(created?.error?.message ?? "Failed to create practice session.");
       await load(created.data.id);
       setStatusMsg("Practice session started.");
@@ -86,7 +90,7 @@ export function QuestionPractice() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Practice Interview</h1>
-          <p className="mt-2 text-sm text-zinc-500">Real practice session via Electron IPC and SQLite-backed practice engine. Evaluations are engine-generated from your submitted answer text.</p>
+          <p className="mt-2 max-w-2xl text-sm text-zinc-600">Practice with VEYRA’s local interview engine. Questions and feedback are generated from your session and submitted answers.</p>
         </div>
         <div className="flex gap-2">
           <Link to="/interview/setup"><Button variant="outline">Setup</Button></Link>
@@ -98,18 +102,25 @@ export function QuestionPractice() {
       {statusMsg && <p role="status" className="mt-4 text-sm text-emerald-400">{statusMsg}</p>}
       {!api && <p className="mt-4 text-sm text-amber-400">Desktop practice API not available (run in the Veyra desktop app).</p>}
 
+      {!state && <Card className="mt-6 border-slate-200 bg-white"><CardHeader><h2 className="font-semibold">Prepare a practice session</h2><p className="text-sm text-slate-500">Choose the focus and role. Your candidate documents remain on this device unless you choose a cloud provider.</p></CardHeader><CardContent className="grid gap-4 pt-1 sm:grid-cols-2">
+        <label className="text-sm font-medium text-slate-700">Target role<input value={targetRole} onChange={(event) => setTargetRole(event.target.value)} placeholder="e.g. Product designer" className="mt-1.5 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-slate-900 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" /></label>
+        <label className="text-sm font-medium text-slate-700">Practice focus<select value={interviewType} onChange={(event) => setInterviewType(event.target.value)} className="mt-1.5 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-slate-900 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"><option value="mixed">Mixed interview</option><option value="behavioral">Behavioral</option><option value="technical">Technical</option></select></label>
+        <label className="text-sm font-medium text-slate-700">Domain<input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="general_employment" className="mt-1.5 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-slate-900 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" /></label>
+        <label className="text-sm font-medium text-slate-700">Questions<select value={questionCount} onChange={(event) => setQuestionCount(Number(event.target.value))} className="mt-1.5 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-slate-900 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"><option value={3}>3 questions</option><option value={5}>5 questions</option><option value={8}>8 questions</option></select></label>
+      </CardContent></Card>}
+
       {state && (
         <div className="mt-6 grid gap-4 lg:grid-cols-3">
-          <Card className="lg:col-span-2"><CardHeader><h2 className="font-medium">Current question</h2></CardHeader><CardContent className="pt-2 space-y-4">
-            <div className="text-sm text-zinc-400">Session: <span className="text-zinc-200">{state.id}</span> · Status: <span className="text-zinc-200">{state.status}</span> · {state.questionsAnswered}/{state.questionCount} answered · Role: {state.targetRole ?? "—"} · Domain: {state.domain ?? "—"}</div>
+          <Card className="lg:col-span-2 border-slate-200 bg-white"><CardHeader><h2 className="font-semibold">Current question</h2></CardHeader><CardContent className="space-y-4 pt-2">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500"><span>Status: <strong className="text-slate-800">{state.status}</strong></span><span>{state.questionsAnswered}/{state.questionCount} answered</span><span>Role: {state.targetRole ?? "—"}</span></div>
             {currentQuestion ? (
               <>
-                <div className="rounded-lg border border-border bg-black/20 p-4">
-                  <div className="text-xs text-zinc-500 mb-2">Q{currentQuestion.sequenceNumber} {currentQuestion.isFollowUp ? "(follow-up)" : ""} · {currentQuestion.type}</div>
-                  <p className="text-base text-white leading-7">{currentQuestion.text}</p>
+                <div className="rounded-xl border border-indigo-100 bg-[#f7f6ff] p-5">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-indigo-700">Question {currentQuestion.sequenceNumber} {currentQuestion.isFollowUp ? "· Follow-up" : ""} · {currentQuestion.type}</div>
+                  <p className="text-base leading-7 text-slate-900">{currentQuestion.text}</p>
                 </div>
-                <label className="block text-sm text-zinc-400">Your answer
-                  <textarea className="mt-2 min-h-40 w-full rounded-lg border border-border bg-black/20 px-3 py-2 text-white" value={answerText} onChange={(e)=>setAnswerText(e.target.value)} placeholder="Type your response. Ground it in your real experience; Veyra does not invent achievements." disabled={state.status !== "active"} />
+                <label className="block text-sm font-medium text-slate-700">Your answer
+                  <textarea className="mt-2 min-h-40 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-slate-900 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100" value={answerText} onChange={(e)=>setAnswerText(e.target.value)} placeholder="Type your response. Ground it in your real experience; Veyra does not invent achievements." disabled={state.status !== "active"} />
                 </label>
                 <div className="flex flex-wrap gap-2">
                   <Button onClick={() => void submit()} loading={busy} disabled={!answerText.trim() || state.status !== "active"}>Submit answer</Button>
@@ -123,7 +134,7 @@ export function QuestionPractice() {
             )}
           </CardContent></Card>
 
-          <Card><CardHeader><h2 className="font-medium">Feedback & follow-up</h2></CardHeader><CardContent className="pt-2 space-y-3 text-sm">
+          <Card className="border-slate-200 bg-white"><CardHeader><h2 className="font-semibold">Feedback & follow-up</h2></CardHeader><CardContent className="space-y-3 pt-2 text-sm text-slate-700">
             {!result && !report && <p className="text-zinc-500">Submit an answer to see evaluation, communication feedback, and follow-up suggestions.</p>}
             {result?.evaluation && (
               <div className="space-y-2">

@@ -1,16 +1,18 @@
 // client/src/components/layout/Sidebar.tsx
 
 import {
-  BarChart3,
-  Brain,
+
   FileText,
   FolderKanban,
   History,
   Mic,
+  BrainCircuit,
   LayoutDashboard,
   Settings,
   Sparkles,
   UserRound,
+  CircleUserRound,
+  ClipboardCheck,
 } from "lucide-react";
 
 import { NavLink } from "react-router-dom";
@@ -27,6 +29,17 @@ const navigation = [
     label: "Preparation",
     path: "/preparation",
     icon: Sparkles,
+  },
+  {
+    label: "Practice",
+    path: "/practice",
+    icon: BrainCircuit,
+  },
+  {
+    label: "Live copilot",
+    path: "/live",
+    icon: Mic,
+
   },
   {
     label: "Documents",
@@ -48,25 +61,21 @@ const navigation = [
     path: "/history",
     icon: History,
   },
-  {
-    label: "Analytics",
-    path: "/analytics",
-    icon: BarChart3,
-  },
+  { label: "Assessments", path: "/assessments", icon: ClipboardCheck },
+  { label: "Account", path: "/account", icon: CircleUserRound },
 ];
 
 export function Sidebar() {
   return (
-    <aside className="hidden h-screen w-64 shrink-0 border-r border-border bg-black/20 lg:flex lg:flex-col">
+    <>
+    <aside className="hidden h-screen w-[248px] shrink-0 border-r border-border bg-white/85 lg:flex lg:flex-col">
       <div className="flex h-16 items-center gap-3 border-b border-border px-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white">
-          <Brain size={17} />
-        </div>
+        <img src="/favicon.svg" alt="" className="h-8 w-8 rounded-lg" />
 
         <div>
           <p className="text-sm font-semibold">Veyra</p>
 
-          <p className="text-[10px] text-zinc-500">Interview Copilot</p>
+          <p className="text-[10px] text-slate-500">Interview Copilot</p>
         </div>
       </div>
 
@@ -84,8 +93,8 @@ export function Sidebar() {
                   "flex h-10 items-center gap-3 rounded-lg px-3",
                   "text-sm transition-colors",
                   isActive
-                    ? "bg-primary/10 text-primary"
-                    : "text-zinc-400 hover:bg-white/5 hover:text-white",
+                    ? "bg-indigo-50 text-indigo-800 ring-1 ring-indigo-100"
+                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-950",
                 )
               }
             >
@@ -105,8 +114,8 @@ export function Sidebar() {
               "flex h-10 items-center gap-3 rounded-lg px-3",
               "text-sm transition-colors",
               isActive
-                ? "bg-primary/10 text-primary"
-                : "text-zinc-400 hover:bg-white/5 hover:text-white",
+                ? "bg-indigo-50 text-indigo-800 ring-1 ring-indigo-100"
+                : "text-slate-500 hover:bg-slate-100 hover:text-slate-950",
             )
           }
         >
@@ -116,5 +125,14 @@ export function Sidebar() {
         </NavLink>
       </div>
     </aside>
+    <nav aria-label="Primary navigation" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-6 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] pt-2 shadow-[0_-8px_28px_-24px_rgba(15,23,42,0.45)] backdrop-blur lg:hidden">
+      {navigation.filter((item) => ["/", "/practice", "/assessments", "/live", "/history", "/account"].includes(item.path)).map((item) => {
+        const Icon = item.icon;
+        return <NavLink key={item.path} to={item.path} end={item.path === "/"} className={({ isActive }) => cn("flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1.5 text-[10px] font-medium", isActive ? "text-indigo-800" : "text-slate-500")}>
+          <Icon size={18} /><span className="max-w-full truncate">{item.label}</span>
+        </NavLink>;
+      })}
+    </nav>
+    </>
   );
 }

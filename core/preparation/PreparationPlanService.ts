@@ -20,7 +20,7 @@ import type {
   PreparationPlan,
   MockInterviewConfig,
   CompanyResearch,
-} from "../../../shared/types/preparation";
+} from "../../shared/types/preparation";
 
 export interface PreparationPlanInput {
   readonly candidateId: string;
@@ -170,3 +170,4 @@ export class PreparationPlanService {
     };
   }
 }
+

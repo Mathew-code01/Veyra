@@ -146,6 +146,92 @@ describe("SqliteVectorStore", () => {
     expect(doc1.every((r) => r.record.sourceId === "doc-1")).toBe(true);
   });
 
+  it("applies scope filters before selecting the final top-k results", async () => {
+    const store = new SqliteVectorStore(getTestDatabase().sqlite);
+    await store.upsert([
+      {
+        ...record({ id: "wrong-scope-1", vector: vectorA }),
+        scope: { profileId: "other-profile" },
+      },
+      {
+        ...record({ id: "wrong-scope-2", vector: vectorA }),
+        scope: { profileId: "other-profile" },
+      },
+      {
+        ...record({ id: "matching", vector: vectorA }),
+        scope: { profileId: "profile-1" },
+      },
+    ]);
+
+    const results = await store.search(vectorA, {
+      limit: 1,
+      minScore: 0,
+      scope: { profileId: "profile-1" },
+    });
+
+    expect(results.map((result) => result.record.id)).toEqual(["matching"]);
+  });
+
+  it("searches keyword-only records with scope filtering and no vector", async () => {
+    const store = new SqliteVectorStore(getTestDatabase().sqlite);
+    await store.upsert([
+      {
+        ...record({
+          id: "other-profile",
+          text: "Candidate has TypeScript experience",
+          vector: [],
+          metadata: { embeddingModel: "keyword-only" },
+        }),
+        scope: { profileId: "other-profile" },
+      },
+      {
+        ...record({
+          id: "matching-profile",
+          text: "Candidate has TypeScript and React experience",
+          vector: [],
+          metadata: { embeddingModel: "keyword-only" },
+        }),
+        scope: { profileId: "profile-1" },
+      },
+    ]);
+
+    const results = await store.searchText("TypeScript React", {
+      limit: 1,
+      minScore: 0,
+      scope: { profileId: "profile-1" },
+    });
+
+    expect(results.map((result) => result.record.id)).toEqual([
+      "matching-profile",
+    ]);
+    expect(results[0].record.vector).toEqual([]);
+    expect(results[0].record.metadata.embeddingModel).toBe("keyword-only");
+  });
+
+  it("restricts semantic search to vectors from the query model", async () => {
+    const store = new SqliteVectorStore(getTestDatabase().sqlite);
+    await store.upsert([
+      record({
+        id: "model-a",
+        vector: vectorA,
+        metadata: { embeddingModel: "model-a" },
+      }),
+      record({
+        id: "model-b",
+        vector: vectorA,
+        metadata: { embeddingModel: "model-b" },
+      }),
+    ]);
+
+    const results = await store.search(vectorA, {
+      limit: 10,
+      minScore: 0,
+      embeddingModel: "model-a",
+    });
+
+    expect(results.map((result) => result.record.id)).toEqual(["model-a"]);
+  });
+
   it("returns empty when nothing matches minScore", async () => {
     const store = new SqliteVectorStore(getTestDatabase().sqlite);
 

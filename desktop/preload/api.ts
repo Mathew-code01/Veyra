@@ -90,6 +90,11 @@ import type {
 } from "../ipc/candidate.ipc";
 
 import type {
+  WorkspaceProfileCreateRequest,
+  WorkspaceProfileSelectionRequest,
+} from "../ipc/workspace-profile.ipc";
+
+import type {
   ProvidersGetStatusResult,
   ProvidersSaveCredentialRequest,
   ProvidersSaveCredentialResult,
@@ -129,6 +134,8 @@ import type {
 import type {
   HardwareModelPlanResponse,
   HardwareSnapshotResponse,
+  HardwareAssessmentResponse,
+  ModelInstallProgress,
 } from "../../shared/types/hardware";
 
 import type { VeyraDesktopAPI, WindowOperationResult } from "./types";
@@ -203,6 +210,21 @@ const hardwareApi: VeyraDesktopAPI["hardware"] = Object.freeze({
       HARDWARE_IPC_CHANNELS.GET_MODEL_PLAN,
       normalized,
     ) as Promise<HardwareModelPlanResponse>;
+  },
+  getAssessment: async (request?: HardwareRequest): Promise<HardwareAssessmentResponse> => ipcRenderer.invoke(HARDWARE_IPC_CHANNELS.GET_ASSESSMENT, normalizeHardwareRequest(request)) as Promise<HardwareAssessmentResponse>,
+  installModel: async (modelId: string): Promise<{ readonly installed: boolean }> => {
+    if (typeof modelId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(modelId)) throw new Error("Invalid model selection.");
+    return ipcRenderer.invoke(HARDWARE_IPC_CHANNELS.INSTALL_MODEL, { modelId });
+  },
+  uninstallModel: async (modelId: string): Promise<{ readonly removed: boolean }> => {
+    if (typeof modelId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(modelId)) throw new Error("Invalid model selection.");
+    return ipcRenderer.invoke(HARDWARE_IPC_CHANNELS.UNINSTALL_MODEL, { modelId });
+  },
+  cancelInstall: async (modelId: string): Promise<{ readonly cancelled: boolean }> => ipcRenderer.invoke(HARDWARE_IPC_CHANNELS.CANCEL_INSTALL, { modelId }),
+  onInstallProgress: (callback: (progress: ModelInstallProgress) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: ModelInstallProgress) => callback(progress);
+    ipcRenderer.on(HARDWARE_IPC_CHANNELS.INSTALL_PROGRESS, listener);
+    return () => ipcRenderer.removeListener(HARDWARE_IPC_CHANNELS.INSTALL_PROGRESS, listener);
   },
 });
 
@@ -483,6 +505,23 @@ const candidateApi: VeyraDesktopAPI["candidate"] = Object.freeze({
   deleteRecord: async (request: CandidateRecordRequest & { readonly recordId: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.CANDIDATE_RECORD_DELETE, request) as ReturnType<
       VeyraDesktopAPI["candidate"]["deleteRecord"]
+    >,
+});
+
+const workspaceProfilesApi: VeyraDesktopAPI["workspaceProfiles"] = Object.freeze({
+  list: async () =>
+    ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_PROFILE_LIST) as ReturnType<
+      VeyraDesktopAPI["workspaceProfiles"]["list"]
+    >,
+
+  activate: async (request: WorkspaceProfileSelectionRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_PROFILE_ACTIVATE, request) as ReturnType<
+      VeyraDesktopAPI["workspaceProfiles"]["activate"]
+    >,
+
+  create: async (request: WorkspaceProfileCreateRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.WORKSPACE_PROFILE_CREATE, request) as ReturnType<
+      VeyraDesktopAPI["workspaceProfiles"]["create"]
     >,
 });
 
@@ -845,6 +884,8 @@ export const api: VeyraDesktopAPI = Object.freeze({
 
   candidate: candidateApi,
 
+  workspaceProfiles: workspaceProfilesApi,
+
   providers: providersApi,
 
   practice: Object.freeze({
@@ -868,6 +909,74 @@ export const api: VeyraDesktopAPI = Object.freeze({
     getState: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_GET_STATE, request),
     processQuestion: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_PROCESS_QUESTION, request),
     submitAnswer: (request: unknown) => ipcRenderer.invoke(IPC_CHANNELS.RUNTIME_SUBMIT_ANSWER, request),
+  }),
+  platform: Object.freeze({
+    getState: () => ipcRenderer.invoke(IPC_CHANNELS.PLATFORM_GET_STATE),
+    signIn: (request: { email: string; password: string }) => ipcRenderer.invoke(IPC_CHANNELS.PLATFORM_SIGN_IN, request.email, request.password),
+    signOut: () => ipcRenderer.invoke(IPC_CHANNELS.PLATFORM_SIGN_OUT),
+    registerDevice: () => ipcRenderer.invoke(IPC_CHANNELS.PLATFORM_REGISTER_DEVICE),
+    refreshAccount: () => ipcRenderer.invoke(IPC_CHANNELS.PLATFORM_REFRESH_ACCOUNT),
+    browserSignIn: () => ipcRenderer.invoke(IPC_CHANNELS.PLATFORM_BROWSER_SIGN_IN),
+    cancelBrowserSignIn: () => ipcRenderer.invoke(IPC_CHANNELS.PLATFORM_CANCEL_BROWSER_SIGN_IN),
+    updateProfile: (profile: { displayName?: string; locale?: string }) => ipcRenderer.invoke(IPC_CHANNELS.PLATFORM_UPDATE_PROFILE, profile),
+    openWebsite: (destination: "account" | "billing") => ipcRenderer.invoke(IPC_CHANNELS.PLATFORM_OPEN_WEBSITE, destination),
+  }),
+  overlay: Object.freeze({
+    show: (request?: { readonly sessionId?: string }): Promise<{ readonly success: boolean; readonly error?: Error }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OVERLAY_SHOW, request) as Promise<{ readonly success: boolean; readonly error?: Error }>,
+
+    hide: (): Promise<{ readonly success: boolean; readonly error?: Error }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OVERLAY_HIDE) as Promise<{ readonly success: boolean; readonly error?: Error }>,
+
+    toggle: (): Promise<{
+      readonly success: boolean;
+      readonly data?: { readonly visible: boolean; readonly opacity: number; readonly alwaysOnTop: boolean };
+      readonly error?: Error;
+    }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OVERLAY_TOGGLE) as Promise<{
+        readonly success: boolean;
+        readonly data?: { readonly visible: boolean; readonly opacity: number; readonly alwaysOnTop: boolean };
+        readonly error?: Error;
+      }>,
+
+    getState: (): Promise<{
+      readonly success: boolean;
+      readonly data?: {
+        readonly visible: boolean;
+        readonly opacity: number;
+        readonly alwaysOnTop: boolean;
+        readonly x?: number;
+        readonly y?: number;
+        readonly width?: number;
+        readonly height?: number;
+      };
+      readonly error?: Error;
+    }> =>
+      ipcRenderer.invoke("overlay:get-state") as Promise<{
+        readonly success: boolean;
+        readonly data?: {
+          readonly visible: boolean;
+          readonly opacity: number;
+          readonly alwaysOnTop: boolean;
+          readonly x?: number;
+          readonly y?: number;
+          readonly width?: number;
+          readonly height?: number;
+        };
+        readonly error?: Error;
+      }>,
+
+    setOpacity: (opacity: number): Promise<{ readonly success: boolean; readonly error?: Error }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OVERLAY_UPDATE, { opacity }) as Promise<{ readonly success: boolean; readonly error?: Error }>,
+
+    setAlwaysOnTop: (alwaysOnTop: boolean): Promise<{ readonly success: boolean; readonly error?: Error }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OVERLAY_UPDATE, { alwaysOnTop }) as Promise<{ readonly success: boolean; readonly error?: Error }>,
+
+    setPosition: (x: number, y: number): Promise<{ readonly success: boolean; readonly error?: Error }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OVERLAY_UPDATE, { x, y }) as Promise<{ readonly success: boolean; readonly error?: Error }>,
+
+    setSize: (width: number, height: number): Promise<{ readonly success: boolean; readonly error?: Error }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OVERLAY_UPDATE, { width, height }) as Promise<{ readonly success: boolean; readonly error?: Error }>,
   }),
   audio: Object.freeze(audioApi),
   audioRuntime: Object.freeze(audioRuntimeApi),

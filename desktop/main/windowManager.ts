@@ -25,7 +25,7 @@ let overlayCleanup: (() => void) | null = null;
 
 const isDevelopment = process.env.NODE_ENV === "development";
 
-const rendererUrl = process.env.VEYRA_RENDERER_URL ?? "http://localhost:5173";
+const rendererUrl = process.env.VEYRA_RENDERER_URL ?? "http://localhost:5174";
 
 export function createMainWindow(): BrowserWindow {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -41,8 +41,8 @@ export function createMainWindow(): BrowserWindow {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
-    minWidth: 1100,
-    minHeight: 700,
+    minWidth: 360,
+    minHeight: 520,
 
     show: false,
 
@@ -264,8 +264,8 @@ async function loadRenderer(window: BrowserWindow): Promise<void> {
 function isAllowedRendererUrl(url: string): boolean {
   if (isDevelopment) {
     return (
-      url.startsWith("http://localhost:5173") ||
-      url.startsWith("http://127.0.0.1:5173")
+      url.startsWith("http://localhost:5174") ||
+      url.startsWith("http://127.0.0.1:5174")
     );
   }
 
