@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/Badge";
 
 export function Header() {
   return (
-    <header className="flex h-16 shrink-0 items-center justify-between border-b border-border bg-white/85 px-4 backdrop-blur-xl sm:px-6">
+    <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-white px-4 sm:px-6">
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2 text-xs text-slate-500">
           <Command size={13} />

@@ -8,6 +8,10 @@ const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig({
   plugins: [react()],
 
+  // Renderer assets live beside the client source. Serve and package that
+  // existing asset tree rather than falling back to the SPA HTML document.
+  publicDir: path.resolve(projectRoot, "./client/public"),
+
   base: "./",
 
   resolve: {

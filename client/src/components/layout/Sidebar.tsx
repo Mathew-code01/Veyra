@@ -68,9 +68,9 @@ const navigation = [
 export function Sidebar() {
   return (
     <>
-    <aside className="hidden h-screen w-[248px] shrink-0 border-r border-border bg-white/85 lg:flex lg:flex-col">
+    <aside className="hidden h-screen w-[236px] shrink-0 border-r border-border bg-white lg:flex lg:flex-col">
       <div className="flex h-16 items-center gap-3 border-b border-border px-5">
-        <img src="/favicon.svg" alt="" className="h-8 w-8 rounded-lg" />
+        <img src="./veyra-mark.svg" alt="" className="h-8 w-8 shrink-0" />
 
         <div>
           <p className="text-sm font-semibold">Veyra</p>
@@ -93,7 +93,7 @@ export function Sidebar() {
                   "flex h-10 items-center gap-3 rounded-lg px-3",
                   "text-sm transition-colors",
                   isActive
-                    ? "bg-indigo-50 text-indigo-800 ring-1 ring-indigo-100"
+                    ? "bg-[#EAE4FF] text-[#5638C4] ring-1 ring-[#D6CBFF]"
                     : "text-slate-500 hover:bg-slate-100 hover:text-slate-950",
                 )
               }
@@ -114,7 +114,7 @@ export function Sidebar() {
               "flex h-10 items-center gap-3 rounded-lg px-3",
               "text-sm transition-colors",
               isActive
-                ? "bg-indigo-50 text-indigo-800 ring-1 ring-indigo-100"
+                ? "bg-[#EAE4FF] text-[#5638C4] ring-1 ring-[#D6CBFF]"
                 : "text-slate-500 hover:bg-slate-100 hover:text-slate-950",
             )
           }

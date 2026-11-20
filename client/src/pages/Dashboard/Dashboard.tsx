@@ -1,87 +1,152 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Brain, FileText, History, Mic, Settings, Sparkles } from "lucide-react";
+import { ArrowRight, Cpu, History, Mic, ShieldCheck, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { PageContainer } from "@/components/layout/PageContainer";
 
+type ProviderStatus = {
+  executionMode: string;
+  providers: readonly { providerId: string; configured: boolean }[];
+};
+
+type DashboardSession = {
+  id: string;
+  title?: string;
+  targetRole?: string;
+  status?: string;
+  questionsAnswered?: number;
+  questionCount?: number;
+  domain?: string;
+};
+
 export function Dashboard() {
-  const [recent, setRecent] = useState<readonly any[]>([]);
-  const [provider, setProvider] = useState<any>();
-  const [statusNote, setStatusNote] = useState<string>();
+  const [recent, setRecent] = useState<readonly DashboardSession[]>([]);
+  const [provider, setProvider] = useState<ProviderStatus>();
+  const [providerError, setProviderError] = useState<string>();
+  const [hardware, setHardware] = useState<{ localRuntimeReady: boolean; runtimeNames: readonly string[] }>();
+  const [hardwareError, setHardwareError] = useState<string>();
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const practice = (window as any).veyra?.practice;
-        if (practice?.listSessions) {
-          const res = await practice.listSessions({});
-          if (!cancelled && res?.success) setRecent((res.data ?? []).slice(0, 5));
+    void (async () => {
+      const practice = window.veyra?.practice;
+      if (practice?.listSessions) {
+        try {
+          const result = await practice.listSessions({});
+          if (!cancelled && result.success) setRecent((result.data ?? []).slice(0, 5));
+        } catch {
+          // The session panel keeps its unavailable state when IPC fails.
+        } finally {
+          if (!cancelled) setSessionsLoaded(true);
         }
-      } catch { /* best-effort */ }
-      try {
-        const providers = (window as any).veyra?.providers;
-        if (providers?.getStatus) {
-          const res = await providers.getStatus();
-          if (!cancelled && res?.success) setProvider(res.data);
+      } else {
+        setSessionsLoaded(true);
+      }
+
+      const providers = window.veyra?.providers;
+      if (providers?.getStatus) {
+        try {
+          const result = await providers.getStatus();
+          if (!result.success || !result.data) throw new Error(result.error?.message);
+          if (!cancelled) setProvider(result.data);
+        } catch (error) {
+          if (!cancelled) setProviderError(error instanceof Error ? error.message : "Provider status is unavailable.");
         }
-      } catch { /* best-effort */ }
-      if (!cancelled) setStatusNote("Live capture, transcription and vision depend on available hardware and only start when you explicitly enable them.");
+      } else if (!cancelled) {
+        setProviderError("Open VEYRA Desktop to load provider status.");
+      }
+
+      const hardwareApi = window.veyra?.hardware;
+      if (hardwareApi?.getAssessment) {
+        try {
+          const result = await hardwareApi.getAssessment();
+          if (!cancelled) setHardware({ localRuntimeReady: result.localRuntimeReady, runtimeNames: result.runtimeNames });
+        } catch (error) {
+          if (!cancelled) setHardwareError(error instanceof Error ? error.message : "Hardware assessment is unavailable.");
+        }
+      } else if (!cancelled) {
+        setHardwareError("Hardware assessment requires VEYRA Desktop.");
+      }
     })();
     return () => { cancelled = true; };
   }, []);
 
-  const executionMode = provider?.executionMode ?? "unknown";
+  const configuredProviders = provider?.providers.filter((item) => item.configured).length;
+  const providerCount = provider?.providers.length;
 
   return (
     <PageContainer>
-      <section className="relative isolate mb-8 overflow-hidden rounded-3xl border border-indigo-100 bg-gradient-to-br from-white via-white to-indigo-50 p-6 shadow-[0_24px_70px_-50px_rgba(49,46,129,0.45)] sm:p-9">
-        <div className="relative z-10 max-w-3xl">
-          <Badge variant="info"><Mic size={11} />Interview workspace</Badge>
-          <h1 className="mt-4 text-3xl font-semibold tracking-[-0.035em] text-slate-950 sm:text-4xl">Prepare with context.<br />Perform with confidence.</h1>
-          <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
-            Set up a focused practice session, organize the experience you want to draw on, and review your progress in one private desktop workspace.
-          </p>
-          <div className="mt-6 flex flex-wrap gap-3">
-            <Link to="/interview/setup"><Button>Start a practice session <ArrowRight size={16} /></Button></Link>
-            <Link to="/preparation"><Button variant="outline">Preparation setup</Button></Link>
-            <Link to="/documents"><Button variant="outline">Import documents</Button></Link>
-          </div>
+      <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-ink-subtle">Your workspace</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-[-0.02em] text-foreground">Overview</h1>
+          <p className="mt-1 text-sm text-ink-muted">Your session readiness and recent practice, in one place.</p>
         </div>
+        <div className="flex flex-wrap gap-2">
+          <Link to="/interview/setup"><Button variant="outline">Practice</Button></Link>
+          <Link to="/live"><Button>Start Live Copilot <ArrowRight size={15} /></Button></Link>
+        </div>
+      </header>
+
+      <section aria-label="Workspace status" className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <StatusCard icon={Sparkles} label="Execution mode" value={provider?.executionMode ?? (providerError ? "Unavailable" : "Loading…")} detail="Current AI preference" />
+        <StatusCard icon={ShieldCheck} label="Configured providers" value={provider ? `${configuredProviders} of ${providerCount}` : providerError ? "Unavailable" : "Loading…"} detail={providerError ?? "Credentials remain in secure desktop storage."} />
+        <StatusCard icon={Cpu} label="Local runtime" value={hardware ? hardware.localRuntimeReady ? "Ready" : "Not ready" : hardwareError ? "Unavailable" : "Checking…"} detail={hardware ? hardware.runtimeNames.length ? hardware.runtimeNames.join(", ") : "No available runtime reported." : hardwareError ?? "Checking this device…"} />
+        <StatusCard icon={Mic} label="Capture" value="User controlled" detail="Microphone and screen capture start only when you enable a feature." />
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-3">
-        <Card><CardHeader><div className="flex items-center gap-2 text-primary"><Brain size={18} /><h2 className="text-base font-semibold text-slate-950">AI / provider status</h2></div></CardHeader><CardContent className="text-sm text-slate-600 space-y-2">
-          <div>Execution mode: <span className="text-slate-800">{String(executionMode)}</span></div>
-          <div>Configured providers: <span className="text-slate-800">{(provider?.providers ?? []).filter((p:any)=>p.configured).length}</span> / {(provider?.providers ?? []).length || "not available"}</div>
-          <div className="text-xs text-slate-500">BYOK credentials stay in OS-backed main-process storage; cloud execution denied by default without consent/authorization/entitlement/quota checks.</div>
-          <Link to="/settings" className="inline-flex items-center gap-1 text-primary text-xs"><Settings size={13}/> Open settings</Link>
-        </CardContent></Card>
+      <section aria-label="Get started" className="mb-4 grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="gap-3">
+            <div className="flex items-center gap-2 text-brand-strong"><Mic size={17} /><h2 className="text-base font-semibold text-foreground">Live Copilot</h2></div>
+            <p className="text-sm leading-5 text-ink-muted">Review readiness before you choose to start capture. Microphone and screen access stay off until enabled.</p>
+            <div className="flex flex-wrap gap-2"><Badge variant="default">User controlled</Badge><Badge variant="info">Pre-flight available</Badge></div>
+            <Link to="/preparation" className="pt-1"><Button variant="secondary">Open pre-flight <ArrowRight size={14} /></Button></Link>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="gap-3">
+            <div className="flex items-center gap-2 text-brand-strong"><Sparkles size={17} /><h2 className="text-base font-semibold text-foreground">Practice Studio</h2></div>
+            <p className="text-sm leading-5 text-ink-muted">Set up a practice session, choose its format, and review feedback after you finish.</p>
+            <div className="flex flex-wrap gap-2"><Badge variant="default">Text and voice options depend on setup</Badge></div>
+            <Link to="/interview/setup" className="pt-1"><Button variant="outline">Set up practice <ArrowRight size={14} /></Button></Link>
+          </CardHeader>
+        </Card>
+      </section>
 
-        <Card className="lg:col-span-2"><CardHeader><div className="flex items-center gap-2 text-primary"><History size={18} /><h2 className="text-base font-semibold text-slate-950">Recent practice sessions</h2></div></CardHeader><CardContent className="text-sm">
-          {recent.length === 0 ? <p className="text-slate-500">No recent practice sessions found for the active profile.</p> : (
-            <ul className="space-y-2">
-              {recent.map((s:any) => (
-                <li key={s.id} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-slate-50 px-3 py-2">
-                  <div className="min-w-0"><div className="text-slate-800 truncate">{s.title ?? s.targetRole ?? s.id}</div><div className="text-xs text-slate-500">{s.status} | {s.questionsAnswered ?? 0}/{s.questionCount ?? "?"} | {s.domain ?? "not set"}</div></div>
-                  <Link to={`/history/${encodeURIComponent(s.id)}`} className="text-xs text-primary">Review</Link>
-                </li>
-              ))}
-            </ul>
+      <Card>
+        <CardHeader className="flex-row items-center justify-between">
+          <div className="flex items-center gap-2 text-brand-strong"><History size={17} /><h2 className="text-base font-semibold text-foreground">Recent sessions</h2></div>
+          <Link to="/history" className="text-xs font-medium text-brand-strong hover:underline">View history</Link>
+        </CardHeader>
+        <CardContent>
+          {!sessionsLoaded ? <p role="status" className="py-3 text-sm text-ink-subtle">Loading session history…</p> : recent.length === 0 ? (
+            <p className="py-3 text-sm text-ink-subtle">No practice sessions are available for this profile yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[560px] border-collapse text-left text-sm">
+                <thead><tr className="border-b border-border text-xs font-medium text-ink-subtle"><th className="py-2 pr-4">Session</th><th className="py-2 pr-4">Type</th><th className="py-2 pr-4">Progress</th><th className="py-2 text-right"> </th></tr></thead>
+                <tbody>{recent.map((session) => <tr key={session.id} className="border-b border-border last:border-0">
+                  <td className="max-w-[260px] truncate py-3 pr-4 font-medium text-foreground">{session.title ?? session.targetRole ?? "Practice session"}</td>
+                  <td className="py-3 pr-4 text-ink-muted">{session.domain ?? "Practice"}</td>
+                  <td className="py-3 pr-4 text-ink-muted">{session.status ?? "Saved"}{typeof session.questionsAnswered === "number" ? ` · ${session.questionsAnswered}/${session.questionCount ?? "?"}` : ""}</td>
+                  <td className="py-3 text-right"><Link to={`/history/${encodeURIComponent(session.id)}`} className="text-xs font-medium text-brand-strong hover:underline">Review</Link></td>
+                </tr>)}</tbody>
+              </table>
+            </div>
           )}
-          <div className="mt-3 flex gap-3 text-xs"><Link to="/history" className="text-primary">View history</Link><Link to="/practice" className="text-primary">Open practice workspace</Link></div>
-        </CardContent></Card>
-      </section>
-
-      <section className="mt-4 grid gap-4 md:grid-cols-3">
-        {[{title:"Candidate context",desc:"Manage profile, skills, experience and evidence used by interview guidance.",icon:Brain,path:"/profile"},{title:"Documents",desc:"Import and index resumes/job descriptions locally for grounded preparation.",icon:FileText,path:"/documents"},{title:"Live assistance",desc:"User-controlled live workspace with explicit capture/transcription status and grounded guidance.",icon:Mic,path:"/live"}].map(f=>{const Icon=f.icon; return (
-          <Link key={f.title} to={f.path} className="group"><Card className="h-full transition-colors hover:border-primary/30"><CardHeader><div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary"><Icon size={19}/></div><h2 className="mt-2 text-base font-semibold text-slate-950">{f.title}</h2></CardHeader><CardContent><p className="text-sm leading-6 text-slate-500">{f.desc}</p><div className="mt-5 flex items-center gap-2 text-xs font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">Open <ArrowRight size={13}/></div></CardContent></Card></Link>
-        );})}
-      </section>
-
-      {statusNote && <p className="mt-4 text-xs text-slate-500">{statusNote}</p>}
+        </CardContent>
+      </Card>
     </PageContainer>
   );
+}
+
+function StatusCard({ icon: Icon, label, value, detail }: { icon: typeof Sparkles; label: string; value: string; detail: string }) {
+  return <Card><CardContent className="flex min-h-[112px] gap-3 p-4">
+    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-brand-soft text-brand-strong"><Icon size={17} /></span>
+    <div className="min-w-0"><p className="text-xs text-ink-subtle">{label}</p><p className="mt-1 truncate text-base font-semibold text-foreground">{value}</p><p className="mt-1 line-clamp-2 text-xs leading-4 text-ink-subtle">{detail}</p></div>
+  </CardContent></Card>;
 }

@@ -7,24 +7,50 @@
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
 
-  --color-background: #f7f8fc;
-  --color-foreground: #111827;
+  --color-background: #F7F8FC;
+  --color-foreground: #0F1B3D;
 
-  --color-card: #ffffff;
-  --color-card-foreground: #111827;
+  --color-card: #FFFFFF;
+  --color-card-foreground: #0F1B3D;
 
-  --color-muted: #f1f3f8;
-  --color-muted-foreground: #647084;
+  --color-muted: #EEF0F6;
+  --color-muted-foreground: #6B7694;
 
-  --color-border: #e2e6ef;
+  --color-border: #E4E7F0;
 
-  --color-primary: #5145cd;
+  --color-primary: #6b4fe0;
   --color-primary-foreground: #ffffff;
 
-  --color-success: #16865d;
-  --color-warning: #a9650b;
-  --color-danger: #c33d4b;
-  --color-info: #315fbd;
+  --color-success: #1F8A5B;
+  --color-success-surface: #E6F5EE;
+  --color-warning: #9A6200;
+  --color-warning-surface: #FFF4DC;
+  --color-danger: #C23B3B;
+  --color-danger-surface: #FDECEC;
+  --color-info: #2B6CB0;
+  --color-info-surface: #E8F1FB;
+  --color-brand-soft: #F5F2FF;
+  --color-brand-muted: #D6CBFF;
+  --color-brand-strong: #5638C4;
+  --color-ink-muted: #3B4766;
+  --color-ink-subtle: #6B7694;
+}
+
+:root {
+  --veyra-space-1: 4px;
+  --veyra-space-2: 8px;
+  --veyra-space-3: 12px;
+  --veyra-space-4: 16px;
+  --veyra-space-5: 20px;
+  --veyra-space-6: 24px;
+  --veyra-space-7: 28px;
+  --veyra-space-8: 32px;
+  --veyra-radius-control: 10px;
+  --veyra-radius-card: 12px;
+  --veyra-sidebar-width: 236px;
+  --veyra-sidebar-compact-width: 68px;
+  --veyra-titlebar-height: 40px;
+  --veyra-header-height: 56px;
 }
 
 :root {
@@ -44,20 +70,12 @@ body,
   margin: 0;
 }
 
-html {
-  background: linear-gradient(180deg, #fbfbff 0%, var(--color-background) 54%, #f8f9fc 100%);
-}
+html { background: var(--color-background); }
 
 body {
   min-height: 100vh;
   overflow-x: hidden;
-  background:
-    radial-gradient(
-      ellipse at 78% 0%,
-      rgba(105, 91, 221, 0.09),
-      transparent 34%
-    ),
-    var(--color-background);
+  background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
@@ -80,9 +98,7 @@ button:disabled {
   cursor: not-allowed;
 }
 
-::selection {
-  background: rgba(81, 69, 205, 0.16);
-}
+::selection { background: #EAE4FF; }
 
 ::-webkit-scrollbar {
   width: 8px;
