@@ -20,7 +20,8 @@
       "@/*": ["./client/src/*"],
       "@shared/*": ["./shared/*"],
       "@core/*": ["./core/*"]
-    }
+    },
+    "typeRoots": ["src/@types", "node_modules/@types"]
   },
-  "include": ["client/src", "shared", "core"]
+  "include": ["client/src", "shared", "core", "src/global.d.ts", "src/tanstack-react-query.d.ts", "client/src/types"]
 }

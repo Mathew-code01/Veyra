@@ -117,6 +117,11 @@ import type {
 } from "../../shared/contracts/interview.contract";
 
 import type {
+  UpdaterStatus,
+  UpdateChannel,
+} from "../../shared/types/updater";
+
+import type {
   InterviewAnalysisRequest,
   InterviewTaskRequest,
   InterviewDomain,
@@ -611,6 +616,8 @@ export interface VeyraDesktopAPI {
   readonly runtime: VeyraRuntimeApi;
 
   readonly platform: VeyraPlatformApi;
+
+  readonly updater: VeyraUpdaterApi;
 }
 
 export interface VeyraPlatformApi {
@@ -634,6 +641,20 @@ export interface VeyraPlatformApi {
     sessionExpiresAt: string;
     authorization: "authorized" | "revoked" | "pending" | "not_registered";
   }>;
+}
+
+/**
+ * Updater API exposed to the renderer.
+ */
+export interface VeyraUpdaterApi {
+  checkForUpdates(force?: boolean): Promise<{ readonly success: boolean; readonly data?: { readonly hasUpdate: boolean; readonly latestVersion: string; readonly currentVersion: string; readonly releaseNotes?: string; readonly releaseDate?: string; readonly downloadUrl?: string; readonly sizeBytes?: number; readonly sha256?: string }; readonly error?: string }>;
+  downloadUpdate(version?: string): Promise<{ readonly success: boolean; readonly error?: string }>;
+  installUpdate(restartNow?: boolean): Promise<{ readonly success: boolean; readonly error?: string }>;
+  getStatus(): Promise<UpdaterStatus>;
+  setChannel(channel: UpdateChannel): Promise<{ readonly success: boolean; readonly error?: string }>;
+  setAutoCheck(enabled: boolean): Promise<{ readonly success: boolean; readonly error?: string }>;
+  onProgress(callback: (progress: { readonly percent: number; readonly bytesDownloaded: number; readonly totalBytes: number; readonly speedBytesPerSecond: number; readonly phase: "downloading" | "verifying" | "installing" }) => void): () => void;
+  onStateChange(callback: (status: UpdaterStatus) => void): () => void;
 }
 
 /**

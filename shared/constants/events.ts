@@ -217,6 +217,17 @@ export const IPC_CHANNELS = Object.freeze({
   OVERLAY_UPDATE: "overlay:update",
 
   // --------------------------------------------------------------------------
+  // UPDATER
+  // --------------------------------------------------------------------------
+
+  UPDATER_CHECK: "updater:check",
+  UPDATER_DOWNLOAD: "updater:download",
+  UPDATER_INSTALL: "updater:install",
+  UPDATER_GET_STATUS: "updater:get-status",
+  UPDATER_SET_CHANNEL: "updater:set-channel",
+  UPDATER_SET_AUTO_CHECK: "updater:set-auto-check",
+
+  // --------------------------------------------------------------------------
   // VISION
   // --------------------------------------------------------------------------
 

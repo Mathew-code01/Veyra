@@ -110,6 +110,8 @@ import { registerCaptureIpc } from "../ipc/capture.ipc";
 
 import { registerVisionIpc } from "../ipc/vision.ipc";
 
+import { registerUpdaterIpc } from "../ipc/updater.ipc";
+
 import {
   PDFParser,
   DOCXParser,
@@ -175,6 +177,7 @@ let cleanupAudioRuntimeIpc: (() => void) | null = null;
 
 let cleanupProvidersIpc: (() => void) | null = null;
 let cleanupPlatformIpc: (() => void) | null = null;
+let cleanupUpdaterIpc: (() => void) | null = null;
 
 let credentialStore: SecureCredentialStore | null = null;
 
@@ -841,6 +844,8 @@ async function initializeApplicationServices(): Promise<void> {
     websiteUrl: process.env.VEYRA_WEBSITE_URL,
   });
 
+  let cleanupUpdaterIpc = registerUpdaterIpc();
+
   registerOverlayIpc(ipcMain);
 }
 
@@ -937,10 +942,16 @@ async function shutdownApplicationServices(): Promise<void> {
 
     cleanupProvidersIpc = null;
   }
-
-  if (cleanupPlatformIpc) {
+if (cleanupPlatformIpc) {
     cleanupPlatformIpc();
+
     cleanupPlatformIpc = null;
+  }
+
+  if (cleanupUpdaterIpc) {
+    cleanupUpdaterIpc();
+
+    cleanupUpdaterIpc = null;
   }
 
   cleanupOverlayIpc();

@@ -138,6 +138,17 @@ import type {
   ModelInstallProgress,
 } from "../../shared/types/hardware";
 
+import {
+  UPDATER_IPC_CHANNELS,
+  type UpdaterCheckRequest,
+  type UpdaterDownloadRequest,
+  type UpdaterInstallRequest,
+  type UpdaterSetChannelRequest,
+  type UpdaterSetAutoCheckRequest,
+  type UpdaterProgressPayload,
+  type UpdaterStateChangePayload,
+} from "../../shared/contracts/updater.contract";
+import type { UpdaterStatus, UpdateChannel } from "../../shared/types/updater";
 import type { VeyraDesktopAPI, WindowOperationResult } from "./types";
 
 /**
@@ -977,6 +988,41 @@ export const api: VeyraDesktopAPI = Object.freeze({
 
     setSize: (width: number, height: number): Promise<{ readonly success: boolean; readonly error?: Error }> =>
       ipcRenderer.invoke(IPC_CHANNELS.OVERLAY_UPDATE, { width, height }) as Promise<{ readonly success: boolean; readonly error?: Error }>,
+  }),
+  updater: Object.freeze({
+    checkForUpdates: async (force?: boolean): Promise<{ readonly success: boolean; readonly data?: { readonly hasUpdate: boolean; readonly latestVersion: string; readonly currentVersion: string; readonly releaseNotes?: string; readonly releaseDate?: string; readonly downloadUrl?: string; readonly sizeBytes?: number; readonly sha256?: string }; readonly error?: string }> => {
+      const request: UpdaterCheckRequest = force ? { force: true } : {};
+      return ipcRenderer.invoke(UPDATER_IPC_CHANNELS.CHECK_FOR_UPDATES, request) as Promise<{ readonly success: boolean; readonly data?: { readonly hasUpdate: boolean; readonly latestVersion: string; readonly currentVersion: string; readonly releaseNotes?: string; readonly releaseDate?: string; readonly downloadUrl?: string; readonly sizeBytes?: number; readonly sha256?: string }; readonly error?: string }>;
+    },
+    downloadUpdate: async (version?: string): Promise<{ readonly success: boolean; readonly error?: string }> => {
+      const request: UpdaterDownloadRequest = version ? { version } : {};
+      return ipcRenderer.invoke(UPDATER_IPC_CHANNELS.DOWNLOAD_UPDATE, request) as Promise<{ readonly success: boolean; readonly error?: string }>;
+    },
+    installUpdate: async (restartNow?: boolean): Promise<{ readonly success: boolean; readonly error?: string }> => {
+      const request: UpdaterInstallRequest = restartNow ? { restartNow } : {};
+      return ipcRenderer.invoke(UPDATER_IPC_CHANNELS.INSTALL_UPDATE, request) as Promise<{ readonly success: boolean; readonly error?: string }>;
+    },
+    getStatus: async (): Promise<UpdaterStatus> => {
+      return ipcRenderer.invoke(UPDATER_IPC_CHANNELS.GET_STATUS) as Promise<UpdaterStatus>;
+    },
+    setChannel: async (channel: UpdateChannel): Promise<{ readonly success: boolean; readonly error?: string }> => {
+      const request: UpdaterSetChannelRequest = { channel };
+      return ipcRenderer.invoke(UPDATER_IPC_CHANNELS.SET_CHANNEL, request) as Promise<{ readonly success: boolean; readonly error?: string }>;
+    },
+    setAutoCheck: async (enabled: boolean): Promise<{ readonly success: boolean; readonly error?: string }> => {
+      const request: UpdaterSetAutoCheckRequest = { enabled };
+      return ipcRenderer.invoke(UPDATER_IPC_CHANNELS.SET_AUTO_CHECK, request) as Promise<{ readonly success: boolean; readonly error?: string }>;
+    },
+    onProgress: (callback: (progress: UpdaterProgressPayload) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: UpdaterProgressPayload) => callback(progress);
+      ipcRenderer.on(UPDATER_IPC_CHANNELS.ON_DOWNLOAD_PROGRESS, listener);
+      return () => ipcRenderer.removeListener(UPDATER_IPC_CHANNELS.ON_DOWNLOAD_PROGRESS, listener);
+    },
+    onStateChange: (callback: (status: UpdaterStatus) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: UpdaterStatus) => callback(status);
+      ipcRenderer.on(UPDATER_IPC_CHANNELS.ON_STATE_CHANGE, listener);
+      return () => ipcRenderer.removeListener(UPDATER_IPC_CHANNELS.ON_STATE_CHANGE, listener);
+    },
   }),
   audio: Object.freeze(audioApi),
   audioRuntime: Object.freeze(audioRuntimeApi),

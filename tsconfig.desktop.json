@@ -11,6 +11,7 @@
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "baseUrl": ".",
+    "typeRoots": ["src/@types", "node_modules/@types"],
     "types": ["node", "electron"],
     "paths": {
       "kokoro-js": ["node_modules/kokoro-js/types/kokoro.d.ts"]
@@ -25,6 +26,7 @@
     "desktop/**/*.ts",
     "shared/**/*.ts",
     "core/**/*.ts",
-    "database/**/*.ts"
+    "database/**/*.ts",
+    "src/global.d.ts"
   ]
 }
