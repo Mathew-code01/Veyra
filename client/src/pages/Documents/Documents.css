@@ -1,0 +1,9 @@
+.document-search {
+  flex: 0 0 auto;
+}
+
+@media (min-width: 640px) {
+  .document-search {
+    width: 320px;
+  }
+}
