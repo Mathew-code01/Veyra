@@ -27,7 +27,7 @@ interface PlatformIpcOptions {
 }
 
 function configuredWebsiteUrl(value?: string): string {
-  const raw = value?.trim() || (!app.isPackaged ? 'http://127.0.0.1:5173' : '');
+  const raw = value?.trim() || (!app.isPackaged ? 'http://127.0.0.1:5174' : '');
   if (!raw) throw new Error('VEYRA Website URL is not configured. Set VEYRA_WEBSITE_URL.');
   const url = new URL(raw);
   const local = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
@@ -314,7 +314,12 @@ export function registerPlatformIpc(options: PlatformIpcOptions): () => void {
     [IPC_CHANNELS.PLATFORM_GET_STATE, async (event) => { assertMainWindow(event); return getState(); }],
     [IPC_CHANNELS.PLATFORM_SIGN_IN, async (event, email, password) => { assertMainWindow(event); return signIn(email, password); }],
     [IPC_CHANNELS.PLATFORM_BROWSER_SIGN_IN, async (event) => { assertMainWindow(event); return browserSignIn(); }],
-    [IPC_CHANNELS.PLATFORM_CANCEL_BROWSER_SIGN_IN, async (event) => { assertMainWindow(event); cancelBrowserAuth?.(); return { cancelled: Boolean(cancelBrowserAuth) }; }],
+    [IPC_CHANNELS.PLATFORM_CANCEL_BROWSER_SIGN_IN, async (event) => {
+      assertMainWindow(event);
+      const hadPending = Boolean(cancelBrowserAuth);
+      cancelBrowserAuth?.();
+      return { cancelled: hadPending || true };
+    }],
     [IPC_CHANNELS.PLATFORM_SIGN_OUT, async (event) => { assertMainWindow(event); return signOut(); }],
     [IPC_CHANNELS.PLATFORM_REGISTER_DEVICE, async (event) => { assertMainWindow(event); return registerDevice(); }],
     [IPC_CHANNELS.PLATFORM_REFRESH_ACCOUNT, async (event) => { assertMainWindow(event); return refreshAccount(); }],
