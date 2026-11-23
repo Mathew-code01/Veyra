@@ -1,0 +1,9 @@
+VEYRA Desktop License Agreement
+
+Copyright (c) 2025 Veyra. All rights reserved.
+
+This software is provided under the VEYRA Desktop License Agreement.
+By installing or using VEYRA Desktop, you agree to be bound by the terms
+of this agreement.
+
+For the full license text, visit: https://veyra-al.vercel.app/license
