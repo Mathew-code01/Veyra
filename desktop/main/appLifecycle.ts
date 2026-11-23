@@ -27,6 +27,7 @@ import { registerAiIpc } from "../ipc/ai.ipc";
 import { registerInterviewIpc } from "../ipc/interview.ipc";
 import { registerProvidersIpc } from "../ipc/providers.ipc";
 import { registerPlatformIpc } from "../ipc/platform.ipc";
+import { registerAppIpc } from "../ipc/app.ipc";
 import {
   cleanupOverlayIpc,
   registerOverlayIpc,
@@ -174,8 +175,10 @@ let cleanupVisionIpc: (() => void) | null = null;
 let practiceSessionEngine: PracticeSessionEngine | null = null;
 let interviewRuntime: UnifiedInterviewRuntime | null = null;
 let cleanupAudioRuntimeIpc: (() => void) | null = null;
-
 let cleanupProvidersIpc: (() => void) | null = null;
+
+let cleanupAppIpc: (() => void) | null = null;
+
 let cleanupPlatformIpc: (() => void) | null = null;
 let cleanupUpdaterIpc: (() => void) | null = null;
 
@@ -846,6 +849,8 @@ async function initializeApplicationServices(): Promise<void> {
 
   let cleanupUpdaterIpc = registerUpdaterIpc();
 
+  let cleanupAppIpc = registerAppIpc(ipcMain);
+
   registerOverlayIpc(ipcMain);
 }
 
@@ -937,15 +942,22 @@ async function shutdownApplicationServices(): Promise<void> {
     cleanupVisionIpc = null;
   }
 
-  if (cleanupProvidersIpc) {
+if (cleanupProvidersIpc) {
     cleanupProvidersIpc();
 
     cleanupProvidersIpc = null;
   }
-if (cleanupPlatformIpc) {
+
+  if (cleanupPlatformIpc) {
     cleanupPlatformIpc();
 
     cleanupPlatformIpc = null;
+  }
+
+  if (cleanupAppIpc) {
+    cleanupAppIpc();
+
+    cleanupAppIpc = null;
   }
 
   if (cleanupUpdaterIpc) {

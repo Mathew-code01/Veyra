@@ -858,6 +858,50 @@ export const api: VeyraDesktopAPI = Object.freeze({
       ipcRenderer.invoke(IPC_CHANNELS.APP_GET_ENVIRONMENT) as Promise<
         "development" | "production"
       >,
+
+    getPlatformDetails: (): Promise<{
+      readonly success: boolean;
+      readonly data?: {
+        readonly os: string;
+        readonly osVersion: string;
+        readonly screenCaptureSupported: boolean;
+        readonly accessibilitySupported: boolean;
+      };
+      readonly error?: string;
+    }> =>
+      ipcRenderer.invoke("app:get-platform-details") as Promise<{
+        readonly success: boolean;
+        readonly data?: {
+          readonly os: string;
+          readonly osVersion: string;
+          readonly screenCaptureSupported: boolean;
+          readonly accessibilitySupported: boolean;
+        };
+        readonly error?: string;
+      }>,
+
+    getNotificationPermission: (): Promise<{
+      readonly granted: boolean;
+      readonly state: "granted" | "denied" | "default";
+    }> =>
+      ipcRenderer.invoke("app:get-notification-permission") as Promise<{
+        readonly granted: boolean;
+        readonly state: "granted" | "denied" | "default";
+      }>,
+
+    requestNotificationPermission: (): Promise<{
+      readonly success: boolean;
+      readonly data?: { readonly state: "granted" | "denied" | "default" };
+      readonly error?: string;
+    }> =>
+      ipcRenderer.invoke("app:request-notification-permission") as Promise<{
+        readonly success: boolean;
+        readonly data?: { readonly state: "granted" | "denied" | "default" };
+        readonly error?: string;
+      }>,
+
+    testNotification: (): Promise<{ readonly success: boolean; readonly error?: string }> =>
+      ipcRenderer.invoke("app:test-notification") as Promise<{ readonly success: boolean; readonly error?: string }>,
   }),
 
   window: Object.freeze({

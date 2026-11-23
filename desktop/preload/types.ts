@@ -121,6 +121,8 @@ import type {
   UpdateChannel,
 } from "../../shared/types/updater";
 
+import type { OperatingSystem } from "../../shared/types/permissions";
+
 import type {
   InterviewAnalysisRequest,
   InterviewTaskRequest,
@@ -203,6 +205,30 @@ export interface VeyraAppApi {
   getEnvironment(): Promise<
     "development" | "production"
   >;
+
+  getPlatformDetails(): Promise<{
+    readonly success: boolean;
+    readonly data?: {
+      readonly os: string;
+      readonly osVersion: string;
+      readonly screenCaptureSupported: boolean;
+      readonly accessibilitySupported: boolean;
+    };
+    readonly error?: string;
+  }>;
+
+  getNotificationPermission(): Promise<{
+    readonly granted: boolean;
+    readonly state: "granted" | "denied" | "default";
+  }>;
+
+  requestNotificationPermission(): Promise<{
+    readonly success: boolean;
+    readonly data?: { readonly state: "granted" | "denied" | "default" };
+    readonly error?: string;
+  }>;
+
+  testNotification(): Promise<{ readonly success: boolean; readonly error?: string }>;
 }
 
 /**

@@ -1,0 +1,20 @@
+{
+  "name": "veyra-download-worker",
+  "version": "0.5.6",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc && wrangler deploy --minify",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240903.0",
+    "typescript": "~6.0.2",
+    "wrangler": "^3.80.0"
+  }
+}

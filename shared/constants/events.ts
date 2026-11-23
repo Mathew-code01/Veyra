@@ -24,6 +24,10 @@ export const IPC_CHANNELS = Object.freeze({
   APP_GET_VERSION: "app:get-version",
   APP_GET_PLATFORM: "app:get-platform",
   APP_GET_ENVIRONMENT: "app:get-environment",
+  APP_GET_PLATFORM_DETAILS: "app:get-platform-details",
+  APP_GET_NOTIFICATION_PERMISSION: "app:get-notification-permission",
+  APP_REQUEST_NOTIFICATION_PERMISSION: "app:request-notification-permission",
+  APP_TEST_NOTIFICATION: "app:test-notification",
 
   // --------------------------------------------------------------------------
   // PLATFORM ACCOUNT

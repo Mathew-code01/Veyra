@@ -1,0 +1,17 @@
+name = "veyra-download-worker"
+main = "dist/index.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+
+[r2_buckets]
+binding = "VEYRA_RELEASES"
+bucket_name = "veyra-desktop-releases"
+
+[build]
+command = "npm run build"
+
+[minify]
+enabled = true

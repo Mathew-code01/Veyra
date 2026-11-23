@@ -1,0 +1,284 @@
+# ============================================================================
+# VEYRA Desktop - Release Publishing
+#
+# Publishes verified build artifacts to Cloudflare R2 for distribution.
+# Triggered manually with version tag or on main branch with version bump.
+# ============================================================================
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., 0.5.6)"
+        required: true
+        type: string
+      channel:
+        description: "Release channel"
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+      draft:
+        description: "Create as draft release"
+        required: false
+        type: boolean
+        default: false
+
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Build all platforms
+  # --------------------------------------------------------------------------
+  build-all:
+    name: Build All Platforms
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            arch: x64
+            artifact-name: veyra-windows
+          - os: macos-latest
+            platform: mac
+            arch: x64
+            artifact-name: veyra-macos
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            artifact-name: veyra-linux
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build client
+        run: npm run build:client
+
+      - name: Build Electron (TypeScript)
+        run: npx tsc -p tsconfig.desktop.json
+
+      - name: Copy database migrations
+        run: node scripts/copy-database-migrations.js
+
+      - name: Prepare Electron runtime
+        run: node scripts/prepare-electron-runtime.js
+
+      - name: Build Electron preload
+        run: node scripts/build-electron-preload.js
+
+      - name: Generate icons
+        if: matrix.platform != 'win'
+        run: |
+          if command -v node >/dev/null 2>&1; then
+            node scripts/generate-icons.mjs || echo "Icon generation skipped"
+          fi
+
+      - name: Install system dependencies (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 libgtk-3-0 libwebkit2gtk-4.1-0 libayatana-appindicator3-1 librsvg2-common
+
+      - name: Package Application
+        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --config electron-builder.yml
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_PROVISIONING_PROFILE: ${{ secrets.CSC_PROVISIONING_PROFILE }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+  # --------------------------------------------------------------------------
+  # Generate checksums and release metadata
+  # --------------------------------------------------------------------------
+  prepare-release:
+    name: Prepare Release Metadata
+    runs-on: ubuntu-latest
+    needs: build-all
+    timeout-minutes: 15
+    outputs:
+      release-notes: ${{ steps.notes.outputs.content }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: veyra-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" -o -name "*.zip" \) -exec sha256sum {} + > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          cat << 'EOF' > release-notes.md
+          ## VEYRA Desktop ${{ env.VERSION }}
+
+          ### What's New
+          - Cross-platform support: Windows, macOS, Linux
+          - Automatic updates via Cloudflare R2
+          - Hardware-aware local AI model selection
+          - Secure BYOK provider credentials
+          - Microphone, screen capture, and document permissions
+          - Live interview copilot with overlay
+          - Practice studio with AI evaluation
+
+          ### Downloads
+          | Platform | Architectures | Formats |
+          |----------|---------------|---------|
+          | Windows | x64 | NSIS Installer, Portable ZIP |
+          | macOS | x64, ARM64 | DMG, ZIP |
+          | Linux | x64 | AppImage, DEB |
+
+          ### Verification
+          All artifacts include SHA256 checksums in SHA256SUMS.txt
+
+          ### Installation
+          See [documentation](https://veyra-al.vercel.app/docs/installation) for platform-specific instructions.
+
+          ---
+          *Built from commit ${{ github.sha }}*
+          EOF
+          cat release-notes.md
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            artifacts/SHA256SUMS.txt
+            artifacts/release-notes.md
+          retention-days: 90
+
+  # --------------------------------------------------------------------------
+  # Publish to Cloudflare R2
+  # --------------------------------------------------------------------------
+  publish-r2:
+    name: Publish to Cloudflare R2
+    runs-on: ubuntu-latest
+    needs: [build-all, prepare-release]
+    if: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_ACCESS_KEY != '' }}
+    timeout-minutes: 20
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: veyra-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Download release metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          path: release-metadata
+
+      - name: Setup Cloudflare Wrangler
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Upload to R2 (stable channel)
+        if: ${{ github.event.inputs.channel == 'stable' || github.event_name == 'push' }}
+        run: |
+          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/windows/veyra-setup-${{ env.VERSION }}.exe --file=artifacts/Veyra-Setup-${{ env.VERSION }}.exe
+          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/windows/veyra-portable-${{ env.VERSION }}.zip --file=artifacts/veyra-portable-${{ env.VERSION }}.zip
+          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/macos/veyra-${{ env.VERSION }}.dmg --file=artifacts/Veyra-${{ env.VERSION }}.dmg
+          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/macos/veyra-${{ env.VERSION }}.zip --file=artifacts/veyra-${{ env.VERSION }}.zip
+          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/linux/veyra-${{ env.VERSION }}.AppImage --file=artifacts/veyra-${{ env.VERSION }}.AppImage
+          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/linux/veyra-${{ env.VERSION }}.deb --file=artifacts/veyra-${{ env.VERSION }}.deb
+          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/SHA256SUMS.txt --file=artifacts/SHA256SUMS.txt
+          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/RELEASE_NOTES.md --file=release-metadata/release-notes.md
+
+          # Update latest.yml for electron-updater
+          wrangler r2 object put veyra-desktop-releases/releases/stable/latest.yml --file=artifacts/latest.yml
+
+      - name: Upload to R2 (beta channel)
+        if: ${{ github.event.inputs.channel == 'beta' }}
+        run: |
+          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/windows/veyra-setup-${{ env.VERSION }}.exe --file=artifacts/Veyra-Setup-${{ env.VERSION }}.exe
+          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/windows/veyra-portable-${{ env.VERSION }}.zip --file=artifacts/veyra-portable-${{ env.VERSION }}.zip
+          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/macos/veyra-${{ env.VERSION }}.dmg --file=artifacts/Veyra-${{ env.VERSION }}.dmg
+          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/macos/veyra-${{ env.VERSION }}.zip --file=artifacts/veyra-${{ env.VERSION }}.zip
+          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/linux/veyra-${{ env.VERSION }}.AppImage --file=artifacts/veyra-${{ env.VERSION }}.AppImage
+          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/linux/veyra-${{ env.VERSION }}.deb --file=artifacts/veyra-${{ env.VERSION }}.deb
+          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/SHA256SUMS.txt --file=artifacts/SHA256SUMS.txt
+          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/RELEASE_NOTES.md --file=release-metadata/release-notes.md
+
+          # Update latest-beta.yml for electron-updater
+          wrangler r2 object put veyra-desktop-releases/releases/beta/latest.yml --file=artifacts/latest.yml
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: VEYRA Desktop ${{ env.VERSION }}
+          body_path: release-metadata/release-notes.md
+          files: |
+            artifacts/*.exe
+            artifacts/*.dmg
+            artifacts/*.AppImage
+            artifacts/*.deb
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt
+          draft: ${{ github.event.inputs.draft }}
+          prerelease: ${{ github.event.inputs.channel == 'beta' }}
+
+  # --------------------------------------------------------------------------
+  # Update Worker (if configured)
+  # --------------------------------------------------------------------------
+  update-worker:
+    name: Update Download Worker
+    runs-on: ubuntu-latest
+    needs: [build-all, prepare-release, publish-r2]
+    if: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CLOUDFLARE_API_TOKEN != '' }}
+    timeout-minutes: 10
+    steps:
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+          workingDirectory: ./workers/download-worker
