@@ -14,7 +14,9 @@
     "rootDir": ".",
     "sourceMap": true,
     "declaration": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "composite": true
+  },
   },
   "include": [
     "server/src/**/*.ts",

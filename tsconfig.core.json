@@ -9,7 +9,8 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "composite": true
   },
   "include": ["core/**/*.ts", "shared/**/*.ts", "src/global.d.ts", "core/types"]
 }
