@@ -17,7 +17,6 @@
     "forceConsistentCasingInFileNames": true,
     "composite": true
   },
-  },
   "include": [
     "server/src/**/*.ts",
     "shared/**/*.ts",

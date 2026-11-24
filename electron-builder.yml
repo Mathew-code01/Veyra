@@ -26,11 +26,7 @@ win:
     - target: nsis
       arch:
         - x64
-  publisherName: Veyra
   verifyUpdateCodeSignature: false
-  rfc3161TimeStampServer: http://timestamp.digicert.com
-  certificateFile: ${CSC_LINK}
-  certificatePassword: ${CSC_KEY_PASSWORD}
   artifactName: Veyra-Setup-${version}.${ext}
 
 nsis:
@@ -41,9 +37,6 @@ nsis:
   createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: Veyra
-  shortcuts:
-    - name: Veyra
-      target: Veyra.exe
   license: build/license.txt
   artifactName: Veyra-Setup-${version}.${ext}
   differentialPackage: true
@@ -65,8 +58,6 @@ mac:
   entitlementsInherit: build/entitlements/macos.inherit.entitlements.plist
   artifactName: Veyra-${version}.${ext}
   notarize: false
-  identity: ${CSC_LINK}
-  provisioningProfile: ${CSC_PROVISIONING_PROFILE}
 
 dmg:
   contents:
@@ -95,13 +86,10 @@ linux:
   artifactName: Veyra-${version}.${ext}
   executableName: veyra
   desktop:
-    Name: Veyra
-    Comment: Privacy-first AI interview copilot
-    Categories: Office;Utility;
-  synapse: false
-
-appImage:
-  runtime: fuse
+    entry:
+      Name: Veyra
+      Comment: Privacy-first AI interview copilot
+      Categories: Office;Utility;
 
 publish:
   provider: generic

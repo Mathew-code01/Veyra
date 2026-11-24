@@ -12,5 +12,5 @@
     "forceConsistentCasingInFileNames": true,
     "composite": true
   },
-  "include": ["core/**/*.ts", "shared/**/*.ts", "src/global.d.ts", "core/types"]
+  "include": ["core/**/*.ts", "shared/**/*.ts", "database/**/*.ts", "src/global.d.ts", "core/types"]
 }

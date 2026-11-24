@@ -1,4 +1,4 @@
-﻿{
+{
   "compilerOptions": {
     "target": "ES2022",
     "useDefineForClassFields": true,
@@ -24,5 +24,14 @@
     "composite": true,
     "emitDeclarationOnly": true
   },
-  "include": ["client/src", "shared", "core", "src/global.d.ts", "src/tanstack-react-query.d.ts", "client/src/types"]
+  "include": [
+    "client/src",
+    "shared",
+    "core",
+    "database",
+    "desktop",
+    "src/global.d.ts",
+    "src/tanstack-react-query.d.ts",
+    "client/src/types"
+  ]
 }

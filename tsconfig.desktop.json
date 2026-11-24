@@ -23,7 +23,6 @@
     "forceConsistentCasingInFileNames": true,
     "composite": true
   },
-  },
   "include": [
     "desktop/**/*.ts",
     "shared/**/*.ts",

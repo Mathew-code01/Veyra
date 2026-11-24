@@ -186,7 +186,7 @@ jobs:
         run: node scripts/build-electron-preload.js
 
       - name: Package Windows (NSIS)
-        run: npx electron-builder --win --x64 --config electron-builder.yml
+        run: npx electron-builder --win --x64 --config electron-builder.yml --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -241,7 +241,7 @@ jobs:
           fi
 
       - name: Package macOS (DMG + ZIP)
-        run: npx electron-builder --mac --x64 --arm64 --config electron-builder.yml
+        run: npx electron-builder --mac --x64 --arm64 --config electron-builder.yml --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -302,7 +302,7 @@ jobs:
           fi
 
       - name: Package Linux (AppImage + DEB)
-        run: npx electron-builder --linux --x64 --config electron-builder.yml
+        run: npx electron-builder --linux --x64 --config electron-builder.yml --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
