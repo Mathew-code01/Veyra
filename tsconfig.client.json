@@ -14,7 +14,6 @@
     "resolveJsonModule": true,
     "types": ["vite/client", "node", "electron"],
     "isolatedModules": true,
-    "noEmit": true,
     "jsx": "react-jsx",
     "paths": {
       "@/*": ["./client/src/*"],
@@ -22,7 +21,8 @@
       "@core/*": ["./core/*"]
     },
     "typeRoots": ["src/@types", "node_modules/@types"],
-    "composite": true
+    "composite": true,
+    "emitDeclarationOnly": true
   },
   "include": ["client/src", "shared", "core", "src/global.d.ts", "src/tanstack-react-query.d.ts", "client/src/types"]
 }
