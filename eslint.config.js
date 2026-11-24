@@ -9,13 +9,6 @@ export default defineConfig([
     files: ['**/*.{js,jsx,ts,tsx}'],
     plugins: {
       '@typescript-eslint': tseslint.plugin,
-      'react-hooks': {
-        rules: {
-          'exhaustive-deps': {
-            create: () => ({}),
-          },
-        },
-      },
     },
     languageOptions: {
       parser: tseslint.parser,
