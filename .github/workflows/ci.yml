@@ -8,6 +8,7 @@
 name: CI
 
 env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
   ONNXRUNTIME_INSTALL_CUDA: skip
 
 on:
@@ -165,11 +166,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-
-      - name: Install Visual C++ Build Tools
-        run: |
-          choco install visualstudio2022-buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --quiet --wait"
-        shell: powershell
 
       - name: Install dependencies
         run: npm ci
