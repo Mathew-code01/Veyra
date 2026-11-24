@@ -10,8 +10,12 @@
 // ============================================================================
 
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import sharp from "sharp";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const ICON_SIZES = {
   ico: [16, 24, 32, 48, 64, 128, 256],

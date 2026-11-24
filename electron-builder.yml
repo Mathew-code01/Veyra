@@ -102,8 +102,3 @@ appImage:
 publish:
   provider: generic
   url: https://updates.veyra.app
-
-updateConfig:
-  channel: stable
-  provider: generic
-  url: https://updates.veyra.app
