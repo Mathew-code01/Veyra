@@ -86,7 +86,10 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Install ESLint peer plugins
+        run: npm install eslint-plugin-react-hooks eslint-plugin-react-refresh --no-save
 
       - name: Lint
         run: npm run lint
