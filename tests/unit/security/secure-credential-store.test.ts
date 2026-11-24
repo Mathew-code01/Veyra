@@ -169,15 +169,15 @@ describe("SecureCredentialStore", () => {
     await store.storeCredential("profile-2", "gemini", "key-b");
     await store.storeCredential("profile-1", "groq", "key-c");
 
-    expect(store.getDecryptedCredential("profile-1", "gemini")).resolves.toBe(
+    await expect(store.getDecryptedCredential("profile-1", "gemini")).resolves.toBe(
       "key-a",
     );
 
-    expect(store.getDecryptedCredential("profile-2", "gemini")).resolves.toBe(
+    await expect(store.getDecryptedCredential("profile-2", "gemini")).resolves.toBe(
       "key-b",
     );
 
-    expect(store.getDecryptedCredential("profile-1", "groq")).resolves.toBe(
+    await expect(store.getDecryptedCredential("profile-1", "groq")).resolves.toBe(
       "key-c",
     );
   });

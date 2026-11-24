@@ -39,3 +39,15 @@ This document records the exact diagnostic findings, fixes applied, and executio
 ### 5. Automated Build Workflows & Publish Flags
 - **Root Cause**: CI workflows lacked `--publish never`, risking unintended publish behavior during verification.
 - **Fix**: Updated `.github/workflows/ci.yml` packaging steps for Windows, macOS, and Linux to explicitly specify `--publish never`.
+
+### 6. Untracked Security Scan Script
+- **Root Cause**: `scripts/check-secrets.js` was newly introduced in `package.json`'s `veyra:secret:check` script, but was not tracked in git. When the GitHub Actions `Security Scan` job checked out the repository, the script file did not exist, causing `Run secret check` to fail with `MODULE_NOT_FOUND`.
+- **Fix**: Tracked `scripts/check-secrets.js` in git and verified locally with exit code 0 (no secrets detected).
+
+### 7. Cross-Platform TypeScript Binary Resolution
+- **Root Cause**: In `package.json`, `"typecheck"` was defined as `"node ./node_modules/typescript/lib/tsc -b"`. While Windows Node.js resolved `tsc` to `tsc.js` automatically, Linux runners failed because Node ESM / strict resolution requires the file to exist with its exact extension or via `node_modules/.bin/tsc`.
+- **Fix**: Reverted the `typecheck` script to `"tsc -b"`, which uses the standard package-relative npm binary runner on all operating systems.
+
+### 8. macOS Unsigned Packaging Fallback in CI
+- **Root Cause**: On macOS runners, `electron-builder` requires an Apple code signing identity when `hardenedRuntime: true` is configured in `electron-builder.yml`. When run on CI without configured `CSC_LINK` secrets, packaging failed.
+- **Fix**: Added dynamic fallback in `.github/workflows/ci.yml` to supply `-c.mac.identity=null -c.mac.hardenedRuntime=false` when `CSC_LINK` is absent, allowing DMG and ZIP packaging to complete cleanly for release verification. In addition, unified all CI jobs to Node 22 (matching `better-sqlite3@13` requirements and Electron 39's embedded Node 22 runtime).

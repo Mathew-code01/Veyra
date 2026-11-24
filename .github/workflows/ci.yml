@@ -30,11 +30,8 @@ jobs:
   # TypeScript Type Checking (all projects)
   # --------------------------------------------------------------------------
   typecheck:
-    name: TypeCheck (Node ${{ matrix.node }})
+    name: TypeCheck (Node 22)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node: [20, 22]
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -43,7 +40,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -95,11 +92,8 @@ jobs:
   # Unit Tests
   # --------------------------------------------------------------------------
   test:
-    name: Unit Tests (Node ${{ matrix.node }})
+    name: Unit Tests (Node 22)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node: [20, 22]
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -108,14 +102,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
       - name: Run tests
-        run: npm test
+        run: npm test -- --reporter=verbose
         env:
           CI: true
 
@@ -241,7 +235,14 @@ jobs:
           fi
 
       - name: Package macOS (DMG + ZIP)
-        run: npx electron-builder --mac --x64 --arm64 --config electron-builder.yml --publish never
+        run: |
+          if [ -z "${CSC_LINK}" ]; then
+            echo "CSC_LINK secret is not provided; building unsigned macOS artifacts (DMG + ZIP)..."
+            npx electron-builder --mac --x64 --arm64 --config electron-builder.yml -c.mac.identity=null -c.mac.hardenedRuntime=false --publish never
+          else
+            echo "CSC_LINK secret is present; building signed macOS artifacts (DMG + ZIP)..."
+            npx electron-builder --mac --x64 --arm64 --config electron-builder.yml --publish never
+          fi
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -252,7 +253,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: veyra-macos-${{ github.sha }}
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.zip
           retention-days: 7
 
   # --------------------------------------------------------------------------

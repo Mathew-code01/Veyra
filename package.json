@@ -14,7 +14,7 @@
     "build": "npm run typecheck && npm run build:client && npm run build:electron",
     "build:client": "vite build",
     "build:electron": "tsc -p tsconfig.desktop.json && node scripts/copy-database-migrations.js && node scripts/prepare-electron-runtime.js && node scripts/build-electron-preload.js",
-    "typecheck": "node ./node_modules/typescript/lib/tsc -b",
+    "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
