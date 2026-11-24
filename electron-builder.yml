@@ -38,9 +38,6 @@ nsis:
   perMachine: false
   allowElevation: true
   allowToChangeInstallationDirectory: true
-  installerIcon: build/icon.ico
-  uninstallerIcon: build/icon.ico
-  installerHeaderIcon: build/icon.ico
   createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: Veyra
@@ -79,7 +76,6 @@ dmg:
   window:
     width: 540
     height: 380
-  icon: build/icon.icns
   artifactName: Veyra-${version}.${ext}
 
 linux:
