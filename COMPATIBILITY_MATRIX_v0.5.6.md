@@ -10,7 +10,7 @@
 | Feature | Windows x64 | Windows ARM64 | macOS Intel x64 | macOS ARM64 | Linux x64 | Linux ARM64 |
 |---------|-------------|---------------|-----------------|-------------|-----------|-------------|
 | **Installer** | NSIS .exe | NSIS .exe | DMG | DMG | AppImage, DEB | AppImage |
-| **Portable** | ZIP | ZIP | ZIP | ZIP | tar.gz | tar.gz |
+| **Portable** | EXE | Not configured | Not configured | Not configured | Not configured | Not configured |
 | **Main Window** | ✅ Verified | ✅ Verified | ✅ CI Build | ✅ CI Build | ✅ CI Build | ✅ CI Build |
 | **Overlay Window** | ✅ Verified | ✅ Verified | ✅ CI Build | ✅ CI Build | ✅ CI Build | ✅ CI Build |
 | **Microphone** | ✅ Verified | ✅ Verified | ⚠️ Not tested | ⚠️ Not tested | ⚠️ Not tested | ⚠️ Not tested |

@@ -9,7 +9,7 @@
 ### Cross-Platform Support
 VEYRA Desktop is now officially supported on Windows, macOS, and Linux with a single shared codebase.
 
-- **Windows:** NSIS installer (.exe) and portable ZIP
+- **Windows:** NSIS installer (.exe) and portable EXE
 - **macOS:** DMG installer (.dmg) and application ZIP (Intel x64 & Apple Silicon ARM64)
 - **Linux:** AppImage, DEB package, and portable archive (x64 & ARM64)
 
@@ -45,7 +45,7 @@ VEYRA Desktop is now officially supported on Windows, macOS, and Linux with a si
 | Platform | Architectures | Format | File Size | Checksum |
 |----------|---------------|--------|-----------|----------|
 | Windows | x64, ARM64 | NSIS Installer | - | See SHA256SUMS.txt |
-| Windows | x64, ARM64 | Portable ZIP | - | See SHA256SUMS.txt |
+| Windows | x64 | Portable EXE | - | See SHA256SUMS.txt |
 | macOS | x64, ARM64 | DMG | - | See SHA256SUMS.txt |
 | macOS | x64, ARM64 | ZIP | - | See SHA256SUMS.txt |
 | Linux | x64, ARM64 | AppImage | - | See SHA256SUMS.txt |

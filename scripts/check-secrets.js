@@ -7,7 +7,7 @@ const secretPatterns = [
   /\b(?:AIza[0-9A-Za-z_-]{20,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,})\b/,
 ];
 const placeholderValues = /^(?:<[^>]+>|changeme|change[_-]?me|replace[_-]?me|your[_-].*|example|dummy|placeholder|test[-_]?only)$/i;
-const assignmentPattern = /\b(?:SUPABASE_SERVICE_ROLE_KEY|PAYSTACK_SECRET_KEY|PAYSTACK_WEBHOOK_SECRET|UPDATE_SIGNING_KEY|GEMINI_API_KEY|GROQ_API_KEY|HF_TOKEN|MISTRAL_API_KEY|CEREBRAS_API_KEY|OPENROUTER_API_KEY)\s*[:=]\s*["']?([^"'\s#]+)/gi;
+const assignmentPattern = /\b(?:SUPABASE_SERVICE_ROLE_KEY|PAYSTACK_SECRET_KEY|PAYSTACK_WEBHOOK_SECRET|UPDATE_SIGNING_KEY|GEMINI_API_KEY|GROQ_API_KEY|HF_TOKEN|MISTRAL_API_KEY|NVIDIA_API_KEY|NIVDIA_API_KEY|CEREBRAS_API_KEY|OPENROUTER_API_KEY|JAVIS_MAIN_KEY)\s*[:=]\s*["']?([^"'\s#]+)/gi;
 
 async function walk(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -15,7 +15,7 @@ async function walk(directory) {
   for (const entry of entries) {
     if (ignored.has(entry.name)) continue;
     const full = join(directory, entry.name);
-    if (entry.name === '.env' || entry.name.startsWith('.env.')) continue;
+    if (entry.name === '.env' || (entry.name.startsWith('.env.') && entry.name !== '.env.example')) continue;
     if (entry.isDirectory()) {
       findings.push(...await walk(full));
       continue;

@@ -12,13 +12,27 @@ This document records the exact diagnostic findings, fixes applied, and executio
 | TypeScript Project Compilation | PASSED | `npm run typecheck` (`tsc -b`) exits with code 0 |
 | Client Build | PASSED | `npm run build:client` (`vite build`) successfully transforms 1659 modules and outputs `dist/` |
 | Electron Build Steps | PASSED | `build:electron` steps (preload build, migrations, runtime prep) compile cleanly |
-| ESLint Configuration | PASSED | `npm run lint` passes with 0 errors across entire codebase |
+| ESLint Configuration | PASSED | `npm run lint` passes with 0 errors and 3 React Hooks warnings |
 | Unit Test Suite | PASSED | `npm test` runs 59 test files, 330 tests passing with 0 failures |
 | Secret Scanning | PASSED | `npm run veyra:secret:check` exits with code 0; 0 credentials detected |
 | Electron-Builder Config | PASSED | Schema-validated against electron-builder 26.15.3 API schema (`app-builder-lib/scheme.json`) |
 | Accidental Publishing Guard | PASSED | `--publish never` enforced in CI workflows |
+| Reconciliation | PASSED | Local and `origin/feat/electron-production-readiness-056` are synchronized at `d7aba7e59c0b550a6178a6fae52b4568f92c26c5` |
+| Root Server Dependencies | PASSED | Root test imports now resolve `cors`, Express, rate limiting, Helmet, and their types |
+| Dependency Audit | BLOCKED | Production audit reports 6 high-severity findings; no `npm audit fix --force` applied |
 
 ## Detailed Root Causes and Solutions
+
+### 9. Unit-test CORS module resolution
+- **Root Cause**: `server/src/app.ts` imports CORS, Express, Express rate limiting, and Helmet, but Vitest tests import that file from the root package. The server dependencies were declared only in the nested `server/package.json`, so `npm ci` at the repository root did not guarantee their availability to root test imports.
+- **Fix**: Declared `cors`, `express`, `express-rate-limit`, and `helmet` in the root runtime dependencies, plus `@types/cors` and `@types/express` in root development dependencies. Updated `package-lock.json` with `npm install --package-lock-only`.
+- **Verification**: The focused `cloud-denial.test.ts` passed 4 tests. The complete Vitest suite passed 59 files and 330 tests after rebuilding `better-sqlite3` under Node 22.15.0.
+
+### 10. Git reconciliation and run identity
+- **Local branch**: `feat/electron-production-readiness-056`
+- **Remote feature branch**: synchronized with local `HEAD` at `d7aba7e59c0b550a6178a6fae52b4568f92c26c5`
+- **GitHub Actions run #190**: tested that exact SHA
+- **Working-tree state**: Valid local modifications include dependency, lint, workflow, documentation, security, and packaging repairs. Generated untracked declaration/build files were not included in the source changes.
 
 ### 1. Invalid tsconfig.desktop.json and tsconfig.server.json
 - **Root Cause**: An accidental duplicate closing brace `}, },` at line 25 of `tsconfig.desktop.json` and line 19 of `tsconfig.server.json` broke Vite's internal tsconfig parser (`rolldown/oxc`), causing immediate build failure across all platforms. Furthermore, `tsconfig.client.json` had a leading UTF-8 Byte Order Mark (BOM).

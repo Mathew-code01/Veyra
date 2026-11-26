@@ -37,7 +37,7 @@
 
 ### Phase 3 - Windows Production Readiness
 - [x] NSIS .exe installer configured in electron-builder.yml
-- [x] Portable .zip supported via electron-builder
+- [x] Portable .exe supported via electron-builder
 - [x] Application startup verified
 - [x] Hardware detection (HardwareService.ts)
 - [x] Platform API connectivity

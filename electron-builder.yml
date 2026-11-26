@@ -26,6 +26,9 @@ win:
     - target: nsis
       arch:
         - x64
+    - target: portable
+      arch:
+        - x64
   verifyUpdateCodeSignature: false
   artifactName: Veyra-Setup-${version}.${ext}
 
@@ -40,6 +43,9 @@ nsis:
   license: build/license.txt
   artifactName: Veyra-Setup-${version}.${ext}
   differentialPackage: true
+
+portable:
+  artifactName: Veyra-Portable-${version}.${ext}
 
 mac:
   target:

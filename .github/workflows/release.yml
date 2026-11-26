@@ -166,7 +166,7 @@ jobs:
           ### Downloads
           | Platform | Architectures | Formats |
           |----------|---------------|---------|
-          | Windows | x64 | NSIS Installer, Portable ZIP |
+          | Windows | x64 | NSIS Installer, Portable EXE |
           | macOS | x64, ARM64 | DMG, ZIP |
           | Linux | x64 | AppImage, DEB |
 
@@ -223,7 +223,7 @@ jobs:
         if: ${{ github.event.inputs.channel == 'stable' || github.event_name == 'push' }}
         run: |
           wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/windows/veyra-setup-${{ env.VERSION }}.exe --file=artifacts/Veyra-Setup-${{ env.VERSION }}.exe
-          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/windows/veyra-portable-${{ env.VERSION }}.zip --file=artifacts/veyra-portable-${{ env.VERSION }}.zip
+          wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/windows/veyra-portable-${{ env.VERSION }}.exe --file=artifacts/Veyra-Portable-${{ env.VERSION }}.exe
           wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/macos/veyra-${{ env.VERSION }}.dmg --file=artifacts/Veyra-${{ env.VERSION }}.dmg
           wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/macos/veyra-${{ env.VERSION }}.zip --file=artifacts/veyra-${{ env.VERSION }}.zip
           wrangler r2 object put veyra-desktop-releases/releases/stable/${{ env.VERSION }}/linux/veyra-${{ env.VERSION }}.AppImage --file=artifacts/veyra-${{ env.VERSION }}.AppImage
@@ -238,7 +238,7 @@ jobs:
         if: ${{ github.event.inputs.channel == 'beta' }}
         run: |
           wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/windows/veyra-setup-${{ env.VERSION }}.exe --file=artifacts/Veyra-Setup-${{ env.VERSION }}.exe
-          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/windows/veyra-portable-${{ env.VERSION }}.zip --file=artifacts/veyra-portable-${{ env.VERSION }}.zip
+          wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/windows/veyra-portable-${{ env.VERSION }}.exe --file=artifacts/Veyra-Portable-${{ env.VERSION }}.exe
           wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/macos/veyra-${{ env.VERSION }}.dmg --file=artifacts/Veyra-${{ env.VERSION }}.dmg
           wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/macos/veyra-${{ env.VERSION }}.zip --file=artifacts/veyra-${{ env.VERSION }}.zip
           wrangler r2 object put veyra-desktop-releases/releases/beta/${{ env.VERSION }}/linux/veyra-${{ env.VERSION }}.AppImage --file=artifacts/veyra-${{ env.VERSION }}.AppImage
